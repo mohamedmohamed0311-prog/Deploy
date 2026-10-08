@@ -2406,8 +2406,8 @@ function saveHomeGallery(images) {
 
 function galleryCloudWarn(error) {
     console.warn('[Gallery Sync]', error && error.message, error);
-    showToast(L('Image saved on this device only — cloud save failed (check the site_gallery table / RLS in Supabase).',
-        'تم حفظ الصورة على هذا الجهاز فقط — فشل الحفظ السحابي (راجع جدول site_gallery وسياسات RLS في Supabase).'), 'error');
+    const reason = (error && (error.message || error.details || error.code)) || 'unknown error';
+    showToast(L('Cloud save failed: ', 'فشل الحفظ السحابي: ') + reason, 'error', 10000);
 }
 
 async function galleryCloudInsert(items) {
