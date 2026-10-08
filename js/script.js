@@ -1890,7 +1890,7 @@ function navigateTo(viewId, fromHistory = false) {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    if (viewId === 'home') renderHomeGallery();
+    if (viewId === 'home') { renderHomeGallery(); syncHomeGalleryFromCloud(); }
     if (viewId === 'products') renderProducts();
     if (viewId === 'tech-fix') renderTechServices();
     if (viewId === 'admin-dashboard') renderAdminDashboard();
@@ -2377,22 +2377,87 @@ const GALLERY_MAX_DIMENSION = 1600;
 let galleryIndex = 0;
 let galleryTimer = null;
 
+// Gallery is stored in Supabase (table "site_gallery") so it survives deploys,
+// and mirrored in localStorage for instant first paint / offline use.
+let galleryCache = null;
+let galleryLastCloudSync = 0;
+
+function isPlaceholderGalleryItem(g) {
+    return !g || !g.url || /^g[123]$/.test(String(g.id || '')) || String(g.url).includes('picsum.photos');
+}
+
 function loadHomeGallery() {
+    if (galleryCache) return galleryCache;
     try {
         const stored = JSON.parse(localStorage.getItem('ca_home_gallery'));
-        if (Array.isArray(stored)) return stored.filter(g => g && g.url);
-    } catch (e) { /* fall through to placeholders */ }
-    // Placeholder images — replaced once the admin adds real ones
-    return [
-        { id: 'g1', url: 'https://picsum.photos/seed/coolingart1/1200/500', title: '' },
-        { id: 'g2', url: 'https://picsum.photos/seed/coolingart2/1200/500', title: '' },
-        { id: 'g3', url: 'https://picsum.photos/seed/coolingart3/1200/500', title: '' }
-    ];
+        if (Array.isArray(stored)) {
+            galleryCache = stored.filter(g => !isPlaceholderGalleryItem(g));
+            return galleryCache;
+        }
+    } catch (e) { /* fall through */ }
+    galleryCache = []; // no built-in placeholder images any more
+    return galleryCache;
 }
 
 function saveHomeGallery(images) {
+    galleryCache = images;
     localStorage.setItem('ca_home_gallery', JSON.stringify(images));
 }
+
+function galleryCloudWarn(error) {
+    console.warn('[Gallery Sync]', error && error.message, error);
+    showToast(L('Image saved on this device only — cloud save failed (check the site_gallery table / RLS in Supabase).',
+        'تم حفظ الصورة على هذا الجهاز فقط — فشل الحفظ السحابي (راجع جدول site_gallery وسياسات RLS في Supabase).'), 'error');
+}
+
+async function galleryCloudInsert(items) {
+    if (!supabaseClient) return;
+    const base = Date.now();
+    const rows = items.map((g, i) => ({
+        id: g.id, url: g.url, title: g.title || '', added_by: g.addedBy || '',
+        sort_order: g.sort || (base + i)
+    }));
+    try {
+        const { error } = await supabaseClient.from('site_gallery').upsert(rows);
+        if (error) galleryCloudWarn(error);
+    } catch (err) { galleryCloudWarn(err); }
+}
+
+async function galleryCloudDelete(id) {
+    if (!supabaseClient || !id) return;
+    try {
+        const { error } = await supabaseClient.from('site_gallery').delete().eq('id', id);
+        if (error) galleryCloudWarn(error);
+    } catch (err) { galleryCloudWarn(err); }
+}
+
+// Pulls the shared gallery from Supabase (throttled) and re-renders only if it changed.
+async function syncHomeGalleryFromCloud(force) {
+    if (!supabaseClient) return;
+    if (!force && Date.now() - galleryLastCloudSync < 30000) return;
+    galleryLastCloudSync = Date.now();
+    try {
+        const { data, error } = await supabaseClient.from('site_gallery').select('*').order('sort_order', { ascending: true });
+        if (error) { console.warn('[Gallery Sync] load failed:', error.message); return; }
+        const local = loadHomeGallery();
+        if (data && data.length) {
+            const remote = data.map(r => ({ id: r.id, url: r.url, title: r.title || '', addedBy: r.added_by || '', sort: r.sort_order }));
+            const changed = remote.length !== local.length || remote.some((g, i) => g.id !== local[i].id);
+            saveHomeGallery(remote);
+            if (changed) {
+                if (galleryIndex > remote.length - 1) galleryIndex = 0;
+                if (document.getElementById('homeGallerySection')) renderHomeGallery();
+            }
+        } else if (local.length && typeof canEditAbout === 'function' && canEditAbout()) {
+            // First run after deploy: push the images this admin already has on this device to the cloud.
+            await galleryCloudInsert(local.map((g, i) => ({ ...g, sort: Date.now() + i })));
+        } else if (local.length) {
+            saveHomeGallery([]);
+            if (document.getElementById('homeGallerySection')) renderHomeGallery();
+        }
+    } catch (err) { console.warn('[Gallery Sync] exception:', err); }
+}
+window.syncHomeGalleryFromCloud = syncHomeGalleryFromCloud;
 
 function ensureHomeGallerySection() {
     const home = document.getElementById('view-home');
@@ -2435,7 +2500,7 @@ function renderHomeGallery() {
     <div dir="ltr">
         <div class="relative group overflow-hidden">
             <div id="homeGalleryTrack" class="flex transition-transform duration-700 ease-in-out" style="transform: translateX(-${galleryIndex * 100}%);">
-                ${slides || `<div class="w-full p-10 text-center text-xs text-slate-400">${L('No images yet — add one from the Admin account.', 'لا توجد صور بعد — أضفها من حساب المسؤول.')}</div>`}${loopSlide}
+                ${slides || (canEdit ? `<div class="w-full p-10 text-center text-xs text-slate-400">${L('No images yet — add one from the Admin account.', 'لا توجد صور بعد — أضفها من حساب المسؤول.')}</div>` : '')}${loopSlide}
             </div>
             ${images.length > 1 ? `
             <button type="button" onclick="stepHomeGallery()" class="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 hover:bg-sky-500 text-white flex items-center justify-center transition opacity-0 group-hover:opacity-100" title="${L('Next', 'التالي')}"><i class="fa-solid fa-chevron-right"></i></button>
@@ -2543,9 +2608,11 @@ function handleAddGalleryImageFile(e) {
             canvas.getContext('2d').drawImage(img, 0, 0, w, h);
             const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
             const images = loadHomeGallery();
-            images.push({ id: createDateBasedId('IMG'), url: dataUrl, title: '', addedBy: state.currentUser.username, addedAt: new Date().toISOString() });
+            const newImg = { id: createDateBasedId('IMG'), url: dataUrl, title: '', addedBy: state.currentUser.username, addedAt: new Date().toISOString(), sort: Date.now() };
+            images.push(newImg);
             try {
                 saveHomeGallery(images);
+                galleryCloudInsert([newImg]);
             } catch (err) {
                 showToast(L('Storage is full — delete an old image first.', 'مساحة التخزين ممتلئة — احذف صورة قديمة أولاً.'), 'error');
                 return;
@@ -2566,8 +2633,9 @@ function removeHomeGalleryImage() {
     const images = loadHomeGallery();
     if (!images.length) return;
     if (!window.confirm(L('Delete the current gallery image?', 'حذف الصورة الحالية من المعرض؟'))) return;
-    images.splice(galleryIndex, 1);
+    const removed = images.splice(galleryIndex, 1)[0];
     saveHomeGallery(images);
+    if (removed) galleryCloudDelete(removed.id);
     if (galleryIndex > images.length - 1) galleryIndex = Math.max(images.length - 1, 0);
     renderHomeGallery();
     showToast(L('Image removed.', 'تم حذف الصورة.'), 'success');
@@ -6944,3 +7012,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMobileMenu(); });
 window.addEventListener('resize', () => { if (window.innerWidth >= 1024) closeMobileMenu(); });
+
+
+// Load the shared gallery from the cloud as soon as the page is ready
+window.addEventListener('DOMContentLoaded', () => { syncHomeGalleryFromCloud(true); });
