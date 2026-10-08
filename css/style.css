@@ -1,0 +1,61 @@
+html {
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+}
+
+[dir="rtl"] body {
+    font-family: 'Cairo', 'Plus Jakarta Sans', sans-serif;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #38bdf8;
+    border-radius: 4px;
+}
+
+.nav-link {
+    transition: all 0.2s ease-in-out;
+    padding-bottom: 2px;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    line-height: 1;
+    vertical-align: middle;
+}
+
+.nav-link i {
+    line-height: 1;
+    font-size: 0.7rem;
+}
+
+.nav-link-active {
+    color: #0284c7 !important;
+    border-bottom-color: #0284c7 !important;
+    font-weight: 800 !important;
+}
+
+.dark .nav-link-active {
+    color: #38bdf8 !important;
+    border-bottom-color: #38bdf8 !important;
+}
+
+/* Home banner spans the full browser width (breaks out of the page container) */
+html {
+    overflow-x: hidden;
+}
+
+.home-bleed {
+    width: 100vw;
+    margin-inline: calc(50% - 50vw);
+}
+
+/* Contact Us bot (homepage assistant) */
+#chatBotMessages::-webkit-scrollbar { width: 5px; }
+#chatBotMessages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+.dark #chatBotMessages::-webkit-scrollbar-thumb { background: #475569; }

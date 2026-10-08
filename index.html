@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Cooling Art - Premium AC Sales, Technical Fix & Insurance</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <!-- EmailJS SDK (for automated client-side emails) -->
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Plus Jakarta Sans', 'Cairo', 'sans-serif'],
+                    },
+                    colors: {
+                        skybrand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            200: '#bae6fd',
+                            300: '#7dd3fc',
+                            400: '#38bdf8',
+                            500: '#0284c7',
+                            600: '#0369a1',
+                            700: '#075985',
+                            800: '#0c4a6e',
+                            900: '#0f172a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body
+    class="bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased min-h-screen flex flex-col transition-colors duration-300">
+
+    <!-- TOP HEADER / MAIN MENU NAV BAR -->
+    <header
+        class="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm transition-colors duration-300">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-4" dir="ltr">
+
+            <!-- Brand Logo -->
+            <div class="flex items-center gap-3 cursor-pointer shrink-0" onclick="goBrandHome()">
+                <div
+                    class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-sky-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-sky-500/30">
+                    <i class="fa-solid fa-snowflake text-2xl"></i>
+                </div>
+                <div>
+                    <span class="text-2xl font-black tracking-tight text-slate-900 dark:text-white">Cooling <span
+                            class="text-sky-500">Art</span></span>
+                </div>
+            </div>
+
+            <!-- Dynamic Main Menu Navigation -->
+            <nav
+                class="hidden lg:flex items-center gap-2.5 xl:gap-5 text-[11px] xl:text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                <a href="javascript:void(0)" id="nav-home" onclick="navigateTo('home')"
+                    class="nav-link hover:text-sky-500" data-i18n="nav_home">Home</a>
+                <a href="javascript:void(0)" id="nav-dashboard" onclick="navigateTo('admin-dashboard')"
+                    class="nav-link hover:text-sky-500 hidden" data-i18n="nav_dashboard">
+                    <i class="fa-solid fa-clock-rotate-left me-1"></i><span
+                        data-i18n="nav_dashboard_text">Dashboard</span></a>
+                <a href="javascript:void(0)" id="nav-customer-log" onclick="navigateTo('customer-log')"
+                    class="nav-link hover:text-sky-500 hidden"><i class="fa-solid fa-address-book me-1"></i>Customer Log</a>
+                <a href="javascript:void(0)" id="nav-chats" onclick="navigateTo('chats')"
+                    class="nav-link hover:text-sky-500 hidden"><i class="fa-solid fa-comments me-1"></i>Chats</a>
+                <a href="javascript:void(0)" id="nav-products" onclick="navigateTo('products')"
+                    class="nav-link hover:text-sky-500" data-i18n="nav_products">Products</a>
+                <a href="javascript:void(0)" id="nav-tech-fix" onclick="navigateTo('tech-fix')"
+                    class="nav-link hover:text-sky-500" data-i18n="nav_tech_fix">Repairs</a>
+                <a href="javascript:void(0)" id="nav-about" onclick="navigateTo('about')"
+                    class="nav-link hover:text-sky-500" data-i18n="nav_about">Policies</a>
+                <a href="javascript:void(0)" id="nav-reviews" onclick="navigateTo('reviews')"
+                    class="nav-link hover:text-sky-500 inline-flex items-center gap-1.5">
+                    <i class="fa-solid fa-star text-amber-400"></i><span
+                        data-i18n="nav_reviews">Ratings</span>
+                </a>
+                <a href="javascript:void(0)" id="nav-who-are-we" onclick="navigateTo('who-are-we')"
+                    class="nav-link hover:text-sky-500" data-i18n="nav_who_are_we">Who Are We</a>
+                <a href="javascript:void(0)" id="nav-contact" onclick="navigateTo('contact')"
+                    class="nav-link hover:text-sky-500" data-i18n="nav_contact">Contact Us</a>
+            </nav>
+
+            <!-- Actions & Utility -->
+            <div class="flex items-center gap-2.5 shrink-0">
+                <!-- Dark / Light Theme Toggle -->
+                <button onclick="toggleTheme()"
+                    class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-sky-100 dark:hover:bg-slate-700 transition"
+                    title="Toggle Theme">
+                    <i class="fa-solid fa-moon dark:hidden text-sky-600"></i>
+                    <i class="fa-solid fa-sun hidden dark:block text-amber-400"></i>
+                </button>
+
+                <!-- Language Toggle (EN / AR) -->
+                <button onclick="toggleLanguage()" id="langToggleBtn"
+                    class="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center gap-1.5 hover:bg-sky-100 dark:hover:bg-slate-700 transition text-xs font-bold"
+                    title="Toggle Language / تغيير اللغة">
+                    <i class="fa-solid fa-language text-sky-600 dark:text-sky-400 text-sm"></i>
+                    <span id="langToggleLabel">عربي</span>
+                </button>
+
+                <!-- DYNAMIC AUTH NAV STATE BAR -->
+                <div id="authNavBox" class="flex items-center gap-2">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN APP VIEW PORT -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col">
+
+        <!-- ================= PAGE 1: HOME PAGE ================= -->
+        <section id="view-home" class="flex-1 flex flex-col justify-center">
+            <!-- Banner: edge-to-edge homepage gallery (main image = gallery images, auto-sweeps) -->
+            <div id="homeHeroBleed" class="home-bleed shadow-2xl bg-sky-50 dark:bg-slate-900"></div>
+
+            <!-- Compact welcome card -->
+            <div
+                class="relative z-10 -mt-3 sm:-mt-6 mx-2 sm:mx-6 lg:mx-12 bg-gradient-to-r from-sky-900 via-slate-900 to-sky-950 text-white rounded-3xl border border-sky-800/40 shadow-2xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                <div class="space-y-3 max-w-2xl">
+                    <span
+                        class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/20 border border-sky-400/40 text-sky-300 text-[11px] font-bold uppercase tracking-wider">
+                        <i class="fa-solid fa-snowflake text-sky-400"></i> <span data-i18n="hero_tagline">Egypt's #1
+                            Climate Control Specialists</span>
+                    </span>
+                    <h1 class="text-2xl sm:text-4xl font-extrabold tracking-tight leading-tight">
+                        <span data-i18n="hero_title_1">Mastering the Art of </span><span
+                            class="text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-cyan-300"
+                            data-i18n="hero_title_2">Pure Cooling.</span>
+                    </h1>
+                    <p class="text-slate-300 text-xs sm:text-sm leading-relaxed" data-i18n="hero_desc">
+                        Purchase high-efficiency AC units, request instant technical repairs, and protect your units
+                        with our monthly Insurance Protection Plan via InstaPay or Vodafone Cash.
+                    </p>
+                </div>
+                <div class="flex flex-wrap lg:flex-nowrap gap-3 shrink-0">
+                    <button onclick="navigateTo('products')"
+                        class="bg-sky-500 hover:bg-sky-600 text-white font-extrabold px-6 py-3.5 rounded-2xl shadow-lg shadow-sky-500/30 text-xs uppercase tracking-wider transition flex-1 lg:flex-initial text-center justify-center inline-flex items-center gap-2 whitespace-nowrap"
+                        data-i18n="btn_explore_ac">Explore AC Units</button>
+                    <button onclick="navigateTo('tech-fix')"
+                        class="bg-slate-800 hover:bg-slate-700 text-sky-300 font-extrabold px-6 py-3.5 rounded-2xl border border-sky-500/30 text-xs uppercase tracking-wider transition flex-1 lg:flex-initial text-center justify-center inline-flex items-center gap-2 whitespace-nowrap"
+                        data-i18n="btn_book_fix">Book Technical Fix</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE 2: PRODUCTS CATALOG ================= -->
+        <section id="view-products" class="hidden space-y-6">
+            <div
+                class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <div>
+                    <h1 class="text-2xl font-bold" data-i18n="products_title">Air Conditioning Products</h1>
+                    <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="products_subtitle">High performance
+                        residential and commercial
+                        cooling units</p>
+                </div>
+                <div class="flex items-center gap-3 w-full md:w-auto">
+                    <input type="text" id="productSearch" oninput="renderProducts()" placeholder="Search AC models..."
+                        data-i18n-placeholder="search_products_placeholder"
+                        class="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-xs w-full md:w-64 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                </div>
+            </div>
+
+            <div id="adminProductFormBox"></div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="productsGrid">
+                <!-- Injected via JS -->
+            </div>
+        </section>
+
+        <!-- ================= PAGE 3: TECHNICAL FIX SERVICES ================= -->
+        <section id="view-tech-fix" class="hidden space-y-6">
+            <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <h1 class="text-2xl font-bold" data-i18n="tech_fix_title">Technical Fix & Repair Support</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="tech_fix_subtitle">Professional
+                    maintenance, Freon refills, and
+                    emergency repairs by certified Cooling Art engineers</p>
+            </div>
+
+            <div id="adminServiceFormBox"></div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="techServicesGrid">
+                <!-- Injected via JS -->
+            </div>
+
+                        <!-- Service Areas (Head Admin & Admin): add new areas customers can choose -->
+            <div id="adminAreasSection"
+                class="hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                    <h3 class="font-bold text-sm flex items-center gap-2">
+                        <i class="fa-solid fa-map-location-dot text-sky-500"></i> Service Areas
+                    </h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Areas customers can choose when booking a repair,
+                        ordering a unit, or paying insurance. Add one below and it shows up instantly.</p>
+                </div>
+                <div class="p-5 space-y-4">
+                    <form onsubmit="handleAddAreaSubmit(event)" class="flex flex-col sm:flex-row gap-3 text-xs">
+                        <input type="text" id="newAreaName" required maxlength="60"
+                            placeholder="New area name, e.g., Shubra"
+                            class="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        <input type="text" id="newAreaNameAr" maxlength="60" dir="rtl"
+                            placeholder="الاسم بالعربية (اختياري)"
+                            class="sm:w-56 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        <button type="submit"
+                            class="shrink-0 inline-flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-600 text-white font-bold px-5 py-3 rounded-xl uppercase tracking-wider transition">
+                            <i class="fa-solid fa-plus"></i> Add Area
+                        </button>
+                    </form>
+                    <div id="adminAreasList" class="flex flex-wrap gap-2"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE 5: PRODUCT / REPAIR CHECKOUT MODAL ================= -->
+        <div id="orderCheckoutModal"
+            class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+            <div
+                class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 md:p-8 space-y-6 shadow-2xl">
+                <div
+                    class="flex justify-between items-start gap-4 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div>
+                        <h3 id="orderCheckoutTitle" class="font-bold text-lg" data-i18n="complete_order_title">Complete
+                            Order</h3>
+                        <p id="orderCheckoutSubtitle" class="text-xs text-slate-500 dark:text-slate-400 mt-1"
+                            data-i18n="checkout_subtitle">Choose
+                            a payment method and complete
+                            the request details below.</p>
+                    </div>
+                    <button onclick="closeOrderCheckoutModal()"
+                        class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                            class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+
+                <form id="orderCheckoutForm" onsubmit="submitOrderCheckout(event)" class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                        <div
+                            class="md:col-span-2 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
+                            <span class="block text-[10px] uppercase tracking-wider text-slate-400 font-bold"
+                                data-i18n="selected_item">Selected
+                                Item</span>
+                            <span id="orderCheckoutItem"
+                                class="block font-bold text-slate-900 dark:text-white mt-1"></span>
+                            <span id="orderCheckoutAmount"
+                                class="block text-sky-600 dark:text-sky-400 font-extrabold mt-1"></span>
+                        </div>
+
+                        <div id="orderGatewaySection" class="md:col-span-2">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
+                                data-i18n="select_gateway">Select Payment
+                                Gateway</label>
+                            <div class="grid grid-cols-2 gap-4">
+                                <label id="orderLabelInstapay"
+                                    class="border-2 border-sky-500 bg-sky-50/50 dark:bg-sky-950/40 p-4 rounded-xl flex items-center gap-3 cursor-pointer transition-all duration-200">
+                                    <input type="radio" name="orderGateway" value="InstaPay" checked
+                                        onchange="toggleOrderGatewayDetails('instapay')" class="accent-sky-500">
+                                    <div>
+                                        <span class="block text-sm font-bold">InstaPay</span>
+                                        <span class="block text-[10px] text-slate-400" data-i18n="instapay_desc">Instant
+                                            Bank Transfer</span>
+                                    </div>
+                                </label>
+                                <label id="orderLabelVodafone"
+                                    class="border border-slate-200 dark:border-slate-700 p-4 rounded-xl flex items-center gap-3 cursor-pointer transition-all duration-200 hover:border-sky-500">
+                                    <input type="radio" name="orderGateway" value="Vodafone Cash"
+                                        onchange="toggleOrderGatewayDetails('vodafone')" class="accent-sky-500">
+                                    <div>
+                                        <span class="block text-sm font-bold">Vodafone Cash</span>
+                                        <span class="block text-[10px] text-slate-400"
+                                            data-i18n="vodafone_desc">E-Wallet Transfer</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div id="orderInstapayDetails"
+                            class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs space-y-1 md:col-span-2">
+                            <p class="font-bold text-sky-600 dark:text-sky-400"><i
+                                    class="fa-solid fa-building-columns me-1"></i> <span
+                                    data-i18n="instapay_address_label">InstaPay Address:</span></p>
+                            <p class="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">
+                                coolingart@instapay</p>
+                            <p class="text-[10px] text-slate-400" data-i18n="instapay_address_sub">Transfer to the
+                                address above and paste the
+                                transaction reference code below.</p>
+                        </div>
+
+                        <div id="orderVodafoneDetails"
+                            class="hidden bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs space-y-1 md:col-span-2">
+                            <p class="font-bold text-red-500"><i class="fa-solid fa-mobile-screen me-1"></i> <span
+                                    data-i18n="vodafone_number_label">Vodafone Cash Number:</span></p>
+                            <p class="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">010 9876 5432</p>
+                            <p class="text-[10px] text-slate-400" data-i18n="vodafone_number_sub">Send to this wallet
+                                number and enter the transaction
+                                sender number below.</p>
+                        </div>
+
+                        <div id="orderLocationContainer" class="col-span-1">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
+                                data-i18n="service_location_label">Location</label>
+                            <select id="orderCheckoutLocation" required onchange="handleOrderLocationChange()"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                                <!-- Injected dynamically via getLocationOptionsHtml() -->
+                            </select>
+                        </div>
+
+                        <!-- OTHER AREA (Product orders only): customer writes their own place -->
+                        <div id="orderOtherAreaSection" class="md:col-span-2 hidden">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
+                                data-i18n="other_area_label">Write your area / address</label>
+                            <input type="text" id="orderCheckoutOtherArea" maxlength="120"
+                                placeholder="e.g., Shubra, street name, building no."
+                                data-i18n-placeholder="other_area_placeholder"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+
+                        <!-- REPAIR UNIT FIELD (Used exclusively for Repair Bookings) -->
+                        <div id="orderRepairUnitSection" class="col-span-1 hidden">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
+                                data-i18n="unit_to_check_label">Unit to be checked</label>
+                            <input type="text" id="orderCheckoutUnit" oninput="clearCheckoutErrors()"
+                                placeholder="e.g., Carrier Inverter 2.25 HP (Living Room)"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                            <p id="orderRepairUnitError" class="text-red-500 font-bold text-[11px] mt-1 hidden"><i
+                                    class="fa-solid fa-circle-exclamation me-1"></i><span
+                                    id="orderRepairUnitErrorText"></span></p>
+                        </div>
+
+                        <!-- SENDER PHONE / TX REF (Used exclusively for Product Orders) -->
+                        <div id="orderTxRefSection" class="col-span-1">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
+                                data-i18n="tx_ref_label">Transaction Reference /
+                                Sender Phone</label>
+                            <input type="text" id="orderCheckoutTxRef" oninput="clearCheckoutErrors()"
+                                placeholder="e.g., INSTA-99214 or 01012345678"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                            <p id="orderTxRefError" class="text-red-500 font-bold text-[11px] mt-1 hidden"><i
+                                    class="fa-solid fa-circle-exclamation me-1"></i><span
+                                    id="orderTxRefErrorText"></span></p>
+                        </div>
+
+                        <!-- SHARE LOCATION (GPS) -->
+                        <div id="orderShareLocationSection"
+                            class="md:col-span-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                            <div class="flex items-start gap-3 flex-1 min-w-0">
+                                <div
+                                    class="w-9 h-9 rounded-xl bg-sky-100 dark:bg-sky-950 text-sky-500 flex items-center justify-center shrink-0">
+                                    <i class="fa-solid fa-location-crosshairs"></i>
+                                </div>
+                                <div class="min-w-0">
+                                    <span class="block text-xs font-bold uppercase text-slate-500"
+                                        data-i18n="share_location_label">Share your location</span>
+                                    <p id="orderLocationStatus" class="text-[11px] mt-0.5 text-slate-400">Tap the button to
+                                        send us your exact GPS position.</p>
+                                </div>
+                            </div>
+                            <button type="button" id="orderShareLocationBtn" onclick="shareCustomerLocation()"
+                                class="shrink-0 inline-flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition">
+                                <i class="fa-solid fa-location-arrow"></i>
+                                <span id="orderShareLocationBtnText">Share my location</span>
+                            </button>
+                        </div>
+
+                        <!-- ADDRESS ALTERNATIVE: type your own address instead of sharing GPS -->
+                        <div id="orderAddressSection" class="md:col-span-2">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
+                                data-i18n="address_label">Or type your address</label>
+                            <input type="text" id="orderCheckoutAddress" maxlength="200"
+                                placeholder="e.g., 12 El Nozha St, Cairo"
+                                data-i18n-placeholder="address_placeholder"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                            <p class="text-[10px] text-slate-400 mt-1" data-i18n="address_hint">If you'd rather not
+                                share your GPS location, type your full address here instead — either one is enough.
+                            </p>
+                        </div>
+                    </div>
+
+                    <button type="submit" id="orderCheckoutSubmitBtn" data-i18n="btn_confirm_order"
+                        class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-sky-500/30 text-xs uppercase tracking-wider transition">
+                        Confirm Order
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- ================= PAGE 6: ADMIN DASHBOARD ================= -->
+        <section id="view-admin-dashboard" class="hidden space-y-8 w-full">
+            <div
+                class="bg-gradient-to-br from-sky-900 to-slate-900 text-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-sky-800">
+                <div>
+                    <span class="bg-sky-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">Master
+                        Controls</span>
+                    <h1 class="text-2xl font-bold mt-1">Cooling Art Admin Dashboard</h1>
+                    <p class="text-xs text-slate-400 mt-0.5">Manage customer orders and technical repair requests</p>
+                </div>
+                <!-- Quick Action: Staff Account Creation (Head Admin only) -->
+                <div class="flex items-center gap-3 shrink-0">
+                    <button id="btnOpenStaffAccount" onclick="openStaffAccountModal()"
+                        class="hidden flex flex-col items-center justify-center gap-1.5 px-5 h-16 rounded-2xl bg-slate-800 hover:bg-sky-600 border border-slate-700 text-white transition"
+                        title="Create Staff Account">
+                        <i class="fa-solid fa-user-plus text-base text-sky-400"></i>
+                        <span class="text-[10px] font-bold uppercase tracking-wide whitespace-nowrap"
+                            data-i18n="btn_create_staff">Create Staff</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Analytics Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="adminAnalyticsGrid">
+                <!-- Injected via JS -->
+            </div>
+
+            <!-- Standalone top counters: Total Tasks & Negative Ratings -->
+            <div class="hidden grid grid-cols-1 sm:grid-cols-2 gap-4" id="adminTopCountersGrid"></div>
+
+
+            <div id="adminTasksSection" class="space-y-4">
+                <div
+                    class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                    <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                        <h3 class="font-bold text-sm" data-i18n="task_board_title">Task Board</h3>
+                        <p class="text-[11px] text-slate-400" data-i18n="task_board_subtitle">Tasks distributed from
+                            the head admin to the admin
+                            team</p>
+                    </div>
+                    <div id="adminTaskCounters"
+                        class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 p-4 border-b border-slate-100 dark:border-slate-800">
+                    </div>
+                    <div id="adminTaskFilterPanel" class="hidden border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/20">
+                        <div class="flex items-center justify-between px-5 pt-4">
+                            <h4 id="adminTaskFilterTitle" class="text-xs font-extrabold uppercase tracking-wide text-slate-600 dark:text-slate-300"></h4>
+                            <button type="button" onclick="setTaskFilter(null)"
+                                class="text-[11px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-white"><i class="fa-solid fa-xmark"></i> Close</button>
+                        </div>
+                        <div class="overflow-x-auto overflow-y-auto max-h-[300px] custom-scrollbar p-2">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead id="adminTaskFilterHead" class="sticky top-0 z-10"></thead>
+                                <tbody id="adminTaskFilterBody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="adminTaskMainWrap" class="overflow-x-auto overflow-y-auto max-h-[320px] custom-scrollbar">
+                        <table class="w-full text-left border-collapse text-xs">
+                            <thead class="sticky top-0 z-10">
+                                <tr
+                                    class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                                    <th class="p-4" data-i18n="th_title">Title</th>
+                                    <th class="p-4" data-i18n="th_details">Details</th>
+                                    <th class="p-4" data-i18n="th_customer">Customer</th>
+                                    <th class="p-4" data-i18n="th_assigned_to">Assigned To</th>
+                                    <th class="p-4" data-i18n="th_priority">Priority</th>
+                                    <th class="p-4" data-i18n="th_due_date">Due Date</th>
+                                    <th class="p-4" data-i18n="th_status">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adminTasksTable" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Team / Staff Section (Head Admin Only) -->
+            <div id="adminTeamSection"
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                    <h3 class="font-bold text-sm flex items-center gap-2">
+                        <i class="fa-solid fa-users-gear text-sky-500"></i> Team Accounts
+                    </h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">All Customer Services and Technician accounts created by the head
+                        admin</p>
+                </div>
+                <div class="overflow-x-auto overflow-y-auto max-h-[220px] custom-scrollbar">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead class="sticky top-0 z-10">
+                            <tr
+                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                                <th class="p-4">Photo</th>
+                                <th class="p-4">User ID</th>
+                                <th class="p-4">Username</th>
+                                <th class="p-4">Full Name</th>
+                                <th class="p-4">Role</th>
+                                <th class="p-4">WhatsApp</th>
+                                <th class="p-4">Contact Phone</th>
+                                <th class="p-4 text-center">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminTeamTable" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </section>
+
+        </section>
+
+        <!-- ================= PAGE: CUSTOMER LOG (orders + registered customers) ================= -->
+        <section id="view-customer-log" class="hidden space-y-8 w-full">
+            <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <h1 class="text-2xl font-bold">Customer Log</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Registered customers and every order &amp; repair
+                    request in the system.</p>
+            </div>
+
+            <!-- Admin Orders Management Table (Head Admin Only) -->
+            <div id="adminOrdersSection"
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div
+                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div>
+                        <h3 class="font-bold text-sm" data-i18n="global_orders_title">Global System Orders & Repair
+                            Requests</h3>
+                        <p class="text-[11px] text-slate-400" data-i18n="global_orders_subtitle">Manage and filter
+                            customer purchases and repair bookings
+                        </p>
+                    </div>
+                    <!-- USER FILTER DROPDOWN MENU -->
+                    <div class="flex items-center gap-2">
+                        <label for="adminOrderUserFilter"
+                            class="text-xs font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap"
+                            data-i18n="filter_by_user">Filter by
+                            User:</label>
+                        <select id="adminOrderUserFilter" onchange="renderAdminDashboard()"
+                            class="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                            <option value="all" data-i18n="all_users">All Users</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="overflow-x-auto overflow-y-auto max-h-[320px] custom-scrollbar">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead class="sticky top-0 z-10">
+                            <tr
+                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                                <th class="p-4" data-i18n="th_date">Date</th>
+                                <th class="p-4" data-i18n="th_order_ref">Order Ref</th>
+                                <th class="p-4" data-i18n="th_customer">Customer</th>
+                                <th class="p-4" data-i18n="th_item_repair">Item / Repair</th>
+                                <th class="p-4" data-i18n="th_location">Location</th>
+                                <th class="p-4" data-i18n="th_gateway">Gateway</th>
+                                <th class="p-4" data-i18n="th_amount">Amount</th>
+                                <th class="p-4" data-i18n="th_state">State</th>
+                                <th class="p-4" data-i18n="th_customer_feedback">Customer Feedback</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminOrdersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <!-- Registered Customers Section (Head Admin & Customer Services) -->
+            <div id="adminUsersSection"
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div
+                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <h3 class="font-bold text-sm" data-i18n="registered_customers_title">Registered Customers</h3>
+                    <div class="relative w-full sm:w-72">
+                        <i
+                            class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <input type="text" id="adminUserSearch" oninput="renderAdminDashboard()"
+                            placeholder="Search by name, username, phone..."
+                            data-i18n-placeholder="search_users_placeholder"
+                            class="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    </div>
+                </div>
+                <div class="overflow-x-auto overflow-y-auto max-h-[168px] custom-scrollbar">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead class="sticky top-0 z-10">
+                            <tr
+                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                                <th class="p-4" data-i18n="th_user_id">User ID</th>
+                                <th class="p-4" data-i18n="th_username">Username</th>
+                                <th class="p-4" data-i18n="th_fullname">Full Name</th>
+                                <th class="p-4" data-i18n="th_whatsapp">WhatsApp</th>
+                                <th class="p-4" data-i18n="th_contact_phone">Contact Phone</th>
+                                <th class="p-4" data-i18n="th_total_orders">Total Orders</th>
+                                <th class="p-4 text-center" data-i18n="th_action">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminUsersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE: CHATS (chatbot conversations) ================= -->
+        <section id="view-chats" class="hidden space-y-8 w-full">
+            <!-- ================= CUSTOMER CHATS (Head Admin & Customer Services) ================= -->
+            <div id="adminChatsSection"
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                        <h3 class="font-bold text-sm flex items-center gap-2">
+                            <i class="fa-solid fa-comments text-sky-500"></i> Customer Chats
+                        </h3>
+                        <p class="text-[11px] text-slate-400 mt-0.5">Conversations from the Contact Us bot, assigned
+                            round-robin across the Customer Services team — first chat → CS1, next → CS2, next → CS3,
+                            then back to CS1. Once assigned, the chat stays with that agent.</p>
+                    </div>
+                    <span id="adminChatsCount"
+                        class="shrink-0 text-base font-extrabold px-4 py-2 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400">0</span>
+                </div>
+                <div id="adminChatsList" class="p-5 space-y-4 max-h-[420px] overflow-y-auto custom-scrollbar">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE: TECHNICIAN HOME (ACTIVE TASKS) ================= -->
+        <section id="view-tech-home" class="hidden space-y-6">
+
+            <!-- Greeting Header -->
+            <div
+                class="bg-gradient-to-r from-sky-600 via-sky-500 to-cyan-400 text-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-5 border border-sky-400/30">
+                <div class="flex items-center gap-4">
+                    <div
+                        class="w-14 h-14 rounded-2xl bg-white/15 border border-white/25 flex items-center justify-center text-2xl shrink-0">
+                        <i class="fa-solid fa-screwdriver-wrench"></i>
+                    </div>
+                    <div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-sky-100"
+                            data-i18n="tech_workspace">Technician
+                            Workspace</span>
+                        <h1 class="text-xl sm:text-2xl font-bold mt-0.5" id="techHomeGreeting">Welcome back</h1>
+                        <p class="text-xs text-sky-100/90 mt-0.5" data-i18n="whats_on_plate">What's on your plate right
+                            now</p>
+                    </div>
+                </div>
+                <div id="techHomeDate"
+                    class="text-xs font-bold bg-white/15 border border-white/25 px-3.5 py-2 rounded-xl whitespace-nowrap">
+                </div>
+            </div>
+
+            <!-- Stat Strip -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="techHomeStatsGrid"></div>
+
+            <!-- Active Task Cards (Open + In Progress only) -->
+            <div class="grid grid-cols-1 gap-4" id="techHomeTaskGrid"></div>
+        </section>
+
+        <!-- ================= PAGE: TECHNICIAN DASHBOARD (COMPLETED TASK LOG) ================= -->
+        <section id="view-tech-dashboard" class="hidden space-y-6">
+
+            <!-- Greeting Header -->
+            <div
+                class="bg-gradient-to-r from-slate-800 via-slate-700 to-slate-600 text-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-5 border border-slate-600/30">
+                <div class="flex items-center gap-4">
+                    <div
+                        class="w-14 h-14 rounded-2xl bg-white/15 border border-white/25 flex items-center justify-center text-2xl shrink-0">
+                        <i class="fa-solid fa-clock-rotate-left"></i>
+                    </div>
+                    <div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-200"
+                            data-i18n="tech_workspace">Technician
+                            Workspace</span>
+                        <h1 class="text-xl sm:text-2xl font-bold mt-0.5" id="techDashGreeting">Task Log</h1>
+                        <p class="text-xs text-slate-200/90 mt-0.5" data-i18n="task_log_subtitle">A record of the tasks
+                            you've completed</p>
+                    </div>
+                </div>
+                <div id="techDashDate"
+                    class="text-xs font-bold bg-white/15 border border-white/25 px-3.5 py-2 rounded-xl whitespace-nowrap">
+                </div>
+            </div>
+
+            <!-- Stat Strip -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="techStatsGrid"></div>
+
+            <!-- Completed Task Log Entries -->
+            <div class="overflow-y-auto max-h-[340px] custom-scrollbar pr-1">
+                <div class="grid grid-cols-1 gap-4" id="techTaskGrid"></div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE: CUSTOMER DASHBOARD ================= -->
+        <section id="view-customer-dashboard" class="hidden space-y-8 max-w-3xl mx-auto w-full">
+            <div
+                class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-md space-y-6">
+                <div class="flex items-center gap-4">
+                    <div
+                        class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-sky-500 to-cyan-400 flex items-center justify-center text-white text-2xl shadow-lg shadow-sky-500/30">
+                        <i class="fa-solid fa-circle-user"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold" id="custDashName">—</h1>
+                        <p class="text-xs text-slate-500 dark:text-slate-400" id="custDashUsername">—</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+                        <span class="text-slate-400 font-bold uppercase block text-[10px]">User ID</span>
+                        <span class="font-mono font-bold" id="custDashId">—</span>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+                        <span class="text-slate-400 font-bold uppercase block text-[10px]">Date Joined</span>
+                        <span class="font-bold" id="custDashJoined">—</span>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+                        <span class="text-slate-400 font-bold uppercase block text-[10px]">WhatsApp Number</span>
+                        <span class="font-bold" id="custDashWhatsApp">—</span>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+                        <span class="text-slate-400 font-bold uppercase block text-[10px]">Contact Phone</span>
+                        <span class="font-bold" id="custDashPhone">—</span>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+                        <span class="text-slate-400 font-bold uppercase block text-[10px]">Account Type</span>
+                        <span class="font-bold" id="custDashRole">—</span>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+                        <span class="text-slate-400 font-bold uppercase block text-[10px]">Total Orders</span>
+                        <span class="font-bold" id="custDashOrderCount">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <div
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                    <h3 class="font-bold text-sm">My Orders & Bookings</h3>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr
+                                class="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                                <th class="p-4">Date</th>
+                                <th class="p-4">Order Ref</th>
+                                <th class="p-4">Item / Repair</th>
+                                <th class="p-4">Amount</th>
+                                <th class="p-4">Status</th>
+                                <th class="p-4">Feedback</th>
+                            </tr>
+                        </thead>
+                        <tbody id="custDashOrdersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE 7: ABOUT US & POLICIES ================= -->
+        <section id="view-about" class="hidden space-y-8">
+            <div
+                class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+                <h1 class="text-2xl font-bold" data-i18n="about_title">About Cooling Art & Official Policies</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="about_desc">
+                    Founded in Cairo, Egypt, Cooling Art is dedicated to delivering engineering excellence in HVAC
+                    climate solutions. From high-efficiency inverter air conditioners to 24-hour emergency technical
+                    repairs and affordable monthly unit insurance protection.
+                </p>
+            </div>
+
+
+            <!-- Policies card is rendered by renderPolicies() so head admin / admin can edit it -->
+            <div id="policyCard"></div>
+        </section>
+
+        <!-- ================= PAGE: RATINGS & VIDEOS ================= -->
+        <section id="view-reviews" class="hidden space-y-8">
+            <div
+                class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
+                <h1 class="text-2xl font-bold" data-i18n="reviews_title">Ratings & Videos</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="reviews_desc">What our customers say
+                    about us, and a look at how we work.</p>
+            </div>
+
+            <!-- CUSTOMER RATINGS (filled by JS from the ratings customers leave) -->
+            <div id="aboutRatings"></div>
+
+            <!-- VIDEOS (admin can add / remove — filled by JS) -->
+            <div id="aboutVideos"></div>
+        </section>
+
+        <!-- ================= PAGE 8: WHO ARE WE (ACCOUNTS LIST) ================= -->
+        <section id="view-who-are-we" class="hidden space-y-8">
+            <div
+                class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 text-center">
+                <h1 class="text-2xl font-bold" data-i18n="who_we_are_title">Who We Are</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" data-i18n="who_we_are_subtitle">Every
+                    registered account in our
+                    organization — by name and job</p>
+            </div>
+
+            <!-- Head Admin -->
+            <div id="whoWeAreHead"></div>
+
+            <!-- Technicians & Customer Services — two separate lists side by side -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div
+                    class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                    <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                        <i class="fa-solid fa-screwdriver-wrench text-sky-500"></i>
+                        <h3 class="font-bold text-sm" data-i18n="technicians_header">Technicians</h3>
+                    </div>
+                    <div id="whoWeAreTechList">
+                        <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <div
+                    class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                    <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                        <i class="fa-solid fa-users text-sky-500"></i>
+                        <h3 class="font-bold text-sm" data-i18n="hr_header">Customer Services Team</h3>
+                    </div>
+                    <div id="whoWeAreHrList">
+                        <!-- Injected via JS -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= PAGE 9: CONTACT US ================= -->
+        <section id="view-contact" class="hidden max-w-2xl mx-auto space-y-6">
+            <div
+                class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-md space-y-6">
+                <div>
+                    <h1 class="text-2xl font-bold" data-i18n="contact_title">Contact Cooling Art</h1>
+                    <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="contact_subtitle">Get in touch with
+                        our emergency team or order
+                        hotline</p>
+                </div>
+
+                <div id="contactCards" class="grid grid-cols-1 sm:grid-cols-3 gap-4"></div>
+
+                <!-- Edit contact details (head admin & admin only) -->
+                <form id="contactEditBox" onsubmit="handleContactEditSubmit(event)"
+                    class="hidden space-y-3 pt-5 border-t border-slate-100 dark:border-slate-800 text-xs">
+                    <h3 class="font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-pen-to-square text-sky-500"></i> <span id="contactEditTitle">Edit contact details</span></h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label id="contactEditEmailLabel" for="contactEditEmail" class="text-[11px] font-bold text-slate-500 uppercase block mb-1.5">Email</label>
+                            <input type="email" id="contactEditEmail" required maxlength="80"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+                        <div>
+                            <label id="contactEditPhoneLabel" for="contactEditPhone" class="text-[11px] font-bold text-slate-500 uppercase block mb-1.5">Hotline</label>
+                            <input type="tel" id="contactEditPhone" required maxlength="30" dir="ltr"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+                        <div>
+                            <label id="contactEditWhatsappLabel" for="contactEditWhatsapp" class="text-[11px] font-bold text-slate-500 uppercase block mb-1.5">WhatsApp</label>
+                            <input type="tel" id="contactEditWhatsapp" required maxlength="30" dir="ltr"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+                    </div>
+                    <button type="submit" id="contactEditSave"
+                        class="inline-flex items-center gap-2 bg-sky-500 hover:bg-sky-600 text-white font-bold px-5 py-3 rounded-xl uppercase tracking-wider transition">
+                        <i class="fa-solid fa-floppy-disk"></i> <span>Save</span>
+                    </button>
+                </form>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- AUTHENTICATION MODAL -->
+    <div id="authModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-md w-full p-6 space-y-6 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <h3 id="authModalTitle" class="font-bold text-lg" data-i18n="account_access">Account Access</h3>
+                <button onclick="closeAuthModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <!-- Auth Tabs -->
+            <div class="grid grid-cols-2 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl text-center text-xs font-bold">
+                <button onclick="toggleAuthMode('login')" id="tabLogin" data-i18n="tab_login"
+                    class="py-2 rounded-lg bg-white dark:bg-slate-700 shadow text-sky-500">Login</button>
+                <button onclick="toggleAuthMode('signup')" id="tabSignup" data-i18n="tab_signup"
+                    class="py-2 rounded-lg text-slate-500">Sign-Up</button>
+            </div>
+
+            <form id="authForm" action="javascript:void(0)" onsubmit="handleAuthSubmit(event)"
+                class="space-y-4 text-xs">
+                <!-- Additional fields for Sign-Up -->
+                <div id="signupExtraFields" class="hidden space-y-4">
+                    <div>
+                        <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                            data-i18n="label_fullname">Full Name</label>
+                        <input type="text" id="authFullName" name="name" autocomplete="name"
+                            placeholder="e.g. Mahmoud Ali"
+                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                            data-i18n="label_whatsapp">WhatsApp Number</label>
+                        <input type="tel" id="authWhatsApp" name="whatsapp" autocomplete="tel"
+                            placeholder="e.g. 01012345678" maxlength="11" inputmode="numeric"
+                            oninput="clearAuthErrors()"
+                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        <p id="authWhatsAppError" class="text-red-500 font-bold text-[11px] mt-1 hidden"><i
+                                class="fa-solid fa-circle-exclamation me-1"></i><span
+                                id="authWhatsAppErrorText">WhatsApp number already taken</span></p>
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                            data-i18n="label_contact_number">Contact Number</label>
+                        <input type="tel" id="authContactPhone" name="contactPhone" autocomplete="tel"
+                            placeholder="e.g. 01098765432" maxlength="11" inputmode="numeric"
+                            oninput="clearAuthErrors()"
+                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        <p id="authContactError" class="text-red-500 font-bold text-[11px] mt-1 hidden"><i
+                                class="fa-solid fa-circle-exclamation me-1"></i><span id="authContactErrorText">Contact
+                                number already taken</span></p>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                        data-i18n="label_username">Username</label>
+                    <input type="text" id="authUsername" name="username" autocomplete="username" required
+                        placeholder="Enter username..." oninput="clearAuthErrors()"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    <p id="authUsernameError" class="text-red-500 font-bold text-[11px] mt-1 hidden"><i
+                            class="fa-solid fa-circle-exclamation me-1"></i>Username already taken</p>
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                        data-i18n="label_password">Password</label>
+                    <input type="password" id="authPassword" name="password" autocomplete="current-password" required
+                        placeholder="Enter password..." oninput="clearAuthErrors()"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    <p id="authPasswordError" class="text-red-500 font-bold text-[11px] mt-1 hidden"><i
+                            class="fa-solid fa-circle-exclamation me-1"></i><span id="authPasswordErrorText"></span></p>
+                </div>
+
+                <div class="text-end -mt-1">
+                    <button type="button" onclick="openForgotPasswordModal()"
+                        class="text-[11px] font-bold text-sky-500 hover:underline" data-i18n="forgot_password">Forgot Password?</button>
+                </div>
+
+                <button type="submit" id="authSubmitBtn" data-i18n="btn_login"
+                    class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3.5 rounded-xl text-xs uppercase tracking-wider transition">
+                    Login to Cooling Art
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- LOGOUT CONFIRMATION MODAL -->
+    <div id="logoutModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-sm w-full p-6 space-y-5 shadow-2xl text-center">
+            <div
+                class="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950/50 text-red-500 flex items-center justify-center text-xl mx-auto">
+                <i class="fa-solid fa-right-from-bracket"></i>
+            </div>
+            <div>
+                <h3 class="font-bold text-lg text-slate-900 dark:text-white" data-i18n="btn_logout">Confirm Logout</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" data-i18n="logout_confirm_msg">Are you sure
+                    you want to log out of your
+                    Cooling Art account?</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3 pt-2">
+                <button onclick="closeLogoutModal()" data-i18n="btn_cancel"
+                    class="py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                    Cancel
+                </button>
+                <button onclick="confirmLogout()" data-i18n="btn_logout"
+                    class="py-2.5 rounded-xl bg-red-500 hover:bg-red-600 font-bold text-xs text-white shadow-lg shadow-red-500/20 transition">
+                    Logout
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE USER CONFIRMATION MODAL -->
+    <div id="deleteUserModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-sm w-full p-6 space-y-5 shadow-2xl text-center">
+            <div
+                class="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950/50 text-red-500 flex items-center justify-center text-xl mx-auto">
+                <i class="fa-solid fa-trash-can"></i>
+            </div>
+            <div>
+                <h3 class="font-bold text-lg text-slate-900 dark:text-white">Confirm User Deletion</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" id="deleteUserModalMsg">Are you sure you want
+                    to delete this user?</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3 pt-2">
+                <button onclick="closeDeleteUserModal()" data-i18n="btn_cancel"
+                    class="py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                    Cancel
+                </button>
+                <button onclick="confirmDeleteUser()" data-i18n="btn_delete"
+                    class="py-2.5 rounded-xl bg-red-500 hover:bg-red-600 font-bold text-xs text-white shadow-lg shadow-red-500/20 transition">
+                    Delete
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- REVENUE RESET CONFIRMATION MODAL -->
+    <div id="revenueResetModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-sm w-full p-6 space-y-5 shadow-2xl text-center">
+            <div
+                class="w-12 h-12 rounded-2xl bg-amber-100 dark:bg-amber-950/50 text-amber-500 flex items-center justify-center text-xl mx-auto">
+                <i class="fa-solid fa-rotate-right"></i>
+            </div>
+            <div>
+                <h3 class="font-bold text-lg text-slate-900 dark:text-white">Reset Total Revenue</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">This will restart the revenue counter from
+                    zero. No orders will be deleted.</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3 pt-2">
+                <button onclick="closeRevenueResetModal()" data-i18n="btn_cancel"
+                    class="py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                    Cancel
+                </button>
+                <button onclick="executeRevenueReset()" data-i18n="btn_reset"
+                    class="py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 font-bold text-xs text-white shadow-lg shadow-amber-500/20 transition">
+                    Reset
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CUSTOMER SERVICE FEEDBACK MODAL -->
+    <div id="feedbackModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-md w-full p-6 space-y-5 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                    <h3 class="font-bold text-lg" data-i18n="leave_feedback">How did it go?</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Let us know if the job was completed to your
+                        satisfaction.</p>
+                </div>
+                <button onclick="closeFeedbackModal()"
+                    class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label id="feedbackRatingLabel" class="text-[11px] font-bold text-slate-500 uppercase block mb-1.5">Rating
+                        (0 – 5 stars)</label>
+                    <div id="feedbackStars" class="flex items-center gap-1"></div>
+                    <p id="feedbackRatingError" class="hidden text-[11px] text-red-500 font-bold mt-1.5">Please choose a
+                        rating from 0 to 5.</p>
+                </div>
+                <div>
+                    <label class="text-[11px] font-bold text-slate-500 uppercase block mb-1.5"
+                        data-i18n="th_status">Status</label>
+                    <select id="feedbackStatusInput"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        <option value="Done - Satisfied">Done — Satisfied with the service</option>
+                        <option value="Done - Issue Remains">Done — But an issue remains</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-[11px] font-bold text-slate-500 uppercase block mb-1.5"
+                        data-i18n="th_details">Message
+                        (optional)</label>
+                    <textarea id="feedbackMessageInput" rows="3" placeholder="Anything you'd like to add..."
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"></textarea>
+                </div>
+                <button onclick="submitCustomerFeedback()"
+                    class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 rounded-xl transition">Submit
+                    Feedback</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- STAFF ACCOUNT CREATION MODAL -->
+    <div id="staffAccountModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                    <h3 class="font-bold text-lg" data-i18n="btn_create_staff">Create Staff Account</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Create Customer Services and Technician accounts (head admin only)
+                    </p>
+                </div>
+                <button onclick="closeStaffAccountModal()"
+                    class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div id="adminStaffFormBox"></div>
+        </div>
+    </div>
+
+    <!-- REPAIR PHOTO VIEWER MODAL (click the Photos icon on a task to open) -->
+    <div id="photoViewerModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                    <h3 class="font-bold text-lg"><i class="fa-solid fa-camera text-sky-500 me-2"></i>Repair Photos</h3>
+                    <p id="photoViewerTitle" class="text-[11px] text-slate-400 mt-0.5"></p>
+                </div>
+                <button onclick="closePhotoViewerModal()"
+                    class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div id="photoViewerBody"></div>
+        </div>
+    </div>
+
+    <!-- FORGOT PASSWORD MODAL (sign in with registered phone number) -->
+    <div id="forgotPasswordModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-sm w-full p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <h3 class="font-bold text-lg flex items-center gap-2"><i class="fa-solid fa-key text-sky-500"></i> <span
+                        data-i18n="fp_title">Reset Password</span></h3>
+                <button onclick="closeForgotPasswordModal()"
+                    class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="fp_desc">Sign in with your registered
+                phone number to reset your password.</p>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                        data-i18n="label_username">Username</label>
+                    <input type="text" id="fpUsername" autocomplete="username"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1" data-i18n="fp_phone">Registered
+                        Phone Number</label>
+                    <input type="tel" id="fpPhone" maxlength="14" inputmode="numeric" placeholder="01xxxxxxxxx"
+                        dir="ltr"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                </div>
+                <p id="fpError" class="hidden text-red-500 font-bold text-[11px]"><i
+                        class="fa-solid fa-circle-exclamation me-1"></i><span id="fpErrorText"></span></p>
+                <div id="fpPasswordBox" class="hidden">
+                    <label class="block font-bold text-slate-600 dark:text-slate-300 mb-1"
+                        data-i18n="fp_new_password">New Password</label>
+                    <input type="password" id="fpNewPassword" autocomplete="new-password"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                </div>
+                <button id="fpActionBtn" onclick="handleForgotPassword()" data-i18n="fp_send"
+                    class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3.5 rounded-xl text-xs uppercase tracking-wider transition">
+                    Verify &amp; Continue
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toastContainer" class="fixed bottom-5 right-5 z-50 space-y-2 pointer-events-none"></div>
+
+    <!-- FOOTER -->
+    <footer class="bg-slate-900 text-slate-400 text-xs border-t border-slate-800 py-10 mt-12">
+        <div
+            class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div class="flex items-center space-x-3">
+                <div class="w-8 h-8 rounded-lg bg-sky-500 text-white flex items-center justify-center font-bold">
+                    <i class="fa-solid fa-snowflake"></i>
+                </div>
+                <span class="text-white font-bold text-base" data-i18n="company_name">Cooling Art Air Conditioning
+                    Co.</span>
+            </div>
+            <p data-i18n="footer_rights">&copy; 2026 Cooling Art Platform. All rights reserved. Specialized HVAC &
+                Insurance Services.</p>
+        </div>
+    </footer>
+
+    <!-- HIDDEN DISPATCH IFRAME (Permits silent FormSubmit delivery across all environments including file://) -->
+    <iframe id="coolingart_email_frame" name="coolingart_email_frame" class="hidden"
+        style="display:none; width:0; height:0; border:0;"></iframe>
+
+    <!-- APP ENGINE SCRIPT -->
+    <script src="js/script.js" defer></script>
+</body>
+
+</html>
