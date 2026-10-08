@@ -59,3 +59,92 @@ html {
 #chatBotMessages::-webkit-scrollbar { width: 5px; }
 #chatBotMessages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 .dark #chatBotMessages::-webkit-scrollbar-thumb { background: #475569; }
+
+
+/* ================= HOME: big banner + slim bottom bar ================= */
+:root { --hdr-h: 3.5rem; --bar-h: 6.25rem; }
+@media (min-width: 768px)  { :root { --bar-h: 3.5rem; } }
+@media (min-width: 1024px) { :root { --hdr-h: 5rem; } }
+
+/* banner fills the screen between the header and the slim bar */
+.home-hero-img {
+    height: calc(100svh - var(--hdr-h) - var(--bar-h));
+    min-height: 16rem;
+    object-position: center;
+}
+/* phones: show the whole banner instead of cropping its text */
+@media (max-width: 767px) {
+    .home-hero-img { height: auto; min-height: 11rem; max-height: 60svh; }
+}
+
+/* home page has no outer padding so the image + bar reach the edges */
+#appMain:has(#view-home:not(.hidden)) { padding-top: 0; padding-bottom: 0; }
+
+/* ================= MOBILE (below lg): left slide-in menu ================= */
+@media (max-width: 1023px) {
+    /* backdrop-filter would trap the fixed drawer inside the header */
+    #siteHeader { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+    #siteHeader.menu-open { z-index: 70; }
+
+    #mainNav {
+        position: fixed; top: 0; bottom: 0; left: 0; z-index: 50;
+        width: 18rem; max-width: 85vw;
+        flex-direction: column; align-items: stretch; gap: 0;
+        padding: 0.75rem; overflow-y: auto;
+        background: #fff; box-shadow: 8px 0 30px rgba(0,0,0,.25);
+        transform: translateX(-105%); visibility: hidden;
+        transition: transform .28s ease, visibility 0s linear .28s;
+        text-transform: none; letter-spacing: 0;
+    }
+    .dark #mainNav { background: #0f172a; }
+    .mobile-menu-open #mainNav { transform: translateX(0); visibility: visible; transition: transform .28s ease; }
+
+    .mobile-drawer-head { display: flex; align-items: center; justify-content: space-between; padding: .25rem .25rem .75rem; margin-bottom: .5rem; border-bottom: 1px solid rgba(148,163,184,.3); }
+
+    #mainNav .nav-link {
+        display: flex; width: 100%; padding: .8rem 1rem; margin-bottom: .15rem;
+        font-size: .95rem; border-bottom: 0; border-radius: .75rem; white-space: normal;
+        text-transform: none; letter-spacing: 0;
+    }
+    #mainNav .nav-link.hidden { display: none; }
+    #mainNav .nav-link:hover { background: rgba(14,165,233,.1); }
+    #mainNav .nav-link-active { background: rgba(14,165,233,.12); border-bottom-color: transparent !important; }
+
+    #mobileMenuOverlay {
+        position: fixed; inset: 0; z-index: 40; background: rgba(2,6,23,.55);
+        opacity: 0; pointer-events: none; transition: opacity .25s ease;
+    }
+    .mobile-menu-open #mobileMenuOverlay { opacity: 1; pointer-events: auto; }
+    .mobile-menu-open { overflow: hidden; }
+}
+
+/* ================= small phones: general safety ================= */
+@media (max-width: 640px) {
+    main table { display: block; max-width: 100%; overflow-x: auto; }
+    img, video { max-width: 100%; }
+    #toastContainer { right: .75rem; left: .75rem; bottom: 4.5rem; }
+}
+
+
+/* ================= Contact Us bubble: bottom-right, floats above the slim bar ================= */
+#contactBotBtn { bottom: 1.25rem; }
+#contactBotPanel { bottom: 6.75rem; }
+body:has(#view-home:not(.hidden)) #contactBotBtn { bottom: calc(var(--bar-h) + 0.9rem); }
+body:has(#view-home:not(.hidden)) #contactBotPanel { bottom: calc(var(--bar-h) + 6.4rem); }
+
+#contactBotBtn { animation: contactFloat 3s ease-in-out infinite; }
+#contactBotBtn:hover { animation-play-state: paused; }
+#contactBotBtn > span:first-child { animation: contactPulse 2.4s ease-out infinite; }
+
+@keyframes contactFloat {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-10px); }
+}
+@keyframes contactPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(14,165,233,.55); }
+    70%  { box-shadow: 0 0 0 16px rgba(14,165,233,0); }
+    100% { box-shadow: 0 0 0 0 rgba(14,165,233,0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    #contactBotBtn, #contactBotBtn > span:first-child { animation: none; }
+}
