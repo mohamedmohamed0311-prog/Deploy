@@ -30,6 +30,298 @@ if (typeof supabase !== 'undefined' && supabase.createClient) {
     supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
+// ================= CLOUD SYNC (Supabase table "app_state") =================
+// Everything the admins add (products, services, areas, videos, policies, contact info,
+// tasks, orders, users...) is saved in Supabase so every visitor/device sees the same data.
+// localStorage stays only as a fast local cache. Run cooling_art_supabase_setup.sql once.
+const CLOUD_TABLE = 'app_state';
+const CLOUD_BUCKET = 'site-media';
+const CLOUD_SYNC_KEYS = [
+    'ca_users', 'ca_products', 'ca_services', 'ca_orders', 'ca_tasks', 'ca_areas',
+    'ca_about_videos', 'ca_revenue_reset_baseline', 'ca_contact', 'ca_policies',
+    'ca_cs_chats', 'ca_cs_counter'
+];
+const CLOUD_POLL_MS = 5000;
+const CLOUD_MEDIA_LIMIT = 150 * 1024; // data: URLs bigger than this go to Supabase Storage
+
+const cloud = {
+    ready: false,
+    applying: false,
+    versions: {},           // key -> last version seen from the cloud
+    timers: {},             // key -> debounce timer
+    deleted: {},            // key -> Set of ids deleted locally, waiting to be pushed
+    pushing: {},            // key -> true while a push is running
+    dirty: {},              // key -> true if changed before the first pull finished
+    renderPending: false
+};
+
+try { cloud.versions = JSON.parse(localStorage.getItem('ca_cloud_versions')) || {}; } catch (e) { cloud.versions = {}; }
+function cloudSaveVersions() {
+    try { window.__rawSetItem('ca_cloud_versions', JSON.stringify(cloud.versions)); } catch (e) { /* ignore */ }
+}
+
+// Watch every write to a shared key and push it to Supabase.
+(function hookLocalStorage() {
+    const origSet = Storage.prototype.setItem;
+    window.__rawSetItem = (k, v) => origSet.call(localStorage, k, v);
+    Storage.prototype.setItem = function (key, value) {
+        if (this !== localStorage || !CLOUD_SYNC_KEYS.includes(key)) return origSet.apply(this, arguments);
+        const prev = localStorage.getItem(key);
+        origSet.apply(this, arguments);
+        if (cloud.applying) return;
+        if (prev === String(value) && cloud.versions[key]) return; // nothing changed
+        cloudTrackDeletes(key, prev, value);
+        cloudQueuePush(key);
+    };
+})();
+
+function cloudParse(raw) { try { return JSON.parse(raw); } catch (e) { return null; } }
+function cloudIsIdArray(v) { return Array.isArray(v) && v.every(i => i && typeof i === 'object' && i.id); }
+
+function cloudTrackDeletes(key, prevRaw, newRaw) {
+    const prev = cloudParse(prevRaw), next = cloudParse(newRaw);
+    if (!cloudIsIdArray(prev) || !cloudIsIdArray(next)) return;
+    const nextIds = new Set(next.map(i => i.id));
+    prev.forEach(i => {
+        if (!nextIds.has(i.id)) (cloud.deleted[key] = cloud.deleted[key] || new Set()).add(i.id);
+    });
+}
+
+function cloudQueuePush(key) {
+    if (!supabaseClient) return;
+    if (!cloud.ready) { cloud.dirty[key] = true; return; }
+    clearTimeout(cloud.timers[key]);
+    cloud.timers[key] = setTimeout(() => { delete cloud.timers[key]; cloudPush(key); }, 600);
+}
+
+// Items from both lists, matched by id (this device's version wins), minus anything deleted here.
+function cloudMergeById(remote, local, deletedSet) {
+    const localIds = new Set(local.map(i => i.id));
+    const extra = remote.filter(i => !localIds.has(i.id) && !(deletedSet && deletedSet.has(i.id)));
+    return local.concat(extra);
+}
+
+// Passwords never leave the device (login is handled by Supabase Auth).
+function cloudStripSecrets(key, value) {
+    if (key === 'ca_users' && Array.isArray(value)) {
+        return value.map(u => { const { password, ...rest } = u; return rest; });
+    }
+    return value;
+}
+
+// Moves big base64 images/videos into Supabase Storage and swaps them for a public URL.
+async function cloudExternalizeMedia(value) {
+    let changed = false;
+    async function walk(node) {
+        if (typeof node === 'string') {
+            if (node.startsWith('data:') && node.length > CLOUD_MEDIA_LIMIT) {
+                try {
+                    const blob = await (await fetch(node)).blob();
+                    const ext = (blob.type.split('/')[1] || 'bin').split(';')[0].replace('quicktime', 'mov');
+                    const path = `uploads/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+                    const { error } = await supabaseClient.storage.from(CLOUD_BUCKET).upload(path, blob, { contentType: blob.type, upsert: true });
+                    if (error) { console.warn('[Cloud] media upload failed:', error.message); return node; }
+                    const { data } = supabaseClient.storage.from(CLOUD_BUCKET).getPublicUrl(path);
+                    changed = true;
+                    return data.publicUrl;
+                } catch (e) { console.warn('[Cloud] media upload error:', e); return node; }
+            }
+            return node;
+        }
+        if (Array.isArray(node)) {
+            for (let i = 0; i < node.length; i++) node[i] = await walk(node[i]);
+            return node;
+        }
+        if (node && typeof node === 'object') {
+            for (const k of Object.keys(node)) node[k] = await walk(node[k]);
+            return node;
+        }
+        return node;
+    }
+    const out = await walk(value);
+    return { value: out, changed };
+}
+
+async function cloudPush(key) {
+    if (!supabaseClient || !cloud.ready) return;
+    if (cloud.pushing[key]) { cloudQueuePush(key); return; }
+    cloud.pushing[key] = true;
+    try {
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const { data: row, error: readErr } = await supabaseClient
+                .from(CLOUD_TABLE).select('value,version').eq('key', key).maybeSingle();
+            if (readErr) { cloudWarn(readErr); return; }
+
+            let local = cloudParse(localStorage.getItem(key));
+            if (local === null) return;
+
+            const media = await cloudExternalizeMedia(local);
+            local = media.value;
+
+            let toWrite = local;
+            if (row && cloudIsIdArray(local) && cloudIsIdArray(row.value)) {
+                toWrite = cloudMergeById(row.value, local, cloud.deleted[key]);
+            }
+            const payload = cloudStripSecrets(key, toWrite);
+
+            let newVersion = null;
+            if (!row) {
+                const { error } = await supabaseClient.from(CLOUD_TABLE).insert({ key, value: payload, version: 1 });
+                if (!error) newVersion = 1;
+                else if (error.code !== '23505') { cloudWarn(error); return; }
+            } else {
+                const { data: upd, error } = await supabaseClient.from(CLOUD_TABLE)
+                    .update({ value: payload, version: row.version + 1, updated_at: new Date().toISOString() })
+                    .eq('key', key).eq('version', row.version).select('version');
+                if (error) { cloudWarn(error); return; }
+                if (upd && upd.length) newVersion = upd[0].version;
+            }
+            if (newVersion === null) continue; // someone else wrote first — retry with fresh data
+
+            cloud.versions[key] = newVersion;
+            cloudSaveVersions();
+            delete cloud.deleted[key];
+            // Keep this device identical to what is now in the cloud (merged items, uploaded media URLs).
+            if (media.changed || toWrite !== local) {
+                const keepPasswords = key === 'ca_users' ? cloudParse(localStorage.getItem(key)) : null;
+                cloudWriteLocal(key, key === 'ca_users' ? cloudRestorePasswords(toWrite, keepPasswords) : toWrite);
+                cloudApplyToState();
+                cloudRerender();
+            }
+            return;
+        }
+    } finally {
+        cloud.pushing[key] = false;
+    }
+}
+
+function cloudWarn(error) {
+    console.warn('[Cloud Sync]', error && error.message, error);
+    if (typeof showToast === 'function') {
+        const reason = (error && (error.message || error.details || error.code)) || 'unknown error';
+        showToast('Cloud save failed: ' + reason, 'error', 8000);
+    }
+}
+
+function cloudWriteLocal(key, value) {
+    cloud.applying = true;
+    try { window.__rawSetItem(key, JSON.stringify(value)); } finally { cloud.applying = false; }
+}
+
+function cloudRestorePasswords(remoteUsers, localUsers) {
+    if (!Array.isArray(remoteUsers)) return remoteUsers;
+    const byId = new Map((localUsers || []).map(u => [u.id, u]));
+    const byName = new Map((localUsers || []).map(u => [String(u.username || '').toLowerCase(), u]));
+    return remoteUsers.map(u => {
+        const mine = byId.get(u.id) || byName.get(String(u.username || '').toLowerCase());
+        return mine && mine.password && !u.password ? { ...u, password: mine.password } : u;
+    });
+}
+
+// Copy what is now in localStorage into the live `state` object.
+function cloudApplyToState() {
+    if (typeof state === 'undefined') return;
+    const get = (k, fallback) => { const v = cloudParse(localStorage.getItem(k)); return v === null ? fallback : v; };
+    state.users = get('ca_users', state.users);
+    state.products = get('ca_products', state.products);
+    state.services = get('ca_services', state.services);
+    state.orders = get('ca_orders', state.orders);
+    state.tasks = get('ca_tasks', state.tasks);
+    if (typeof loadAreas === 'function') state.areas = loadAreas();
+    if (typeof loadAboutVideos === 'function') state.aboutVideos = loadAboutVideos();
+    state.revenueResetBaseline = Number(localStorage.getItem('ca_revenue_reset_baseline') || 0);
+    if (state.currentUser && Array.isArray(state.users)) {
+        const fresh = state.users.find(u => u.id === state.currentUser.id);
+        if (fresh) state.currentUser = { ...fresh, password: fresh.password || state.currentUser.password };
+    }
+}
+
+function cloudRerender() {
+    const el = document.activeElement;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) { cloud.renderPending = true; return; } // don't interrupt typing
+    cloud.renderPending = false;
+    try {
+        if (typeof renderApp === 'function') renderApp();
+        if (typeof navigateTo === 'function' && typeof getCurrentViewId === 'function') navigateTo(getCurrentViewId(), true);
+    } catch (e) { console.warn('[Cloud Sync] re-render failed:', e); }
+}
+
+// Download keys that changed in the cloud. `first` = first run on this device.
+async function cloudPull(first) {
+    if (!supabaseClient) return false;
+    const { data: heads, error } = await supabaseClient.from(CLOUD_TABLE).select('key,version');
+    if (error) { console.warn('[Cloud Sync] pull failed:', error.message); return false; }
+
+    const remoteKeys = new Set((heads || []).map(h => h.key));
+    const stale = (heads || []).filter(h =>
+        CLOUD_SYNC_KEYS.includes(h.key) && !cloud.timers[h.key] && !cloud.pushing[h.key] &&
+        (cloud.versions[h.key] !== h.version || localStorage.getItem(h.key) === null));
+
+    let changed = false;
+    if (stale.length) {
+        const { data: rows, error: rowsErr } = await supabaseClient
+            .from(CLOUD_TABLE).select('key,value,version').in('key', stale.map(s => s.key));
+        if (rowsErr) { console.warn('[Cloud Sync] pull failed:', rowsErr.message); return false; }
+        for (const row of rows || []) {
+            const localRaw = localStorage.getItem(row.key);
+            const local = cloudParse(localRaw);
+            const neverSynced = !cloud.versions[row.key];
+            let next = row.value;
+            let needsPush = false;
+
+            if (row.key === 'ca_users') next = cloudRestorePasswords(next, local);
+
+            // First time this device meets the cloud: keep items it already had locally (e.g. the admin's old data).
+            if (neverSynced && local !== null && cloudIsIdArray(local) && cloudIsIdArray(row.value)) {
+                const localOnly = local.filter(i => !row.value.some(r => r.id === i.id));
+                const merged = localOnly.concat(row.value);
+                needsPush = localOnly.length > 0;
+                next = row.key === 'ca_users' ? cloudRestorePasswords(merged, local) : merged;
+            }
+            cloud.versions[row.key] = row.version;
+            if (JSON.stringify(next) !== JSON.stringify(local)) { cloudWriteLocal(row.key, next); changed = true; }
+            if (needsPush) cloudQueuePush(row.key);
+        }
+        cloudSaveVersions();
+    }
+
+    // Keys that exist on this device but not in the cloud yet -> upload them (first-run seeding).
+    if (first) {
+        CLOUD_SYNC_KEYS.forEach(k => {
+            if (!remoteKeys.has(k) && localStorage.getItem(k) !== null) cloudQueuePush(k);
+        });
+    }
+    return changed;
+}
+
+async function cloudInit() {
+    if (!supabaseClient || cloud.initDone) return;
+    cloud.initDone = true;
+    let changed = false;
+    try { changed = await cloudPull(true); } catch (e) { console.warn('[Cloud Sync] init failed:', e); }
+    cloud.ready = true;
+    Object.keys(cloud.dirty).forEach(k => cloudQueuePush(k));
+    cloud.dirty = {};
+    if (changed) { cloudApplyToState(); cloudRerender(); }
+
+    setInterval(async () => {
+        if (document.hidden) return;
+        try {
+            const didChange = await cloudPull(false);
+            if (didChange) { cloudApplyToState(); cloudRerender(); }
+            else if (cloud.renderPending) cloudRerender();
+        } catch (e) { /* try again next tick */ }
+    }, CLOUD_POLL_MS);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) cloudPull(false).then(c => { if (c) { cloudApplyToState(); cloudRerender(); } }); });
+}
+
+if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', () => setTimeout(cloudInit, 0));
+} else {
+    setTimeout(cloudInit, 0);
+}
+// ================= END CLOUD SYNC =================
+
 function getSupabaseEmail(username) {
     return `${username.trim().toLowerCase()}@acsite.local`;
 }
