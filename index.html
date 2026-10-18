@@ -20,6 +20,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
     <!-- Supabase JS Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
     <script>
         tailwind.config = {
@@ -109,6 +110,8 @@
                     class="nav-link hover:text-sky-500" data-i18n="nav_contact">Contact Us</a>
                 <a href="javascript:void(0)" id="nav-customer-log" onclick="navigateTo('customer-log')"
                     class="nav-link hover:text-sky-500 hidden">Customer Log</a>
+                <a href="javascript:void(0)" id="nav-arabi" onclick="navigateTo('arabi')"
+                    class="nav-link hover:text-sky-500 hidden">Arabi Extraction</a>
             </nav>
 
             <!-- Actions & Utility -->
@@ -631,6 +634,9 @@
                 </div>
             </div>
 
+            <!-- Arabi board: tasks extracted from the Arabi Excel sheet (same layout as the Task Board) -->
+            <div id="adminArabiSection" class="hidden"></div>
+
             <!-- Team / Staff Section (Admin & Executive Director) -->
             <div id="adminTeamSection"
                 class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
@@ -674,7 +680,42 @@
                     request in the system.</p>
             </div>
 
-            <!-- Admin Orders Management Table (Head Admin Only) -->
+            <!-- Registered Customers Section (Head Admin & Customer Services) - compact, sits on top -->
+            <div id="adminUsersSection"
+                class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div
+                    class="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                    <h3 class="font-bold text-xs" data-i18n="registered_customers_title">Registered Customers</h3>
+                    <div class="relative w-full sm:w-60">
+                        <i
+                            class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]"></i>
+                        <input type="text" id="adminUserSearch" oninput="renderAdminDashboard()"
+                            placeholder="Search by name, username, phone..."
+                            data-i18n-placeholder="search_users_placeholder"
+                            class="w-full pl-8 pr-3 py-1.5 text-[11px] bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    </div>
+                </div>
+                <div class="overflow-x-auto overflow-y-auto max-h-[130px] custom-scrollbar">
+                    <table class="w-full text-left border-collapse text-[11px]">
+                        <thead class="sticky top-0 z-10">
+                            <tr
+                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase text-[10px]">
+                                <th class="px-3 py-2" data-i18n="th_user_id">User ID</th>
+                                <th class="px-3 py-2" data-i18n="th_username">Username</th>
+                                <th class="px-3 py-2" data-i18n="th_fullname">Full Name</th>
+                                <th class="px-3 py-2" data-i18n="th_whatsapp">WhatsApp</th>
+                                <th class="px-3 py-2" data-i18n="th_contact_phone">Contact Phone</th>
+                                <th class="px-3 py-2" data-i18n="th_total_orders">Total Orders</th>
+                                <th class="px-3 py-2 text-center" data-i18n="th_action">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminUsersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <!-- Global Orders & Repairs (Head Admin & Customer Services) -->
             <div id="adminOrdersSection"
                 class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
                 <div
@@ -688,7 +729,14 @@
                     </div>
                     <!-- USER FILTER & BACKUP TO SUPABASE BUTTON -->
                     <div class="flex items-center gap-3 flex-wrap">
-                        <button type="button" onclick="syncOrdersToSupabase(true)"
+                        <div class="relative w-full sm:w-64">
+                            <i
+                                class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                            <input type="text" id="adminOrderSearch" oninput="renderAdminDashboard()"
+                                placeholder="Search by name, phone, order ref..."
+                                class="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+                        <button type="button" id="adminBackupBtn" onclick="syncOrdersToSupabase(true)"
                             class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition shadow-sm hover:scale-105"
                             title="Sync and backup all orders to Supabase Database">
                             <i class="fa-solid fa-cloud-arrow-up"></i> <span>Backup to Supabase</span>
@@ -705,64 +753,16 @@
                         </div>
                     </div>
                 </div>
-                <div class="overflow-x-auto overflow-y-auto max-h-[600px] min-h-[350px] custom-scrollbar">
-                    <table class="w-full text-left border-collapse text-xs">
-                        <thead class="sticky top-0 z-10">
-                            <tr
-                                class="bg-slate-100 dark:bg-slate-800/90 border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 font-extrabold uppercase text-[11px] tracking-wider">
-                                <th class="px-5 py-4 whitespace-nowrap min-w-[110px]" data-i18n="th_date">Date</th>
-                                <th class="px-5 py-4 whitespace-nowrap min-w-[140px]" data-i18n="th_order_ref">Order Ref</th>
-                                <th class="px-5 py-4 whitespace-nowrap min-w-[150px]" data-i18n="th_state">Status / State</th>
-                                <th class="px-5 py-4 whitespace-nowrap min-w-[150px]" data-i18n="th_customer">Customer</th>
-                                <th class="px-5 py-4 min-w-[220px]" data-i18n="th_item_repair">Item / Repair Request</th>
-                                <th class="px-5 py-4 whitespace-nowrap min-w-[130px]" data-i18n="th_location">Location</th>
-                                <th class="px-5 py-4 text-center whitespace-nowrap min-w-[220px]">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="adminOrdersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <!-- Injected via JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <!-- Registered Customers Section (Head Admin & Customer Services) -->
-            <div id="adminUsersSection"
-                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
-                <div
-                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                    <h3 class="font-bold text-sm" data-i18n="registered_customers_title">Registered Customers</h3>
-                    <div class="relative w-full sm:w-72">
-                        <i
-                            class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
-                        <input type="text" id="adminUserSearch" oninput="renderAdminDashboard()"
-                            placeholder="Search by name, username, phone..."
-                            data-i18n-placeholder="search_users_placeholder"
-                            class="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                </div>
-                <div class="overflow-x-auto overflow-y-auto max-h-[168px] custom-scrollbar">
-                    <table class="w-full text-left border-collapse text-xs">
-                        <thead class="sticky top-0 z-10">
-                            <tr
-                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
-                                <th class="p-4" data-i18n="th_user_id">User ID</th>
-                                <th class="p-4" data-i18n="th_username">Username</th>
-                                <th class="p-4" data-i18n="th_fullname">Full Name</th>
-                                <th class="p-4" data-i18n="th_whatsapp">WhatsApp</th>
-                                <th class="p-4" data-i18n="th_contact_phone">Contact Phone</th>
-                                <th class="p-4" data-i18n="th_total_orders">Total Orders</th>
-                                <th class="p-4 text-center" data-i18n="th_action">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="adminUsersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <!-- Injected via JS -->
-                        </tbody>
-                    </table>
-                </div>
+                <div id="adminOrdersFolders" class="p-4 space-y-3 overflow-y-auto max-h-[650px] min-h-[200px] custom-scrollbar"></div>
             </div>
         </section>
 
         <!-- ================= PAGE: CHATS (chatbot conversations) ================= -->
+        <!-- ================= PAGE: ARABI EXTRACTION (Excel sheet -> table + dashboard tasks) ================= -->
+        <section id="view-arabi" class="hidden space-y-6 w-full">
+            <div id="arabiPageBody" class="space-y-6"></div>
+        </section>
+
         <section id="view-chats" class="hidden space-y-8 w-full">
             <!-- ================= CUSTOMER CHATS (Head Admin & Customer Services) ================= -->
             <div id="adminChatsSection"

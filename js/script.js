@@ -242,7 +242,7 @@ function cloudRerender() {
     cloud.renderPending = false;
     try {
         if (typeof renderApp === 'function') renderApp();
-        if (typeof navigateTo === 'function' && typeof getCurrentViewId === 'function') navigateTo(getCurrentViewId(), true);
+        if (typeof navigateTo === 'function' && typeof getCurrentViewId === 'function') navigateTo(typeof getCurrentRoute === 'function' ? getCurrentRoute() : getCurrentViewId(), true);
     } catch (e) { console.warn('[Cloud Sync] re-render failed:', e); }
 }
 
@@ -1914,6 +1914,12 @@ Object.assign(AR_UI, {
 });
 Object.assign(AR_UI, {
     'Customer Log': 'سجل العملاء',
+    'Arabi Extraction': 'استخراج عربي',
+    'Arabi': 'عربي',
+    'Arabi Sheet': 'ملف عربي',
+    'Search by name, phone, order ref...': 'ابحث بالاسم أو الهاتف أو رقم الطلب...',
+    'Backup to Supabase': 'نسخ احتياطي إلى Supabase',
+    'Sync and backup all orders to Supabase Database': 'مزامنة ونسخ كل الطلبات احتياطياً إلى قاعدة بيانات Supabase',
     'Chats': 'المحادثات',
     'Access restricted to the support team only.': 'الدخول مقصور على فريق الدعم فقط.',
     'Registered customers and every order & repair request in the system.': 'العملاء المسجلون وكل الطلبات وبلاغات الصيانة في النظام.',
@@ -2083,7 +2089,24 @@ function startArabicLayer() {
 }
 
 // ================= DYNAMIC NAVIGATION & HISTORY API =================
+// Service share links look like  #service/<serviceId>  and open the Repairs page with only that service.
+let serviceFocusId = null;
+let productFocusId = null;   // same idea for product links:  #product/<productId>
+
+function getCurrentRoute() {
+    if (serviceFocusId) return 'service/' + encodeURIComponent(serviceFocusId);
+    if (productFocusId) return 'product/' + encodeURIComponent(productFocusId);
+    return getCurrentViewId();
+}
+
 function navigateTo(viewId, fromHistory = false) {
+    const serviceRoute = /^service\/(.+)$/.exec(String(viewId));
+    serviceFocusId = serviceRoute ? decodeURIComponent(serviceRoute[1]) : null;
+    if (serviceRoute) viewId = 'tech-fix';
+    const productRoute = /^product\/(.+)$/.exec(String(viewId));
+    productFocusId = productRoute ? decodeURIComponent(productRoute[1]) : null;
+    if (productRoute) viewId = 'products';
+
     if (viewId === 'user-dashboard') {
         viewId = 'customer-dashboard';
     }
@@ -2119,6 +2142,13 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
+    if (viewId === 'arabi' && (!state.currentUser || (!isTopAdmin(state.currentUser.role) && state.currentUser.role !== 'hr'))) {
+        showToast('Access restricted to administrators only.', 'error');
+        try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
+        navigateTo('home', true);
+        return;
+    }
+
     if (viewId === 'chats' && (!state.currentUser || (!isTopAdmin(state.currentUser.role) && state.currentUser.role !== 'hr'))) {
         showToast('Access restricted to the support team only.', 'error');
         try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
@@ -2147,18 +2177,23 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
+    if (viewId !== 'tech-fix') serviceFocusId = null;
+    if (viewId !== 'products') productFocusId = null;
+    const route = serviceFocusId ? 'service/' + encodeURIComponent(serviceFocusId)
+        : productFocusId ? 'product/' + encodeURIComponent(productFocusId) : viewId;
+
     if (!fromHistory) {
         try {
-            history.pushState({ view: viewId }, '', '#' + viewId);
+            history.pushState({ view: route }, '', '#' + route);
         } catch (e) {
-            location.hash = '#' + viewId;
+            location.hash = '#' + route;
         }
     }
 
     // Remember the current view so a page refresh reopens it instead of bouncing to Home
-    sessionStorage.setItem('ca_last_view', viewId);
+    sessionStorage.setItem('ca_last_view', route);
 
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
 
     views.forEach(v => {
         const el = document.getElementById(`view-${v}`);
@@ -2194,11 +2229,12 @@ function navigateTo(viewId, fromHistory = false) {
     if (viewId === 'contact') renderContactPage();
     if (viewId === 'customer-log' || viewId === 'chats') renderAdminDashboard();
     if (viewId === 'about') renderPolicies();
+    if (viewId === 'arabi') renderArabiPage();
 }
 
 // Returns the id (without the "view-" prefix) of whichever section is currently visible
 function getCurrentViewId() {
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
     for (const v of views) {
         const el = document.getElementById(`view-${v}`);
         if (el && !el.classList.contains('hidden')) return v;
@@ -2211,6 +2247,7 @@ function refreshCurrentView() {
     const current = getCurrentViewId();
     if (current === 'products') renderProducts();
     if (current === 'tech-fix') renderTechServices();
+    if (current === 'arabi') renderArabiPage();
     if (current === 'admin-dashboard') renderAdminDashboard();
     if (current === 'tech-home') renderTechHome();
     if (current === 'tech-dashboard') renderTechDashboard();
@@ -2941,9 +2978,17 @@ function renderProducts() {
     const grid = document.getElementById('productsGrid');
     const isAr = state.currentLang === 'ar';
 
-    const filtered = state.products.filter(p => String(p.name || '').toLowerCase().includes(query) || String(p.specs || '').toLowerCase().includes(query));
+    const focusedProduct = productFocusId ? state.products.find(x => x.id === productFocusId) : null;
+    const focusBanner = productFocusId ? `
+        <div class="col-span-full flex flex-wrap items-center justify-between gap-3 bg-sky-50 dark:bg-slate-800 border border-sky-200 dark:border-slate-700 rounded-2xl px-5 py-3">
+            <span class="text-xs font-bold text-slate-700 dark:text-slate-200">${focusedProduct ? L('Showing one product only', 'عرض منتج واحد فقط') : L('This product is not available.', 'هذا المنتج غير متاح.')}</span>
+            <button type="button" onclick="navigateTo('products')" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-4 py-2 rounded-xl text-xs transition">${L('Show all products', 'عرض كل المنتجات')}</button>
+        </div>` : '';
+    const filtered = productFocusId
+        ? (focusedProduct ? [focusedProduct] : [])
+        : state.products.filter(p => String(p.name || '').toLowerCase().includes(query) || String(p.specs || '').toLowerCase().includes(query));
 
-    grid.innerHTML = filtered.map(p => {
+    grid.innerHTML = focusBanner + filtered.map(p => {
         const tr = (isAr && PRODUCT_TRANSLATIONS[p.id]) ? PRODUCT_TRANSLATIONS[p.id] : null;
         return `
         <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm flex flex-col justify-between group">
@@ -2952,7 +2997,7 @@ function renderProducts() {
                     <img src="${escapeHtml(p.image || PRODUCT_PLACEHOLDER_IMG)}" onerror="this.onerror=null;this.src=PRODUCT_PLACEHOLDER_IMG" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
                     <span class="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">${escapeHtml(tr ? tr.category : p.category)}</span>
                     ${p.outOfStock ? `<span class="absolute bottom-3 left-3 bg-red-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase"><i class="fa-solid fa-circle-xmark me-1"></i>${t('out_of_stock')}</span>` : ''}
-                    ${canEdit ? `<button type="button" onclick="openEditProductModal('${p.id}')" class="absolute top-3 right-12 w-8 h-8 rounded-full bg-white/90 text-sky-600 hover:bg-sky-500 hover:text-white flex items-center justify-center transition" title="${L('Edit product', 'تعديل المنتج')}"><i class="fa-solid fa-pen text-xs"></i></button><button type="button" onclick="removeProduct('${p.id}')" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition" title="${L('Remove product', 'حذف المنتج')}"><i class="fa-solid fa-trash-can text-xs"></i></button>` : ''}
+                    ${canEdit ? `<button type="button" onclick="copyProductLink('${p.id}')" class="absolute top-3 right-[5.25rem] w-8 h-8 rounded-full bg-white/90 text-emerald-600 hover:bg-emerald-500 hover:text-white flex items-center justify-center transition" title="${L('Copy direct link to this product', 'نسخ رابط مباشر لهذا المنتج')}"><i class="fa-solid fa-link text-xs"></i></button><button type="button" onclick="openEditProductModal('${p.id}')" class="absolute top-3 right-12 w-8 h-8 rounded-full bg-white/90 text-sky-600 hover:bg-sky-500 hover:text-white flex items-center justify-center transition" title="${L('Edit product', 'تعديل المنتج')}"><i class="fa-solid fa-pen text-xs"></i></button><button type="button" onclick="removeProduct('${p.id}')" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition" title="${L('Remove product', 'حذف المنتج')}"><i class="fa-solid fa-trash-can text-xs"></i></button>` : ''}
                 </div>
                 <div class="p-5 space-y-2">
                     <h3 class="font-bold text-base leading-snug">${escapeHtml(tr ? tr.name : p.name)}</h3>
@@ -2979,7 +3024,14 @@ function renderTechServices() {
     const canEdit = canManageAreas();
     const isAr = state.currentLang === 'ar';
     const grid = document.getElementById('techServicesGrid');
-    grid.innerHTML = state.services.map(s => {
+    const focused = serviceFocusId ? state.services.find(x => x.id === serviceFocusId) : null;
+    const focusBanner = serviceFocusId ? `
+        <div class="col-span-full flex flex-wrap items-center justify-between gap-3 bg-sky-50 dark:bg-slate-800 border border-sky-200 dark:border-slate-700 rounded-2xl px-5 py-3">
+            <span class="text-xs font-bold text-slate-700 dark:text-slate-200">${focused ? L('Showing one service only', 'عرض خدمة واحدة فقط') : L('This service is not available.', 'هذه الخدمة غير متاحة.')}</span>
+            <button type="button" onclick="navigateTo('tech-fix')" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-4 py-2 rounded-xl text-xs transition">${L('Show all services', 'عرض كل الخدمات')}</button>
+        </div>` : '';
+    const listToShow = serviceFocusId ? (focused ? [focused] : []) : state.services;
+    grid.innerHTML = focusBanner + listToShow.map(s => {
         const tr = (isAr && SERVICE_TRANSLATIONS[s.id]) ? SERVICE_TRANSLATIONS[s.id] : null;
         return `
         <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm flex flex-col justify-between group">
@@ -2987,7 +3039,7 @@ function renderTechServices() {
                 <div class="h-48 overflow-hidden bg-slate-100 relative">
                     <img src="${escapeHtml(s.image || PRODUCT_PLACEHOLDER_IMG)}" onerror="this.onerror=null;this.src=PRODUCT_PLACEHOLDER_IMG" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
                     <span class="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">${s.id === 's5' ? L('Insurance', 'تأمين') : L('Repair Service', 'خدمة صيانة')}</span>
-                    ${canEdit ? `<button type="button" onclick="openEditServiceModal('${s.id}')" class="absolute top-3 right-12 w-8 h-8 rounded-full bg-white/90 text-sky-600 hover:bg-sky-500 hover:text-white flex items-center justify-center transition" title="${L('Edit service', 'تعديل الخدمة')}"><i class="fa-solid fa-pen text-xs"></i></button><button type="button" onclick="removeService('${s.id}')" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition" title="${L('Remove service', 'حذف الخدمة')}"><i class="fa-solid fa-trash-can text-xs"></i></button>` : ''}
+                    ${canEdit ? `<button type="button" onclick="copyServiceLink('${s.id}')" class="absolute top-3 right-[5.25rem] w-8 h-8 rounded-full bg-white/90 text-emerald-600 hover:bg-emerald-500 hover:text-white flex items-center justify-center transition" title="${L('Copy direct link to this service', 'نسخ رابط مباشر لهذه الخدمة')}"><i class="fa-solid fa-link text-xs"></i></button><button type="button" onclick="openEditServiceModal('${s.id}')" class="absolute top-3 right-12 w-8 h-8 rounded-full bg-white/90 text-sky-600 hover:bg-sky-500 hover:text-white flex items-center justify-center transition" title="${L('Edit service', 'تعديل الخدمة')}"><i class="fa-solid fa-pen text-xs"></i></button><button type="button" onclick="removeService('${s.id}')" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition" title="${L('Remove service', 'حذف الخدمة')}"><i class="fa-solid fa-trash-can text-xs"></i></button>` : ''}
                 </div>
                 <div class="p-5 space-y-2">
                     <h3 class="font-bold text-base leading-snug">${escapeHtml(tr ? tr.name : s.name)}</h3>
@@ -3020,6 +3072,41 @@ function orderProductById(id) {
         return;
     }
     openOrderCheckout(p.name, p.price, 'Product');
+}
+
+// Admin only: copies a link that opens the Repairs page with just this one service.
+function getServiceLink(id) {
+    return location.href.split('#')[0] + '#service/' + encodeURIComponent(id);
+}
+
+function getProductLink(id) {
+    return location.href.split('#')[0] + '#product/' + encodeURIComponent(id);
+}
+
+function copyLinkToClipboard(link, doneMsg) {
+    const done = () => showToast(doneMsg, 'success');
+    const fallback = () => {
+        const ta = document.createElement('textarea');
+        ta.value = link;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) { window.prompt(L('Copy this link:', 'انسخ هذا الرابط:'), link); }
+        document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fallback);
+    else fallback();
+}
+
+function copyServiceLink(id) {
+    if (!canManageAreas()) return;
+    copyLinkToClipboard(getServiceLink(id), L('Service link copied.', 'تم نسخ رابط الخدمة.'));
+}
+
+function copyProductLink(id) {
+    if (!canManageAreas()) return;
+    copyLinkToClipboard(getProductLink(id), L('Product link copied.', 'تم نسخ رابط المنتج.'));
 }
 
 function bookServiceById(id) {
@@ -4452,6 +4539,14 @@ function stripOrderRef(text) {
     return String(text || '').replace(/\s*Order Ref:\s*[^\s.]+\.?/gi, '');
 }
 
+// Task description in the current language (Arabi tasks are built from their own fields).
+function getTaskDescription(task) {
+    if (task.source !== 'arabi') return task.description;
+    const prefix = `Customer ${task.customerName || 'N/A'} — Address: ${task.address || 'N/A'}.`;
+    const rest = String(task.description || '').startsWith(prefix) ? String(task.description).slice(prefix.length) : '';
+    return `${L('Customer', 'العميل')} ${task.customerName || '—'} — ${L('Address:', 'العنوان:')} ${task.address || '—'}.${rest}`;
+}
+
 function buildTaskRow(task, technicianUsers, canManageTasks) {
     const needsAssignment = isTaskUnassigned(task);
     const isLate = isTaskLate(task);
@@ -4465,9 +4560,13 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
         </select>
     ` : `<span class="font-bold">@${task.assignedTo}</span>`;
     const linkedOrder = task.orderId ? state.orders.find(o => o.id === task.orderId) : null;
-    const customerCell = linkedOrder
+    const isArabi = task.source === 'arabi';
+    const customerCell = isArabi
+        ? `<span class="font-bold text-slate-700 dark:text-slate-200">${escapeHtml(task.customerName || '')}</span>${task.phone ? `<span class="block text-[10px] text-slate-400 font-mono">${escapeHtml(task.phone)}</span>` : ''}`
+        : linkedOrder
         ? `<span class="font-bold text-slate-700 dark:text-slate-200">@${linkedOrder.username}</span><span class="block text-[10px] text-slate-400">${escapeHtml(linkedOrder.customerName || '')}</span>`
         : `<span class="text-slate-300 dark:text-slate-600 text-[11px]">N/A</span>`;
+    const arabiChip = isArabi ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400 uppercase">${L('Arabi', 'عربي')}</span>` : '';
 
     const phaseChip = phase !== 'unit'
         ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 uppercase">${escapeHtml(getPhaseLabel(phase))}</span>`
@@ -4482,14 +4581,14 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
     <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 ${isLate ? 'bg-red-50 dark:bg-red-950/30 border-l-4 border-l-red-500' : needsAssignment ? 'bg-yellow-50/50 dark:bg-yellow-950/10' : ''}">
         <td class="p-4">
             <span class="font-semibold block leading-snug">${escapeHtml(task.title)}</span>
-            <span class="mt-1.5 flex flex-wrap items-center gap-1">${phaseChip}${stateChip}</span>
+            <span class="mt-1.5 flex flex-wrap items-center gap-1">${arabiChip}${phaseChip}${stateChip}</span>
             ${isLate ? `<span class="block text-[10px] text-red-600 dark:text-red-400 mt-1"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار فني منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
         </td>
         <td class="p-4 text-slate-500 text-[11px] space-y-1">
-            <span class="block leading-relaxed">${stripOrderRef(task.description)}</span>
+            <span class="block leading-relaxed">${isArabi ? `<i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(task.address || '')}` : stripOrderRef(task.description)}</span>
             ${loc.label ? `<span class="block"><i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(getLocationLabel(loc.label))}</span>` : ''}
             ${loc.coords ? `<span class="block">${renderMapLink(loc.coords)}</span>` : ''}
-            <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy ? ` · ${escapeHtml(task.createdBy)}` : ''}</span>
+            <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy ? ` · ${escapeHtml(task.createdBy === 'Arabi Sheet' ? L('Arabi Sheet', 'ملف عربي') : task.createdBy)}` : ''}</span>
             ${task.status === 'Open' && waitingSince && !isLate ? `<span class="block text-slate-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
         </td>
         <td class="p-4">${customerCell}</td>
@@ -4502,6 +4601,122 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
 }
 
 // ================= ADMIN DASHBOARD RENDER =================
+// ---- Global Orders: customer "folders" that drop down to show all details ----
+const expandedOrderFolders = new Set();
+const expandedOrderRows = new Set();
+
+function toggleOrderFolder(key) {
+    if (expandedOrderFolders.has(key)) expandedOrderFolders.delete(key);
+    else expandedOrderFolders.add(key);
+    renderAdminDashboard();
+}
+
+function toggleOrderHistory(orderId) {
+    if (expandedOrderRows.has(orderId)) expandedOrderRows.delete(orderId);
+    else expandedOrderRows.add(orderId);
+    renderAdminDashboard();
+}
+
+// Full details of one order: timeline on one side, info on the other
+function buildOrderHistoryHtml(order) {
+    const task = state.tasks.find(t => t.orderId === order.id);
+    const tech = task && task.assignedTo ? state.users.find(u => u.username === task.assignedTo) : null;
+
+    const events = [];
+    events.push({ icon: 'fa-cart-shopping', label: L('Order placed', 'تم إنشاء الطلب'), when: order.createdAt || order.date });
+    if (task && task.assignedTo && task.assignedAt) {
+        events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${tech ? tech.name : '@' + task.assignedTo}`, when: task.assignedAt });
+    }
+    if (task && task.acceptedAt) events.push({ icon: 'fa-hand', label: L('Technician accepted', 'قبل الفني المهمة'), when: task.acceptedAt });
+    const doneAt = task && (task.completedAt || task.completedDate);
+    if (task && task.status === 'Done' && doneAt) events.push({ icon: 'fa-circle-check', label: L('Job done', 'تم الإنجاز'), when: doneAt });
+    const collected = getCollectedAmount(order);
+    if (collected > 0) events.push({ icon: 'fa-money-bill-wave', label: `${L('Collected on site', 'تم التحصيل')}: ${collected.toLocaleString()} ${t('egp_symbol', 'EGP')}`, when: doneAt });
+
+    const timeline = events.map(e => `
+        <li class="flex items-start gap-2.5">
+            <span class="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400 flex items-center justify-center text-[10px]"><i class="fa-solid ${e.icon}"></i></span>
+            <span class="text-xs"><strong class="text-slate-800 dark:text-slate-100">${escapeHtml(e.label)}</strong>${e.when ? `<span class="block text-[10px] text-slate-400">${escapeHtml(formatDateTime(e.when))}</span>` : ''}</span>
+        </li>`).join('');
+
+    const info = (label, value) => value ? `<p class="text-xs"><strong class="text-slate-500 dark:text-slate-400">${label}</strong> <span class="text-slate-800 dark:text-slate-100">${value}</span></p>` : '';
+
+    return `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+                <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider mb-2">${L('Timeline', 'سجل الطلب')}</p>
+                <ul class="space-y-2.5">${timeline}</ul>
+            </div>
+            <div class="space-y-1.5">
+                <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider mb-2">${L('Details', 'التفاصيل')}</p>
+                ${info(L('Payment:', 'الدفع:'), escapeHtml(order.gateway || 'N/A'))}
+                ${info(L('Amount:', 'المبلغ:'), order.amount > 0 ? `${order.amount.toLocaleString()} ${t('egp_symbol', 'EGP')}` : L('On-Site Quote', 'فحص ميداني'))}
+                ${info(L('Location:', 'الموقع:'), escapeHtml(getLocationLabel(order.location) || ''))}
+                ${info(L('Address:', 'العنوان:'), escapeHtml(order.customerAddress || ''))}
+                ${info(L('Technician:', 'الفني:'), tech ? escapeHtml(tech.name) + ` (@${escapeHtml(tech.username)})` : L('Unassigned', 'غير معين'))}
+                ${info(L('Specs:', 'المواصفات:'), escapeHtml(order.specs || ''))}
+                ${info(L('Notes:', 'ملاحظات:'), escapeHtml(order.notes || ''))}
+                <div class="pt-1">${renderOrderFeedbackCell(order)}</div>
+            </div>
+        </div>`;
+}
+
+// One customer folder: header (name / phone / count) + orders inside when opened
+function buildCustomerFolderHtml(key, list, isHeadAdmin) {
+    const cust = state.users.find(u => u.username.toLowerCase() === key);
+    const first = list[0];
+    const name = (cust && cust.name) || first.customerName || first.username;
+    const phone = (cust && (cust.contactPhone || cust.whatsapp)) || first.customerContactPhone || first.customerWhatsApp || '';
+    const open = expandedOrderFolders.has(key);
+
+    const orderCards = list.map(o => `
+        <div class="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+                <button type="button" onclick="toggleOrderHistory('${o.id}')"
+                    class="w-7 h-7 shrink-0 rounded-lg text-slate-400 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-slate-800 transition"
+                    title="${L('Show details', 'عرض التفاصيل')}">
+                    <i class="fa-solid fa-chevron-down text-xs transition-transform ${expandedOrderRows.has(o.id) ? 'rotate-180' : ''}"></i>
+                </button>
+                <span class="text-slate-400 font-mono text-xs">${escapeHtml(o.date || '')}</span>
+                <span class="font-bold text-sky-500 text-xs">${escapeHtml(o.id)}</span>
+                <span class="min-w-0 flex-1 basis-48 font-bold text-xs text-slate-800 dark:text-slate-100">${escapeHtml(o.itemTitle)}</span>
+                <span class="whitespace-nowrap">
+                    ${getStatusBadge(o.status)}
+                    ${(o.type === 'Product' || o.type === 'Tech Fix Service') ? `<div class="mt-1">${renderOrderTaskBadge(o.id)}</div>` : ''}
+                </span>
+                <span class="inline-flex items-center gap-2 whitespace-nowrap">
+                    <button type="button" onclick="openOrderDetailsModal('${o.id}')"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-500 hover:bg-sky-600 text-white font-extrabold rounded-lg text-[11px] transition"
+                        title="${L('View Full Details', 'عرض التفاصيل الكاملة')}">
+                        <i class="fa-solid fa-eye"></i> ${L('Details', 'التفاصيل')}
+                    </button>
+                    ${isHeadAdmin ? `<button type="button" data-order-title="${escapeHtml(o.itemTitle)}" onclick="openDeleteOrderModal('${o.id}', this.dataset.orderTitle)"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white font-extrabold rounded-lg text-[11px] transition"
+                        title="${L('Delete Order', 'حذف الطلب')}">
+                        <i class="fa-solid fa-trash-can"></i> ${L('Delete', 'حذف')}
+                    </button>` : ''}
+                </span>
+            </div>
+            ${expandedOrderRows.has(o.id) ? `<div class="px-4 pb-4 pt-3 border-t border-slate-100 dark:border-slate-800">${buildOrderHistoryHtml(o)}</div>` : ''}
+        </div>`).join('');
+
+    return `
+        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 overflow-hidden">
+            <div data-user="${escapeHtml(key)}" onclick="toggleOrderFolder(this.dataset.user)"
+                class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 cursor-pointer hover:bg-sky-50 dark:hover:bg-slate-800 transition select-none">
+                <i class="fa-solid ${open ? 'fa-folder-open' : 'fa-folder'} text-amber-400 text-lg"></i>
+                <span class="font-extrabold text-sm text-slate-800 dark:text-slate-100">${escapeHtml(name)}</span>
+                <span class="text-xs text-sky-500 font-bold">@${escapeHtml(first.username)}</span>
+                ${phone ? `<span class="text-xs text-slate-500 font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(phone)}</span>` : ''}
+                <span class="ms-auto inline-flex items-center gap-3">
+                    <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">${list.length} ${list.length === 1 ? L('order', 'طلب') : L('orders', 'طلبات')}</span>
+                    <i class="fa-solid fa-chevron-down text-xs text-slate-400 transition-transform ${open ? 'rotate-180' : ''}"></i>
+                </span>
+            </div>
+            ${open ? `<div class="px-3 pb-3 pt-1 space-y-2">${orderCards}</div>` : ''}
+        </div>`;
+}
+
 function renderAdminDashboard() {
     state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
@@ -4660,22 +4875,22 @@ function renderAdminDashboard() {
         });
 
         if (filteredUsers.length === 0) {
-            usersTbody.innerHTML = `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">No customers match your search.</td></tr>`;
+            usersTbody.innerHTML = `<tr><td colspan="7" class="text-center p-3 text-slate-400 font-bold">No customers match your search.</td></tr>`;
         } else {
             usersTbody.innerHTML = filteredUsers.map(u => {
                 const count = state.orders.filter(o => o.username.toLowerCase() === u.username.toLowerCase()).length;
                 const canDelete = isHeadAdmin;
                 return `
                     <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        <td class="p-4 font-mono text-slate-400 text-[11px]">${u.id}</td>
-                        <td class="p-4 font-bold text-sky-500">@${u.username}</td>
-                        <td class="p-4 font-semibold">${u.name || 'N/A'}</td>
-                        <td class="p-4 text-slate-500 font-mono">${u.whatsapp || 'N/A'}</td>
-                        <td class="p-4 text-slate-500 font-mono">${u.contactPhone || 'N/A'}</td>
-                        <td class="p-4 font-bold">${count}</td>
-                        <td class="p-4 text-center">
+                        <td class="px-3 py-1.5 font-mono text-slate-400 text-[10px]">${u.id}</td>
+                        <td class="px-3 py-1.5 font-bold text-sky-500">@${u.username}</td>
+                        <td class="px-3 py-1.5 font-semibold">${u.name || 'N/A'}</td>
+                        <td class="px-3 py-1.5 text-slate-500 font-mono">${u.whatsapp || 'N/A'}</td>
+                        <td class="px-3 py-1.5 text-slate-500 font-mono">${u.contactPhone || 'N/A'}</td>
+                        <td class="px-3 py-1.5 font-bold">${count}</td>
+                        <td class="px-3 py-1.5 text-center">
                             ${canDelete ? `
-                                <button onclick="openDeleteUserModal('${u.id}', '${u.username}')" class="text-xs font-bold text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="Delete User">
+                                <button onclick="openDeleteUserModal('${u.id}', '${u.username}')" class="text-xs font-bold text-red-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="Delete User">
                                     <i class="fa-solid fa-trash-can"></i>
                                 </button>
                             ` : ''}
@@ -4688,9 +4903,12 @@ function renderAdminDashboard() {
 
     // ---- Global Orders & Repairs section: head admin only ----
     const ordersSection = document.getElementById('adminOrdersSection');
-    if (ordersSection) ordersSection.classList.toggle('hidden', !isHeadAdmin);
+    const canSeeOrders = isHeadAdmin || isHR;
+    if (ordersSection) ordersSection.classList.toggle('hidden', !canSeeOrders);
+    const backupBtn = document.getElementById('adminBackupBtn');
+    if (backupBtn) backupBtn.classList.toggle('hidden', !isHeadAdmin);
 
-    if (isHeadAdmin) {
+    if (canSeeOrders) {
         // Only customers ever place orders — staff accounts (admin/Customer Services/
         // technician) shouldn't show up here at all, even under "All Users".
         const staffUsernames = new Set(state.users.filter(u => isStaffRole(u.role)).map(u => u.username.toLowerCase()));
@@ -4714,44 +4932,43 @@ function renderAdminDashboard() {
         }
 
         const currentFilter = filterSelect ? filterSelect.value : 'all';
-        const filteredOrders = currentFilter === 'all'
+        const byUser = currentFilter === 'all'
             ? customerOrders
             : customerOrders.filter(o => o.username.toLowerCase() === currentFilter.toLowerCase());
 
-        // Admin Orders Table Rendering
-        const ordersTbody = document.getElementById('adminOrdersTable');
-        if (filteredOrders.length === 0) {
-            ordersTbody.innerHTML = `<tr><td colspan="8" class="text-center p-8 text-slate-400 font-bold">No orders found for the selected user.</td></tr>`;
-        } else {
-            ordersTbody.innerHTML = filteredOrders.map(o => `
-                <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
-                    <td class="px-5 py-4 text-slate-400 font-mono text-xs whitespace-nowrap">${o.date}</td>
-                    <td class="px-5 py-4 font-bold text-sky-500 text-xs whitespace-nowrap">${o.id}</td>
-                    <td class="px-5 py-4 whitespace-nowrap">
-                        ${getStatusBadge(o.status)}
-                        ${(o.type === 'Product' || o.type === 'Tech Fix Service') ? `<div class="mt-1">${renderOrderTaskBadge(o.id)}</div>` : ''}
-                    </td>
-                    <td class="px-5 py-4 whitespace-nowrap">
-                        <span class="font-bold text-slate-800 dark:text-slate-100">@${o.username}</span>
-                    </td>
-                    <td class="px-5 py-4 font-bold text-slate-800 dark:text-slate-100 leading-snug">${escapeHtml(o.itemTitle)}</td>
-                    <td class="px-5 py-4 text-slate-500 font-semibold text-xs whitespace-nowrap">${escapeHtml(getLocationLabel(o.location) || 'N/A')}</td>
-                    <td class="px-5 py-4 text-center whitespace-nowrap">
-                        <div class="inline-flex items-center gap-2">
-                            <button type="button" onclick="openOrderDetailsModal('${o.id}')"
-                                class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-sky-500 hover:bg-sky-600 text-white font-extrabold rounded-xl text-xs transition shadow-sm hover:scale-105"
-                                title="${L('View Full Details', 'عرض التفاصيل الكاملة')}">
-                                <i class="fa-solid fa-eye"></i> ${L('Details', 'التفاصيل')}
-                            </button>
-                            <button type="button" data-order-title="${escapeHtml(o.itemTitle)}" onclick="openDeleteOrderModal('${o.id}', this.dataset.orderTitle)"
-                                class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-red-500 hover:bg-red-600 text-white font-extrabold rounded-xl text-xs transition shadow-sm hover:scale-105"
-                                title="${L('Delete Order', 'حذف الطلب')}">
-                                <i class="fa-solid fa-trash-can"></i> ${L('Delete', 'حذف')}
-                            </button>
-                        </div>
-                    </td>
-                </tr>
-            `).join('');
+        // Search by customer name, username, phone / WhatsApp number or order ref
+        const orderSearchInput = document.getElementById('adminOrderSearch');
+        const orderSearchTerm = orderSearchInput ? orderSearchInput.value.trim().toLowerCase() : '';
+        const orderSearchDigits = orderSearchTerm.replace(/\D/g, '');
+        const filteredOrders = !orderSearchTerm ? byUser : byUser.filter(o => {
+            const cust = state.users.find(u => u.username.toLowerCase() === String(o.username || '').toLowerCase());
+            const texts = [o.id, o.username, o.customerName, cust && cust.name, cust && cust.username];
+            const phones = [o.customerWhatsApp, o.customerContactPhone, cust && cust.whatsapp, cust && cust.contactPhone];
+            if (texts.filter(Boolean).some(t => String(t).toLowerCase().includes(orderSearchTerm))) return true;
+            return phones.filter(Boolean).some(p => {
+                const raw = String(p).toLowerCase();
+                const digits = raw.replace(/\D/g, '');
+                return raw.includes(orderSearchTerm) || (orderSearchDigits.length > 0 && digits.includes(orderSearchDigits));
+            });
+        });
+
+        // Customer folders (grouped by customer, newest activity first)
+        if (orderSearchInput) orderSearchInput.placeholder = L('Search by name or phone...', 'ابحث بالاسم أو رقم الهاتف...');
+        const foldersBox = document.getElementById('adminOrdersFolders');
+        const orderTime = o => new Date(o.createdAt || o.date || 0).getTime();
+        const groups = new Map();
+        filteredOrders.forEach(o => {
+            const key = String(o.username || '').toLowerCase();
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(o);
+        });
+        groups.forEach(list => list.sort((a, b) => orderTime(b) - orderTime(a)));
+        const sortedGroups = [...groups.entries()].sort((a, b) => orderTime(b[1][0]) - orderTime(a[1][0]));
+
+        if (foldersBox) {
+            foldersBox.innerHTML = sortedGroups.length
+                ? sortedGroups.map(([key, list]) => buildCustomerFolderHtml(key, list, isHeadAdmin)).join('')
+                : `<p class="text-center p-8 text-slate-400 font-bold text-sm">${L('No customers or orders found.', 'لا يوجد عملاء أو طلبات.')}</p>`;
         }
     }
 
@@ -4831,7 +5048,7 @@ function renderAdminDashboard() {
     const taskTable = document.getElementById('adminTasksTable');
     if (taskTable) {
         // Done tasks leave the board — they live on the customer's row in the Global Orders list.
-        const activeTasks = state.tasks.filter(task => task.status !== 'Done');
+        const activeTasks = state.tasks.filter(task => task.status !== 'Done' && task.source !== 'arabi');
         const visibleTasks = canManageTasks ? activeTasks : activeTasks.filter(task => task.assignedTo === state.currentUser.username);
         if (visibleTasks.length === 0) {
             taskTable.innerHTML = `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">No active tasks.</td></tr>`;
@@ -4840,8 +5057,274 @@ function renderAdminDashboard() {
         }
     }
 
+    renderArabiBoard(technicianUsers, canManageTasks);
+
     renderAdminChats();
     applyRoleBasedNav();
+}
+
+// ================= ARABI EXTRACTION (Excel sheet -> table + tasks) =================
+// Each row of the sheet becomes one task (source 'arabi'). Because they are normal tasks they
+// are assigned, accepted and finished like any other, and they feed every dashboard counter.
+const ARABI_HEADERS = {
+    phone: /phone|mobile|tel|number|whats|هاتف|رقم|موبايل|تليفون|محمول/i,
+    address: /address|location|area|عنوان|العنوان|منطقة|موقع/i,
+    fix: /fix|repair|problem|issue|fault|service|عطل|العطل|صيانة|الصيانة|مشكلة|خدمة/i,
+    name: /name|customer|client|اسم|الاسم|عميل|العميل/i
+};
+
+function cleanArabiPhone(value) {
+    const raw = String(value || '').trim();
+    const digits = raw.replace(/\D/g, '');
+    // Excel drops the leading 0 of Egyptian mobile numbers (1065876092 -> 01065876092)
+    if (digits.length === 10 && digits[0] === '1') return '0' + digits;
+    return raw;
+}
+
+// Turns the sheet (array of rows) into [{name, phone, address, fix}]
+function parseArabiRows(matrix) {
+    const rows = matrix
+        .map(r => r.map(c => String(c === null || c === undefined ? '' : c).trim()))
+        .filter(r => r.some(Boolean));
+    if (!rows.length) return [];
+
+    // Header row? Match column titles (English or Arabic); otherwise use the column order.
+    const map = {};
+    rows[0].forEach((cell, i) => {
+        for (const key of ['phone', 'address', 'fix', 'name']) {
+            if (map[key] === undefined && ARABI_HEADERS[key].test(cell)) { map[key] = i; break; }
+        }
+    });
+    let body = rows;
+    if (Object.keys(map).length >= 2) {
+        body = rows.slice(1);
+    } else if ((rows[0].length || 0) >= 4) {
+        map.name = 0; map.phone = 1; map.address = 2; map.fix = 3;
+    } else {
+        map.name = 0; map.address = 1; map.fix = 2;
+    }
+
+    const pick = (r, key) => (map[key] === undefined ? '' : (r[map[key]] || ''));
+    return body.map(r => ({
+        name: pick(r, 'name'),
+        phone: cleanArabiPhone(pick(r, 'phone')),
+        address: pick(r, 'address'),
+        fix: pick(r, 'fix')
+    }));
+}
+
+function arabiKey(r) {
+    return [r.name, r.phone, r.address, r.fix].map(v => String(v || '').trim().toLowerCase()).join('|');
+}
+
+function handleArabiFile(input) {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    if (typeof XLSX === 'undefined') {
+        showToast(L('Excel reader could not load. Check your internet connection and refresh.', 'تعذر تحميل قارئ الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => showToast(L('Could not read that file.', 'تعذر قراءة الملف.'), 'error');
+    reader.onload = e => {
+        let parsed;
+        try {
+            const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            parsed = parseArabiRows(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false }));
+        } catch (err) {
+            showToast(L('That file is not a valid Excel sheet.', 'هذا الملف ليس ملف إكسل صالحاً.'), 'error');
+            return;
+        }
+
+        const existing = new Set(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(arabiKey));
+        const usedIds = new Set(state.tasks.map(t => t.id));
+        const batch = Date.now();
+        const now = new Date();
+        let added = 0, duplicates = 0, invalid = 0;
+        const created = [];
+
+        parsed.forEach((r, i) => {
+            if (!r.fix || !(r.name || r.address)) { invalid++; return; }
+            const key = arabiKey(r);
+            if (existing.has(key)) { duplicates++; return; }
+            existing.add(key);
+            let id = createDateBasedId('TSK');
+            while (usedIds.has(id)) id = createDateBasedId('TSK');
+            usedIds.add(id);
+            created.push({
+                id,
+                title: r.fix,
+                description: `Customer ${r.name || 'N/A'} — Address: ${r.address || 'N/A'}.`,
+                assignedTo: '',
+                createdBy: 'Arabi Sheet',
+                createdDate: getLocalDateString(now),
+                createdAt: now.toISOString(),
+                unassignedSince: now.toISOString(),
+                dueDate: '',
+                priority: 'Normal',
+                status: 'Open',
+                orderId: '',
+                orderType: 'Tech Fix Service',
+                phase: 'repair',
+                source: 'arabi',
+                customerName: r.name,
+                phone: r.phone,
+                address: r.address,
+                fix: r.fix,
+                arabiBatch: batch,
+                arabiRow: i + 1
+            });
+            added++;
+        });
+
+        if (added) {
+            state.tasks = created.concat(state.tasks);
+            saveState();
+        }
+        arabiLastResult = { file: file.name, added, duplicates, invalid };
+        renderArabiPage();
+        showToast(added
+            ? L(`${added} Arabi row(s) extracted.`, `تم استخراج ${added} صف من عربي.`)
+            : L('No new rows were found in that file.', 'لم يتم العثور على صفوف جديدة في الملف.'),
+            added ? 'success' : 'error');
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+let arabiLastResult = null;
+
+function getArabiTasks() {
+    return state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId)
+        .sort((a, b) => (b.arabiBatch || 0) - (a.arabiBatch || 0) || (a.arabiRow || 0) - (b.arabiRow || 0));
+}
+
+function deleteArabiRow(id) {
+    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    state.tasks = state.tasks.filter(t => t.id !== id && t.parentTaskId !== id);
+    saveState();
+    renderArabiPage();
+}
+
+function clearArabiRows() {
+    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    if (!confirm(L('Remove ALL Arabi rows and their tasks?', 'حذف كل صفوف عربي ومهامها؟'))) return;
+    state.tasks = state.tasks.filter(t => t.source !== 'arabi');
+    saveState();
+    arabiLastResult = null;
+    renderArabiPage();
+}
+
+function renderArabiPage() {
+    const box = document.getElementById('arabiPageBody');
+    if (!box) return;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    const rows = getArabiTasks();
+    const res = arabiLastResult;
+
+    const resultLine = res ? `
+        <p class="text-xs font-bold text-slate-600 dark:text-slate-300">
+            <i class="fa-solid fa-file-excel text-emerald-500 me-1"></i>${escapeHtml(res.file)} —
+            ${L('extracted', 'تم استخراج')} <span class="text-emerald-500">${res.added}</span>
+            ${res.duplicates ? ` · ${L('duplicates skipped', 'مكرر تم تخطيه')} <span class="text-amber-500">${res.duplicates}</span>` : ''}
+            ${res.invalid ? ` · ${L('rows skipped (missing fix / name)', 'صفوف متخطاة (بدون عطل / اسم)')} <span class="text-red-500">${res.invalid}</span>` : ''}
+        </p>` : '';
+
+    const body = rows.length ? rows.map((t, i) => {
+        const tech = t.assignedTo ? state.users.find(u => u.username === t.assignedTo) : null;
+        return `
+        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+            <td class="p-4 text-slate-400 font-mono">${i + 1}</td>
+            <td class="p-4 font-bold">${escapeHtml(t.customerName || '')}</td>
+            <td class="p-4 text-slate-500 font-mono">${escapeHtml(t.phone || '')}</td>
+            <td class="p-4 text-slate-600 dark:text-slate-300">${escapeHtml(t.address || '')}</td>
+            <td class="p-4 font-semibold">${escapeHtml(t.fix || t.title || '')}</td>
+            <td class="p-4 text-slate-500">${tech ? escapeHtml(tech.name || tech.username) : '<span class="text-yellow-600 font-bold">' + L('Not assigned', 'غير معين') + '</span>'}</td>
+            <td class="p-4">${renderTaskStatusBadge(t.status)}</td>
+            <td class="p-4 text-center">
+                <button type="button" onclick="deleteArabiRow('${t.id}')" class="text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="${L('Delete row', 'حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button>
+            </td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="8" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
+
+    box.innerHTML = `
+        <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div>
+                <h1 class="text-2xl font-bold">${L('Arabi Extraction', 'استخراج عربي')}</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload an Excel sheet (.xlsx, .xls or .csv) with: Name, Phone, Address, Fix. Rows appear below and on the Dashboard under "Arabi", and count in the task counters.', 'ارفع ملف إكسل (.xlsx أو .xls أو .csv) بالأعمدة: الاسم، الهاتف، العنوان، العطل. تظهر الصفوف بالأسفل وفي لوحة التحكم تحت "عربي" وتُحتسب في العدادات.')}</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="inline-flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
+                    <i class="fa-solid fa-file-arrow-up"></i> ${L('Upload Excel sheet', 'رفع ملف إكسل')}
+                    <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
+                </label>
+                <button type="button" onclick="navigateTo('admin-dashboard')" class="inline-flex items-center gap-2 px-5 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold rounded-xl text-xs transition">
+                    <i class="fa-solid fa-table-columns"></i> ${L('Open Dashboard', 'فتح لوحة التحكم')}
+                </button>
+                ${rows.length ? `<button type="button" onclick="clearArabiRows()" class="inline-flex items-center gap-2 px-5 py-3 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-trash-can"></i> ${L('Clear all', 'حذف الكل')}</button>` : ''}
+            </div>
+            ${resultLine}
+        </div>
+        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+            <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <h3 class="font-bold text-sm">${L('Extracted rows', 'الصفوف المستخرجة')}</h3>
+                <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">${rows.length}</span>
+            </div>
+            <div class="overflow-x-auto overflow-y-auto max-h-[560px] custom-scrollbar">
+                <table class="w-full text-left border-collapse text-xs">
+                    <thead class="sticky top-0 z-10">
+                        <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                            <th class="p-4">#</th>
+                            <th class="p-4">${L('Name', 'الاسم')}</th>
+                            <th class="p-4">${L('Phone', 'الهاتف')}</th>
+                            <th class="p-4">${L('Address', 'العنوان')}</th>
+                            <th class="p-4">${L('Fix', 'العطل')}</th>
+                            <th class="p-4">${L('Technician', 'الفني')}</th>
+                            <th class="p-4">${L('Status', 'الحالة')}</th>
+                            <th class="p-4"></th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${body}</tbody>
+                </table>
+            </div>
+        </div>`;
+}
+
+// Dashboard copy: same columns as the Task Board, titled "Arabi"
+function renderArabiBoard(technicianUsers, canManageTasks) {
+    const box = document.getElementById('adminArabiSection');
+    if (!box) return;
+    box.classList.toggle('hidden', !canManageTasks);
+    if (!canManageTasks) { box.innerHTML = ''; return; }
+
+    const active = state.tasks.filter(t => t.source === 'arabi' && t.status !== 'Done')
+        .sort((a, b) => (b.arabiBatch || 0) - (a.arabiBatch || 0) || (a.arabiRow || 0) - (b.arabiRow || 0));
+    const th = (en, ar) => `<th class="p-4">${L(en, ar)}</th>`;
+    box.innerHTML = `
+        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+            <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+                <div>
+                    <h3 class="font-bold text-sm">${L('Arabi', 'عربي')}</h3>
+                    <p class="text-[11px] text-slate-400">${L('Tasks extracted from the Arabi Excel sheet', 'مهام مستخرجة من ملف إكسل عربي')}</p>
+                </div>
+                <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400">${active.length}</span>
+            </div>
+            <div class="overflow-x-auto overflow-y-auto max-h-[320px] custom-scrollbar">
+                <table class="w-full text-left border-collapse text-xs">
+                    <thead class="sticky top-0 z-10">
+                        <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
+                            ${th('Title', 'العنوان')}${th('Details', 'التفاصيل')}${th('Customer', 'العميل')}${th('Assigned To', 'المسند إليه')}${th('Priority', 'الأولوية')}${th('Due Date', 'تاريخ الاستحقاق')}${th('Status', 'الحالة')}
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                        ${active.length ? active.map(t => buildTaskRow(t, technicianUsers, canManageTasks)).join('') : `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">${L('No active Arabi tasks.', 'لا توجد مهام عربي نشطة.')}</td></tr>`}
+                    </tbody>
+                </table>
+            </div>
+        </div>`;
 }
 
 // ================= SERVICE AREAS MANAGER (head admin & admin) =================
@@ -5484,7 +5967,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 </div>
                 <span class="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full shrink-0 ${badgeStyle}">${task.priority}</span>
             </div>
-            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(task.description)}</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(getTaskDescription(task))}</p>
             ${renderReceivedLine(task)}
             <div class="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-slate-100 dark:border-slate-800">
                 <span class="text-[11px] text-emerald-500 font-bold flex items-center gap-1.5">
@@ -5573,7 +6056,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 </div>
                 <span class="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full shrink-0 ${badgeStyle}">${task.priority}</span>
             </div>
-            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(task.description)}</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(getTaskDescription(task))}</p>
             ${renderTechLocationBox(task)}
             ${moneyBlock}
             ${task.status === 'In Progress' ? renderRepairPhotosInput(task) : ''}
@@ -6073,7 +6556,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             orderType: task.orderType,
             phase: nextPhase,
             parentTaskId: task.id,
-            locationCoords: task.locationCoords || null
+            locationCoords: task.locationCoords || null,
+            ...(task.source === 'arabi' ? { source: 'arabi', customerName: task.customerName, phone: task.phone, address: task.address, fix: task.fix } : {})
         };
         state.tasks.unshift(next);
 
@@ -6181,6 +6665,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const dashNav = document.getElementById('nav-dashboard');
         const customerLogNav = document.getElementById('nav-customer-log');
         const chatsNav = document.getElementById('nav-chats');
+        const arabiNav = document.getElementById('nav-arabi');
 
         const role = state.currentUser ? state.currentUser.role : null;
         const isTechnician = role === 'technician';
@@ -6199,8 +6684,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (techFixNav) techFixNav.classList.toggle('hidden', isTechnician || isCustomerServices);
         if (contactNav) contactNav.classList.toggle('hidden', isTechnician);
         if (dashNav) dashNav.classList.toggle('hidden', !isTechnician);
-        if (customerLogNav) customerLogNav.classList.toggle('hidden', !isTopAdmin(role));
+        if (customerLogNav) customerLogNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (chatsNav) chatsNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
+        if (arabiNav) arabiNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
     }
 
     // Brand logo click: everyone goes "home" — navigateTo transparently sends
