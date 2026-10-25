@@ -39,7 +39,8 @@ const CLOUD_BUCKET = 'site-media';
 const CLOUD_SYNC_KEYS = [
     'ca_users', 'ca_products', 'ca_services', 'ca_orders', 'ca_tasks', 'ca_areas',
     'ca_about_videos', 'ca_revenue_reset_baseline', 'ca_contact', 'ca_policies',
-    'ca_cs_chats', 'ca_cs_counter'
+    'ca_cs_chats', 'ca_cs_counter', 'ca_custom_jobs', 'ca_live_locations', 'ca_customer_folders',
+    'ca_maintenance_id'
 ];
 const CLOUD_POLL_MS = 5000;
 const CLOUD_MEDIA_LIMIT = 150 * 1024; // data: URLs bigger than this go to Supabase Storage
@@ -95,7 +96,18 @@ function cloudQueuePush(key) {
 }
 
 // Items from both lists, matched by id (this device's version wins), minus anything deleted here.
-function cloudMergeById(remote, local, deletedSet) {
+function cloudMergeById(remote, local, deletedSet, key) {
+    // Live positions: every device holds a copy of everybody's last position, so the
+    // newest reading of each person wins (not "this device wins").
+    if (key === 'ca_live_locations') {
+        const byId = new Map();
+        remote.forEach(i => { if (!(deletedSet && deletedSet.has(i.id))) byId.set(i.id, i); });
+        local.forEach(i => {
+            const other = byId.get(i.id);
+            if (!other || String(i.at) >= String(other.at)) byId.set(i.id, i);
+        });
+        return Array.from(byId.values());
+    }
     const localIds = new Set(local.map(i => i.id));
     const extra = remote.filter(i => !localIds.has(i.id) && !(deletedSet && deletedSet.has(i.id)));
     return local.concat(extra);
@@ -160,7 +172,7 @@ async function cloudPush(key) {
 
             let toWrite = local;
             if (row && cloudIsIdArray(local) && cloudIsIdArray(row.value)) {
-                toWrite = cloudMergeById(row.value, local, cloud.deleted[key]);
+                toWrite = cloudMergeById(row.value, local, cloud.deleted[key], key);
             }
             const payload = cloudStripSecrets(key, toWrite);
 
@@ -185,8 +197,13 @@ async function cloudPush(key) {
             if (media.changed || toWrite !== local) {
                 const keepPasswords = key === 'ca_users' ? cloudParse(localStorage.getItem(key)) : null;
                 cloudWriteLocal(key, key === 'ca_users' ? cloudRestorePasswords(toWrite, keepPasswords) : toWrite);
-                cloudApplyToState();
-                cloudRerender();
+                if (key === 'ca_live_locations') {
+                    // Positions change every few seconds: only the Map is refreshed, not the whole page.
+                    if (typeof refreshLiveMap === 'function') refreshLiveMap();
+                } else {
+                    cloudApplyToState();
+                    cloudRerender();
+                }
             }
             return;
         }
@@ -229,6 +246,8 @@ function cloudApplyToState() {
     state.tasks = get('ca_tasks', state.tasks);
     if (typeof loadAreas === 'function') state.areas = loadAreas();
     if (typeof loadAboutVideos === 'function') state.aboutVideos = loadAboutVideos();
+    if (typeof loadCustomJobs === 'function') state.customJobs = loadCustomJobs();
+    if (typeof loadCustomerFolders === 'function') state.customerFolders = loadCustomerFolders();
     state.revenueResetBaseline = Number(localStorage.getItem('ca_revenue_reset_baseline') || 0);
     if (state.currentUser && Array.isArray(state.users)) {
         const fresh = state.users.find(u => u.id === state.currentUser.id);
@@ -258,6 +277,7 @@ async function cloudPull(first) {
         (cloud.versions[h.key] !== h.version || localStorage.getItem(h.key) === null));
 
     let changed = false;
+    let locChanged = false;
     if (stale.length) {
         const { data: rows, error: rowsErr } = await supabaseClient
             .from(CLOUD_TABLE).select('key,value,version').in('key', stale.map(s => s.key));
@@ -279,7 +299,10 @@ async function cloudPull(first) {
                 next = row.key === 'ca_users' ? cloudRestorePasswords(merged, local) : merged;
             }
             cloud.versions[row.key] = row.version;
-            if (JSON.stringify(next) !== JSON.stringify(local)) { cloudWriteLocal(row.key, next); changed = true; }
+            if (JSON.stringify(next) !== JSON.stringify(local)) {
+                cloudWriteLocal(row.key, next);
+                if (row.key === 'ca_live_locations') locChanged = true; else changed = true;
+            }
             if (needsPush) cloudQueuePush(row.key);
         }
         cloudSaveVersions();
@@ -291,6 +314,7 @@ async function cloudPull(first) {
             if (!remoteKeys.has(k) && localStorage.getItem(k) !== null) cloudQueuePush(k);
         });
     }
+    if (locChanged && typeof refreshLiveMap === 'function') refreshLiveMap();
     return changed;
 }
 
@@ -302,6 +326,7 @@ async function cloudInit() {
     cloud.ready = true;
     Object.keys(cloud.dirty).forEach(k => cloudQueuePush(k));
     cloud.dirty = {};
+    try { if (await runOneTimeMaintenance()) changed = true; } catch (e) { console.warn('[Maintenance] failed:', e); }
     if (changed) { cloudApplyToState(); cloudRerender(); }
 
     setInterval(async () => {
@@ -315,15 +340,58 @@ async function cloudInit() {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) cloudPull(false).then(c => { if (c) { cloudApplyToState(); cloudRerender(); } }); });
 }
 
+function startCloud() {
+    if (supabaseClient) { cloudInit(); return; }
+    runOneTimeMaintenance().then(c => { if (c) { cloudApplyToState(); cloudRerender(); } }).catch(() => { });
+}
 if (document.readyState === 'loading') {
-    window.addEventListener('DOMContentLoaded', () => setTimeout(cloudInit, 0));
+    window.addEventListener('DOMContentLoaded', () => setTimeout(startCloud, 0));
 } else {
-    setTimeout(cloudInit, 0);
+    setTimeout(startCloud, 0);
+}
+
+// ================= ONE-TIME MAINTENANCE =================
+// 1) Orders + every counter go back to 0 (customers, accounts and Customer Log folders are kept;
+//    Arabi / our customers are copied into the Customer Log first).
+// 2) Team (staff) accounts get the temporary password 123456 on this device's copy. The real login
+//    password lives in Supabase Auth and is set by supabase_password_setup.sql.
+const MAINTENANCE_ID = '2026-10-25-reset-1';
+const TEAM_TEMP_PASSWORD = '123456';
+
+async function runOneTimeMaintenance() {
+    let changed = false;
+    cloudApplyToState();
+
+    if (cloudParse(localStorage.getItem('ca_maintenance_id')) !== MAINTENANCE_ID) {
+        syncCustomerLogSources();
+        state.orders = [];
+        state.tasks = [];
+        state.revenueResetBaseline = 0;
+        localStorage.setItem('ca_cs_counter', '0');
+        saveState();
+        localStorage.setItem('ca_maintenance_id', JSON.stringify(MAINTENANCE_ID));
+        changed = true;
+    }
+
+    if (localStorage.getItem('ca_team_pw_id') !== MAINTENANCE_ID) {
+        const hashed = await hashPassword(TEAM_TEMP_PASSWORD);
+        state.users.forEach(u => { if (isStaffRole(u.role)) u.password = hashed; });
+        if (state.currentUser && isStaffRole(state.currentUser.role)) state.currentUser.password = hashed;
+        saveState();
+        localStorage.setItem('ca_team_pw_id', MAINTENANCE_ID);
+        changed = true;
+    }
+    return changed;
 }
 // ================= END CLOUD SYNC =================
 
+// Supabase only accepts plain-ASCII emails. Arabic (or other non-ASCII) usernames are turned into a
+// safe ASCII address (u + hex of the name), so those accounts can really exist on the server.
 function getSupabaseEmail(username) {
-    return `${username.trim().toLowerCase()}@acsite.local`;
+    const u = String(username).trim().toLowerCase();
+    if (/^[ -~]+$/.test(u)) return `${u}@acsite.local`;
+    const hex = Array.from(new TextEncoder().encode(u)).map(b => b.toString(16).padStart(2, '0')).join('');
+    return `u${hex}@acsite.local`;
 }
 
 
@@ -374,6 +442,15 @@ function loadAreas() {
         if (Array.isArray(stored)) return stored.filter(a => a && a.name);
     } catch (e) { /* fall through to defaults */ }
     return INITIAL_AREAS.map(a => ({ ...a }));
+}
+
+// Jobs / departments added by the admin with "Add Job" (on top of the built-in STAFF_CATEGORIES).
+function loadCustomJobs() {
+    try {
+        const stored = JSON.parse(localStorage.getItem('ca_custom_jobs'));
+        if (Array.isArray(stored)) return stored.filter(j => j && j.id && j.category && j.en);
+    } catch (e) { /* fall through */ }
+    return [];
 }
 
 function loadAboutVideos() {
@@ -579,8 +656,10 @@ function getPhaseLabel(phase) {
 
 const TASK_COUNTERS = [
     { key: 'unassigned', en: 'Not Assigned', ar: 'غير معيّن', color: 'text-yellow-500', icon: 'fa-user-clock', match: t => isTaskUnassigned(t) },
-    { key: 'awaiting', en: 'Assigned but Not Accepted', ar: 'معيّنة – لم تُقبل بعد', color: 'text-orange-500', icon: 'fa-hourglass-half', match: t => !isTaskUnassigned(t) && t.status === 'Open' },
+    { key: 'awaiting', en: 'Assigned but Not Accepted', ar: 'معيّنة – لم تُقبل بعد', color: 'text-orange-500', icon: 'fa-hourglass-half', match: t => !isTaskUnassigned(t) && t.status === 'Open' && !t.delay },
     { key: 'late', en: 'Late', ar: 'متأخر', color: 'text-red-500', icon: 'fa-triangle-exclamation', match: t => isTaskLate(t) },
+    { key: 'delayed', en: 'Delayed Fixes', ar: 'إصلاحات مؤجلة', color: 'text-fuchsia-500', icon: 'fa-calendar-xmark', match: t => getDelayState(t) === 'delayed' },
+    { key: 'returned', en: 'Returned Fixes', ar: 'إصلاحات عادت للجدولة', color: 'text-teal-500', icon: 'fa-calendar-check', match: t => getDelayState(t) === 'returned' },
     { key: 'replace', en: 'Replace Piece', ar: 'استبدال قطعة', color: 'text-rose-500', icon: 'fa-gears', match: t => getTaskPhase(t) === 'replace' },
     { key: 'workshop', en: 'Fix in Workshop', ar: 'إصلاح في الورشة', color: 'text-violet-500', icon: 'fa-industry', match: t => getTaskPhase(t) === 'workshop' },
     { key: 'withdraw', en: 'Withdraw Get It', ar: 'سحب – استلام', color: 'text-amber-600', icon: 'fa-truck-ramp-box', match: t => getTaskPhase(t) === 'withdraw' },
@@ -640,7 +719,7 @@ function getOrderStatusForTask(task, taskStatus) {
 // it was assigned to the technician — that's the clock the 4-hour "late" rule uses.
 function getTaskWaitingSince(task) {
     const order = task.orderId ? state.orders.find(o => o.id === task.orderId) : null;
-    const value = (task.assignedTo && task.assignedAt)
+    const value = ((task.assignedTo || task.assistantTo) && task.assignedAt)
         ? task.assignedAt
         : (task.unassignedSince || task.createdAt || (order && order.createdAt) || task.createdDate);
     if (!value) return null;
@@ -654,8 +733,44 @@ function getTaskWaitingSince(task) {
 
 // A task counts as "not assigned" when nobody is on it, or the technician on it no longer exists.
 function isTaskUnassigned(task) {
-    if (!task.assignedTo) return true;
-    return !state.users.some(u => u.username === task.assignedTo && u.role === 'technician');
+    return !(isValidAssignee(task.assignedTo) || isValidAssignee(task.assistantTo));
+}
+
+// A task can have a technician (assignedTo) and an assistant (assistantTo) working on it side by side.
+// Both see it, both can work on it, and whoever marks it Done closes it for both.
+function isValidAssignee(username) {
+    return !!username && state.users.some(u => u.username === username && u.role === 'technician');
+}
+
+function isAssistantUser(user) {
+    return !!user && user.role === 'technician' && user.position === 'assistant';
+}
+
+function isPlainTechnician(user) {
+    return !!user && user.role === 'technician' && (user.position === 'technician' || !user.position);
+}
+
+// ---- Delayed fixes ----
+// A technician or assistant can put a fix on hold because of the customer's circumstances.
+// task.delay = { until: 'YYYY-MM-DD', reason, by, at }.
+// Before that date the fix is "delayed". From that date on it is "returned" (due back)
+// until a worker resumes it, accepts it or finishes it.
+function isFixTask(task) {
+    return getTaskPhase(task) !== 'unit';
+}
+
+function getDelayState(task) {
+    if (!task.delay || !task.delay.until || task.status === 'Done') return null;
+    return task.delay.until > getLocalDateString() ? 'delayed' : 'returned';
+}
+
+function isTaskAssignedTo(task, username) {
+    return !!username && (task.assignedTo === username || task.assistantTo === username);
+}
+
+// "@tech + @assistant" for display
+function formatTaskAssignees(task) {
+    return [task.assignedTo, task.assistantTo].filter(Boolean).map(u => '@' + u).join(' + ');
 }
 
 // Removes orders (and the tasks that belong to them). Used when a customer or order is deleted.
@@ -681,7 +796,7 @@ function isTaskLate(task) {
     // Once a technician has accepted it (In Progress) or it's Done, it's never "late" —
     // only a task still sitting Open (unassigned, or assigned but not accepted yet)
     // past the 4-hour window turns late/red.
-    if (task.status !== 'Open') return false;
+    if (task.status !== 'Open' || task.delay) return false;
     const since = getTaskWaitingSince(task);
     return !!since && (Date.now() - since.getTime()) > LATE_AFTER_MS;
 }
@@ -716,6 +831,25 @@ function getCollectedAmount(order) {
 // Upfront payment + money the technician collected from the customer.
 function getOrderRevenue(order) {
     return (Number(order.amount) || 0) + getCollectedAmount(order);
+}
+
+// Money collected on Arabi jobs. They have no order, so the money sits on the task itself.
+function getArabiCollectedAmount() {
+    return state.tasks
+        .filter(t => t.source === 'arabi' && t.status === 'Done' && t.orderType === 'Tech Fix Service')
+        .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
+}
+
+// Everything the company took in: our customers' orders + Arabi jobs.
+// Money collected on imported customer-sheet jobs (also no order, so it sits on the task).
+function getSheetCollectedAmount() {
+    return state.tasks
+        .filter(t => t.source === 'sheet' && t.status === 'Done' && t.orderType === 'Tech Fix Service')
+        .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
+}
+
+function getAllRevenue() {
+    return state.orders.reduce((sum, o) => sum + getOrderRevenue(o), 0) + getArabiCollectedAmount() + getSheetCollectedAmount();
 }
 
 // "Received from customer" line for a finished repair (unit orders don't collect money on site).
@@ -809,17 +943,77 @@ const STAFF_CATEGORIES = {
             { key: 'financial-manager', en: 'Financial Manager', ar: 'مدير مالي' },
             { key: 'accountant', en: 'Accountant', ar: 'محاسب' }
         ]
+    },
+    // Office departments. They use the existing 'admin' role (staff login, no customer data).
+    'store': {
+        role: 'admin',
+        en: 'Store', ar: 'المخزن',
+        positions: [
+            { key: 'store-administrator', en: 'Administrator', ar: 'مسؤول' },
+            { key: 'store-assistant', en: 'Assistant', ar: 'مساعد' }
+        ]
+    },
+    'purchases': {
+        role: 'admin',
+        en: 'Purchases', ar: 'المشتريات',
+        positions: [
+            { key: 'purchases-manager', en: 'Manager', ar: 'مدير' },
+            { key: 'purchases-assistant', en: 'Assistant', ar: 'مساعد' }
+        ]
+    },
+    'quality': {
+        role: 'admin',
+        en: 'Quality', ar: 'الجودة',
+        positions: [
+            { key: 'quality-quality', en: 'Quality', ar: 'جودة' },
+            { key: 'quality-supervisor', en: 'Supervisor', ar: 'مشرف' }
+        ]
     }
 };
+
+// Built-in categories + the jobs the admin added with "Add Job".
+function getStaffCategories() {
+    const all = {};
+    Object.keys(STAFF_CATEGORIES).forEach(k => {
+        all[k] = { ...STAFF_CATEGORIES[k], positions: STAFF_CATEGORIES[k].positions.slice() };
+    });
+    (state.customJobs || []).forEach(j => {
+        if (!all[j.category]) {
+            all[j.category] = {
+                role: 'admin',
+                en: j.categoryEn || j.category,
+                ar: j.categoryAr || j.categoryEn || j.category,
+                positions: [],
+                custom: true
+            };
+        }
+        all[j.category].positions.push({ key: j.key, en: j.en, ar: j.ar || j.en, jobId: j.id });
+    });
+    return all;
+}
+
+// Which category an employee belongs to (older accounts have no saved category).
+function getUserCategoryKey(user) {
+    if (!user) return null;
+    if (user.role === 'executive') return 'executive';
+    const cats = getStaffCategories();
+    if (user.category && cats[user.category]) return user.category;
+    return Object.keys(cats).find(k => cats[k].role === user.role && cats[k].positions.some(p => p.key === user.position)) || null;
+}
 
 // The job title shown for an employee (falls back to the generic role label for older accounts
 // that were created before positions existed).
 function getPositionLabel(user) {
     if (!user) return getRoleLabel('customer');
     if (user.role === 'executive') return getRoleLabel('executive');
-    const cat = Object.values(STAFF_CATEGORIES).find(c => c.role === user.role);
+    const ar = state.currentLang === 'ar';
+    const catKey = getUserCategoryKey(user);
+    const cat = catKey && getStaffCategories()[catKey];
     const pos = cat && cat.positions.find(p => p.key === user.position);
-    if (pos) return state.currentLang === 'ar' ? pos.ar : pos.en;
+    if (pos) {
+        const posName = ar ? pos.ar : pos.en;
+        return `${ar ? cat.ar : cat.en} – ${posName}`;
+    }
     return getRoleLabel(user.role);
 }
 
@@ -1064,6 +1258,8 @@ let state = {
     tasks: JSON.parse(localStorage.getItem('ca_tasks')) || INITIAL_TASKS,
     areas: loadAreas(),
     aboutVideos: loadAboutVideos(),
+    customJobs: loadCustomJobs(),
+    customerFolders: loadCustomerFolders(),
     // The logged-in user is kept per browser TAB (sessionStorage), not in localStorage, so signing in
     // as someone else in another tab can never switch the account of this tab on refresh.
     currentUser: loadSessionUser(),
@@ -1136,6 +1332,8 @@ function saveState() {
     localStorage.setItem('ca_tasks', JSON.stringify(state.tasks));
     localStorage.setItem('ca_areas', JSON.stringify(state.areas));
     localStorage.setItem('ca_about_videos', JSON.stringify(state.aboutVideos || []));
+    localStorage.setItem('ca_custom_jobs', JSON.stringify(state.customJobs || []));
+    localStorage.setItem('ca_customer_folders', JSON.stringify(state.customerFolders || []));
     try { sessionStorage.setItem('ca_current_user', JSON.stringify(state.currentUser)); } catch (e) { /* storage unavailable */ }
     localStorage.setItem('ca_revenue_reset_baseline', String(state.revenueResetBaseline || 0));
 
@@ -1304,6 +1502,8 @@ const TRANSLATIONS = {
         admin_dashboard_title: "Cooling Art Admin Dashboard",
         admin_dashboard_desc: "Manage customer orders and technical repair requests",
         btn_create_staff: "Add Employee",
+        btn_add_job: "Add Job",
+        btn_add_customer: "Add Customer",
         total_revenue: "Total Revenue",
         registered_users: "Customers",
         active_insurance: "Active Insurance",
@@ -1532,6 +1732,8 @@ const TRANSLATIONS = {
         admin_dashboard_title: "لوحة تحكم إدارة كولينج آرت",
         admin_dashboard_desc: "إدارة طلبات العملاء وطلبات الصيانة الفنية",
         btn_create_staff: "إضافة موظف",
+        btn_add_job: "إضافة وظيفة",
+        btn_add_customer: "إضافة عميل",
         total_revenue: "إجمالي الإيرادات",
         registered_users: "العملاء",
         active_insurance: "التأمينات النشطة",
@@ -1955,6 +2157,9 @@ Object.assign(AR_UI, {
     'Administrative Manager': 'مدير إداري', 'Customer Service Representative': 'ممثل خدمة العملاء',
     'Financial Manager': 'مدير مالي', 'Accountant': 'محاسب',
     'Add Technical and Customer Service employees (Admin and Executive Director only)': 'إضافة موظفي الفريق الفني وخدمة العملاء (للمسؤول الرئيسي والمدير التنفيذي فقط)',
+    'Add Job': 'إضافة وظيفة',
+    'Edit Employee': 'تعديل الموظف',
+    'Save Changes': 'حفظ التغييرات',
     'All employee accounts added by the Admin and the Executive Director': 'جميع حسابات الموظفين التي أضافها المسؤول الرئيسي والمدير التنفيذي',
     'Only the Admin or the Executive Director can add employees.': 'المسؤول الرئيسي أو المدير التنفيذي فقط يمكنه إضافة الموظفين.',
     'Only the Admin can add or delete an Executive Director.': 'المسؤول الرئيسي فقط يمكنه إضافة أو حذف المدير التنفيذي.',
@@ -2039,6 +2244,55 @@ function buildArDynamic() {
     Object.keys(LOCATION_AR).forEach(k => add(k, LOCATION_AR[k]));
     (state.areas || []).forEach(a => add(a.name, a.nameAr));
 }
+
+Object.assign(AR_UI, {
+    'Map': 'الخريطة',
+    'Live location of every technician and assistant': 'الموقع المباشر لكل فني ومساعد',
+    'Nobody is sharing a location right now': 'لا أحد يشارك موقعه الآن',
+    'Labor Dashboard': 'لوحة العمال',
+    'Jobs done by each technician and assistant, with customer ratings and your own rating': 'المهام المنجزة لكل فني ومساعد، مع تقييمات العملاء وتقييمك الخاص',
+    'Employee': 'الموظف',
+    'Category – Job': 'القسم – الوظيفة',
+    'This Month': 'هذا الشهر',
+    'Customer Rating': 'تقييم العميل',
+    'Your Rating': 'تقييمك',
+    'Jobs': 'المهام',
+    'Add Customer': 'إضافة عميل',
+    'Profile Photo': 'الصورة الشخصية',
+    'Edit Staff Account': 'تعديل حساب الموظف',
+    'Remove job': 'حذف الوظيفة',
+    'Add a new job to a category, or create a new category (Admin and Executive Director only)': 'أضف وظيفة جديدة إلى قسم، أو أنشئ قسماً جديداً (للمسؤول والمدير التنفيذي فقط)',
+    'Create a customer account (Admin and Executive Director only)': 'إنشاء حساب عميل (للمسؤول والمدير التنفيذي فقط)',
+    'New Category Name (English)': 'اسم القسم الجديد (بالإنجليزية)',
+    'New Category Name (Arabic, optional)': 'اسم القسم الجديد (بالعربية، اختياري)',
+    'Job Title (English)': 'المسمى الوظيفي (بالإنجليزية)',
+    'Job Title (Arabic, optional)': 'المسمى الوظيفي (بالعربية، اختياري)',
+    'e.g., Ahmed Hassan': 'مثال: أحمد حسن',
+    'e.g., ahmed.h': 'مثال: ahmed.h',
+    '6+ letters, digits or _': '6 أحرف أو أرقام أو _ على الأقل',
+    'The username and password can\'t be changed here — they are the employee\'s login.': 'لا يمكن تغيير اسم المستخدم وكلمة المرور من هنا — فهما بيانات دخول الموظف.',
+    'Only the Admin or the Executive Director can add jobs.': 'المسؤول أو المدير التنفيذي فقط يمكنه إضافة وظائف.',
+    'Only the Admin or the Executive Director can add customers.': 'المسؤول أو المدير التنفيذي فقط يمكنه إضافة عملاء.',
+    'Only the Admin or the Executive Director can rate employees.': 'المسؤول أو المدير التنفيذي فقط يمكنه تقييم الموظفين.',
+    'Please enter the job title.': 'يرجى إدخال المسمى الوظيفي.',
+    'Please enter the new category name.': 'يرجى إدخال اسم القسم الجديد.',
+    'That job already exists in this category.': 'هذه الوظيفة موجودة بالفعل في هذا القسم.',
+    'Job removed.': 'تم حذف الوظيفة.',
+    'This job is assigned to an employee. Edit or delete that employee first.': 'هذه الوظيفة مسندة إلى موظف. عدّل هذا الموظف أو احذفه أولاً.',
+    'Please complete the customer form.': 'يرجى إكمال نموذج العميل.',
+    'Employee not found.': 'لم يتم العثور على الموظف.',
+    'You can only delay your own assigned tasks.': 'يمكنك تأجيل المهام المسندة إليك فقط.'
+});
+
+AR_PATTERNS.push(
+    [/^Job "(.+)" added\.$/, m => `تمت إضافة الوظيفة "${m[1]}".`],
+    [/^Customer (.+) added\.$/, m => `تمت إضافة العميل ${m[1]}.`],
+    [/^(.+) updated\.$/, m => `تم تحديث ${m[1]}.`]
+);
+
+Object.assign(AR_UI, {
+    'Search by name, username or job...': 'ابحث بالاسم أو اسم المستخدم أو الوظيفة...'
+});
 
 const AR_ATTRS = ['placeholder', 'title', 'aria-label', 'alt'];
 
@@ -2135,7 +2389,14 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
-    if (viewId === 'customer-log' && (!state.currentUser || !isStaffRole(state.currentUser.role) || state.currentUser.role === 'technician')) {
+    if (viewId === 'customer-log' && (!state.currentUser || !isStaffRole(state.currentUser.role) || state.currentUser.role === 'technician' || state.currentUser.role === 'admin')) {
+        showToast('Access restricted to administrators only.', 'error');
+        try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
+        navigateTo('home', true);
+        return;
+    }
+
+    if (viewId === 'map' && (!state.currentUser || (!isTopAdmin(state.currentUser.role) && state.currentUser.role !== 'hr'))) {
         showToast('Access restricted to administrators only.', 'error');
         try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
         navigateTo('home', true);
@@ -2193,7 +2454,7 @@ function navigateTo(viewId, fromHistory = false) {
     // Remember the current view so a page refresh reopens it instead of bouncing to Home
     sessionStorage.setItem('ca_last_view', route);
 
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
 
     views.forEach(v => {
         const el = document.getElementById(`view-${v}`);
@@ -2230,11 +2491,12 @@ function navigateTo(viewId, fromHistory = false) {
     if (viewId === 'customer-log' || viewId === 'chats') renderAdminDashboard();
     if (viewId === 'about') renderPolicies();
     if (viewId === 'arabi') renderArabiPage();
+    if (viewId === 'map') renderMapPage();
 }
 
 // Returns the id (without the "view-" prefix) of whichever section is currently visible
 function getCurrentViewId() {
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
     for (const v of views) {
         const el = document.getElementById(`view-${v}`);
         if (el && !el.classList.contains('hidden')) return v;
@@ -2248,6 +2510,7 @@ function refreshCurrentView() {
     if (current === 'products') renderProducts();
     if (current === 'tech-fix') renderTechServices();
     if (current === 'arabi') renderArabiPage();
+    if (current === 'map') renderMapPage();
     if (current === 'admin-dashboard') renderAdminDashboard();
     if (current === 'tech-home') renderTechHome();
     if (current === 'tech-dashboard') renderTechDashboard();
@@ -2600,6 +2863,22 @@ function closeDeleteUserModal() {
     document.getElementById('deleteUserModal').classList.add('hidden');
 }
 
+// A technician's unfinished tasks go back to the "Not Assigned" pile.
+function releaseTechnicianTasks(username) {
+    state.tasks.forEach(t => {
+        if (t.assistantTo === username && t.status !== 'Done') t.assistantTo = '';
+        if (t.assignedTo === username && t.status !== 'Done') {
+            t.assignedTo = '';
+            t.unassignedSince = new Date().toISOString();
+            if (t.status === 'In Progress' && !t.assistantTo) {
+                t.status = 'Open';
+                const o = t.orderId ? state.orders.find(x => x.id === t.orderId) : null;
+                if (o) o.status = getOrderStatusForTask(t, 'Open');
+            }
+        }
+    });
+}
+
 function confirmDeleteUser() {
     if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
         showToast('Only the head admin can delete users and orders.', 'error');
@@ -2637,18 +2916,7 @@ function confirmDeleteUser() {
 
     state.users = state.users.filter(u => u.id !== userToDeleteId);
     if (targetUser.role === 'technician') {
-        // Their unfinished tasks go back to the "Not Assigned" pile.
-        state.tasks.forEach(t => {
-            if (t.assignedTo === targetUser.username && t.status !== 'Done') {
-                t.assignedTo = '';
-                t.unassignedSince = new Date().toISOString();
-                if (t.status === 'In Progress') {
-                    t.status = 'Open';
-                    const o = t.orderId ? state.orders.find(x => x.id === t.orderId) : null;
-                    if (o) o.status = getOrderStatusForTask(t, 'Open');
-                }
-            }
-        });
+        releaseTechnicianTasks(targetUser.username);
     } else if (!isStaffRole(targetUser.role)) {
         // A deleted customer takes their orders and tasks with them.
         purgeOrders(o => String(o.username).toLowerCase() === targetUser.username.toLowerCase());
@@ -3802,7 +4070,7 @@ function renderOrderTaskBadge(orderId) {
     if (task.status === 'Done') {
         const at = task.completedAt || task.completedDate;
         const canReturn = state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
-        const technicianUsers = state.users.filter(u => u.role === 'technician');
+        const technicianUsers = state.users.filter(u => isPlainTechnician(u) || u.username === task.assignedTo);
         // One control: pick which technician it goes back to (defaults to
         // whoever did it), then Return — replaces the old plain "Return to
         // technician" button, which could only send it back to the same person.
@@ -3819,7 +4087,7 @@ function renderOrderTaskBadge(orderId) {
                     </button>
                 </div>`
             : '';
-        return `<span class="block text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide"><i class="fa-solid fa-circle-check"></i> ${L('Done', 'منجز')}${task.assignedTo ? ` — @${task.assignedTo}` : ''}${at ? ` · ${escapeHtml(formatDateTime(at))}` : ''}</span>${renderRepairPhotosIcon(task, true)}${returnBlock}`;
+        return `<span class="block text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide"><i class="fa-solid fa-circle-check"></i> ${L('Done', 'منجز')}${formatTaskAssignees(task) ? ` — ${formatTaskAssignees(task)}` : ''}${at ? ` · ${escapeHtml(formatDateTime(at))}` : ''}</span>${renderRepairPhotosIcon(task, true)}${returnBlock}`;
     }
     if (isTaskLate(task)) {
         return `${phaseLine}<span class="block mt-1 text-[9px] font-extrabold text-red-600 dark:text-red-400 uppercase tracking-wide"><i class="fa-solid fa-triangle-exclamation"></i> ${L('Late', 'متأخر')} — ${L('Needs Technician', 'بحاجة لفني')}</span>`;
@@ -3827,7 +4095,7 @@ function renderOrderTaskBadge(orderId) {
     if (isTaskUnassigned(task)) {
         return `${phaseLine}<span class="block mt-1 text-[9px] font-extrabold text-amber-600 dark:text-amber-400 uppercase tracking-wide"><i class="fa-solid fa-hourglass-half"></i> Needs Technician</span>`;
     }
-    return `${phaseLine}<span class="block mt-1 text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide"><i class="fa-solid fa-check"></i> @${task.assignedTo}</span>`;
+    return `${phaseLine}<span class="block mt-1 text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide"><i class="fa-solid fa-check"></i> ${formatTaskAssignees(task)}</span>`;
 }
 
 // Sends a finished (Done) task back to Open so it can be worked again, from
@@ -3875,6 +4143,7 @@ function placeOrder(title, price, type) {
 // Every staff account is shown as a full mini-profile: a big photo first,
 // then the name, job title and a short description with the account details.
 function renderWhoWeAreDetails() {
+    renderManagePanel();
     const headBox = document.getElementById('whoWeAreHead');
     const techList = document.getElementById('whoWeAreTechList');
     const hrList = document.getElementById('whoWeAreHrList');
@@ -4540,7 +4809,22 @@ function stripOrderRef(text) {
 }
 
 // Task description in the current language (Arabi tasks are built from their own fields).
+// Description paragraph (+ a Call button when the customer came from the sheet and the job is still open)
+function renderTaskDescription(task) {
+    const call = (task.source === 'sheet' && task.phone && task.status !== 'Done')
+        ? `<a href="tel:+${toInternationalDigits(task.phone)}" class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 rounded-lg px-3 py-1.5 transition"><i class="fa-solid fa-phone"></i>${L('Call customer', 'اتصل بالعميل')} <span dir="ltr" class="font-mono">${escapeHtml(task.phone)}</span></a>`
+        : '';
+    return `<p dir="auto" class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(getTaskDescription(task))}</p>${call}`;
+}
+
 function getTaskDescription(task) {
+    if (task.source === 'sheet') {
+        const parts = [`${L('Customer', 'العميل')} ${task.customerName || '—'}`];
+        if (task.phone) parts.push(`${L('Phone:', 'الهاتف:')} ${task.phone}`);
+        parts.push(`${L('Address:', 'العنوان:')} ${task.address || '—'}.`);
+        const notes = task.notes ? ` ${L('Call center notes:', 'ملاحظات الكول سنتر:')} ${task.notes}` : '';
+        return parts.join(' — ') + notes;
+    }
     if (task.source !== 'arabi') return task.description;
     const prefix = `Customer ${task.customerName || 'N/A'} — Address: ${task.address || 'N/A'}.`;
     const rest = String(task.description || '').startsWith(prefix) ? String(task.description).slice(prefix.length) : '';
@@ -4553,21 +4837,46 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
     const phase = getTaskPhase(task);
     const loc = getTaskLocation(task);
     const waitingSince = getTaskWaitingSince(task);
+    // Two lists: Assign Technician and Assign Assistant (both get the task).
+    const techOptions = technicianUsers.filter(u => isPlainTechnician(u) || u.username === task.assignedTo);
+    const assistantOptions = technicianUsers.filter(u => isAssistantUser(u) || u.username === task.assistantTo);
+    const assignSelect = (kind, list, current, placeholder, warn) => `
+        <select onchange="reassignTask('${task.id}', this.value, '${kind}')" class="block w-full bg-slate-100 dark:bg-slate-800 border rounded px-2 py-1 text-xs ${warn}">
+            ${current ? '' : `<option value="" disabled selected>-- ${placeholder} --</option>`}
+            ${kind === 'assistant' && current ? `<option value="">-- ${L('No assistant', 'بدون مساعد')} --</option>` : ''}
+            ${list.map(tech => `<option value="${tech.username}" ${tech.username === current ? 'selected' : ''}>${tech.name || tech.username} (@${tech.username}) — ${escapeHtml(getPositionLabel(tech))}</option>`).join('')}
+        </select>`;
+    const techWarn = isLate ? 'border-red-500 text-red-600 font-bold' : needsAssignment ? 'border-yellow-400 text-yellow-600 font-bold' : '';
     const assignedCell = (canManageTasks && task.status !== 'Done') ? `
-        <select onchange="reassignTask('${task.id}', this.value)" class="bg-slate-100 dark:bg-slate-800 border rounded px-2 py-1 text-xs ${isLate ? 'border-red-500 text-red-600 font-bold' : needsAssignment ? 'border-yellow-400 text-yellow-600 font-bold' : ''}">
-            ${needsAssignment ? `<option value="" disabled selected>-- Assign Technician --</option>` : ''}
-            ${technicianUsers.map(tech => `<option value="${tech.username}" ${tech.username === task.assignedTo ? 'selected' : ''}>${tech.name || tech.username} (@${tech.username})</option>`).join('')}
-        </select>
-    ` : `<span class="font-bold">@${task.assignedTo}</span>`;
+        <div class="space-y-1.5 min-w-[170px]">
+            ${assignSelect('technician', techOptions, task.assignedTo, L('Assign Technician', 'تعيين فني'), techWarn)}
+            ${assignSelect('assistant', assistantOptions, task.assistantTo, L('Assign Assistant', 'تعيين مساعد'), '')}
+        </div>
+    ` : `<span class="font-bold">${formatTaskAssignees(task) || '—'}</span>`;
     const linkedOrder = task.orderId ? state.orders.find(o => o.id === task.orderId) : null;
     const isArabi = task.source === 'arabi';
-    const customerCell = isArabi
+    const hasOwnCustomer = isArabi || task.source === 'sheet';
+    const folderLink = (task.folderId && canManageTasks)
+        ? `<button type="button" onclick="openCustomerFolder('${task.folderId}')" class="mt-1 inline-flex items-center gap-1 text-[10px] font-extrabold text-amber-600 hover:text-amber-700"><i class="fa-solid fa-folder-open"></i>${L('Customer folder', 'ملف العميل')}</button>`
+        : '';
+    const customerCell = hasOwnCustomer
         ? `<span class="font-bold text-slate-700 dark:text-slate-200">${escapeHtml(task.customerName || '')}</span>${task.phone ? `<span class="block text-[10px] text-slate-400 font-mono">${escapeHtml(task.phone)}</span>` : ''}`
         : linkedOrder
         ? `<span class="font-bold text-slate-700 dark:text-slate-200">@${linkedOrder.username}</span><span class="block text-[10px] text-slate-400">${escapeHtml(linkedOrder.customerName || '')}</span>`
         : `<span class="text-slate-300 dark:text-slate-600 text-[11px]">N/A</span>`;
-    const arabiChip = isArabi ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400 uppercase">${L('Arabi', 'عربي')}</span>` : '';
+    // Every task says whose customer it is, so Arabi and our own tasks can share one table.
+    const sourceChip = isArabi
+        ? `<span class="inline-flex items-center px-2 py-0.5 mb-1 rounded-full text-[10px] font-extrabold bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400">${L('ARABI Customer', 'عميل عربي')}</span>`
+        : `<span class="inline-flex items-center px-2 py-0.5 mb-1 rounded-full text-[10px] font-extrabold bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400">${L('Our Customer', 'عميلنا')}</span>`;
 
+    const delayState = getDelayState(task);
+    const delayChip = delayState
+        ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase ${delayState === 'returned' ? 'bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-400' : 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-400'}"><i class="fa-solid ${delayState === 'returned' ? 'fa-calendar-check' : 'fa-calendar-xmark'}"></i> ${delayState === 'returned' ? L('Back from delay', 'عاد من التأجيل') : L('Delayed until', 'مؤجل حتى')} ${escapeHtml(task.delay.until)}</span>`
+        : '';
+    const delayNote = delayState
+        ? `<span class="block text-[10px] text-slate-500 dark:text-slate-400 mt-1">${L('Delay reason', 'سبب التأجيل')}: ${escapeHtml(task.delay.reason)}${task.delay.by ? ` · @${escapeHtml(task.delay.by)}` : ''}</span>
+           ${canManageTasks ? `<button type="button" onclick="resumeDelayedTask('${task.id}')" class="mt-1.5 text-[10px] font-extrabold bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-sky-950 rounded-lg px-2.5 py-1 transition"><i class="fa-solid fa-play me-1"></i>${L('Resume now', 'استئناف الآن')}</button>` : ''}`
+        : '';
     const phaseChip = phase !== 'unit'
         ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 uppercase">${escapeHtml(getPhaseLabel(phase))}</span>`
         : '';
@@ -4578,20 +4887,22 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
             : '';
 
     return `
-    <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 ${isLate ? 'bg-red-50 dark:bg-red-950/30 border-l-4 border-l-red-500' : needsAssignment ? 'bg-yellow-50/50 dark:bg-yellow-950/10' : ''}">
+    <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 ${isLate ? 'bg-red-50 dark:bg-red-950/30 border-l-4 border-l-red-500' : needsAssignment ? 'bg-yellow-50/50 dark:bg-yellow-950/10' : delayState === 'returned' ? 'bg-teal-50/60 dark:bg-teal-950/20' : ''}">
         <td class="p-4">
             <span class="font-semibold block leading-snug">${escapeHtml(task.title)}</span>
-            <span class="mt-1.5 flex flex-wrap items-center gap-1">${arabiChip}${phaseChip}${stateChip}</span>
+            <span class="mt-1.5 flex flex-wrap items-center gap-1">${phaseChip}${stateChip}${delayChip}</span>
+            ${delayNote}
             ${isLate ? `<span class="block text-[10px] text-red-600 dark:text-red-400 mt-1"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار فني منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
         </td>
         <td class="p-4 text-slate-500 text-[11px] space-y-1">
-            <span class="block leading-relaxed">${isArabi ? `<i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(task.address || '')}` : stripOrderRef(task.description)}</span>
+            <span dir="auto" class="block leading-relaxed">${hasOwnCustomer ? `<i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(task.address || '')}` : stripOrderRef(task.description)}</span>
+            ${task.source === 'sheet' && task.notes ? `<span dir="auto" class="block text-slate-500 dark:text-slate-400"><i class="fa-regular fa-note-sticky text-amber-400 me-1"></i>${escapeHtml(task.notes)}</span>` : ''}
             ${loc.label ? `<span class="block"><i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(getLocationLabel(loc.label))}</span>` : ''}
             ${loc.coords ? `<span class="block">${renderMapLink(loc.coords)}</span>` : ''}
-            <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy ? ` · ${escapeHtml(task.createdBy === 'Arabi Sheet' ? L('Arabi Sheet', 'ملف عربي') : task.createdBy)}` : ''}</span>
+            <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy ? ` · ${escapeHtml(task.createdBy === 'Arabi Sheet' ? L('Arabi Sheet', 'ملف عربي') : task.createdBy === 'Customer Sheet' ? L('Customer Sheet', 'شيت العملاء') : task.createdBy)}` : ''}</span>
             ${task.status === 'Open' && waitingSince && !isLate ? `<span class="block text-slate-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
         </td>
-        <td class="p-4">${customerCell}</td>
+        <td class="p-4"><span class="block">${sourceChip}</span>${customerCell}${folderLink}</td>
         <td class="p-4">${assignedCell}</td>
         <td class="p-4 text-slate-500 text-[11px]">${task.priority}</td>
         <td class="p-4 text-slate-500 text-[11px]">${task.dueDate || 'N/A'}</td>
@@ -4626,6 +4937,10 @@ function buildOrderHistoryHtml(order) {
     events.push({ icon: 'fa-cart-shopping', label: L('Order placed', 'تم إنشاء الطلب'), when: order.createdAt || order.date });
     if (task && task.assignedTo && task.assignedAt) {
         events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${tech ? tech.name : '@' + task.assignedTo}`, when: task.assignedAt });
+    }
+    if (task && task.assistantTo) {
+        const assistant = state.users.find(u => u.username === task.assistantTo);
+        events.push({ icon: 'fa-user-group', label: `${L('Assistant', 'المساعد')}: ${assistant ? assistant.name : '@' + task.assistantTo}`, when: task.assignedAt });
     }
     if (task && task.acceptedAt) events.push({ icon: 'fa-hand', label: L('Technician accepted', 'قبل الفني المهمة'), when: task.acceptedAt });
     const doneAt = task && (task.completedAt || task.completedDate);
@@ -4737,7 +5052,7 @@ function renderAdminDashboard() {
     const grid = document.getElementById('adminAnalyticsGrid');
     if (isHeadAdmin) {
         grid.classList.remove('hidden');
-        const totalRev = Math.max(0, state.orders.reduce((sum, o) => sum + getOrderRevenue(o), 0) - state.revenueResetBaseline);
+        const totalRev = Math.max(0, getAllRevenue() - state.revenueResetBaseline);
 
         grid.innerHTML = `
             <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
@@ -4746,11 +5061,13 @@ function renderAdminDashboard() {
                     <button onclick="confirmResetTotalRevenue()" class="text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition">Reset</button>
                 </div>
                 <h3 class="text-2xl font-extrabold text-sky-600 dark:text-sky-400 mt-1">${totalRev.toLocaleString()} EGP</h3>
+                <p class="text-[10px] text-slate-400">${L('Includes Arabi customers', 'يشمل عملاء عربي')}: ${getArabiCollectedAmount().toLocaleString()} EGP</p>
+                <p class="text-[10px] text-slate-400">${L('Includes imported customers', 'يشمل العملاء المستوردين')}: ${getSheetCollectedAmount().toLocaleString()} EGP</p>
                 ${state.revenueResetBaseline ? '<p class="text-[10px] text-slate-400">Revenue is currently counted from the last reset.</p>' : ''}
             </div>
             <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
                 <span class="text-xs font-bold text-slate-400 uppercase">${t('customers', 'Customers')}</span>
-                <h3 class="text-2xl font-extrabold mt-1">${state.users.length}</h3>
+                <h3 class="text-2xl font-extrabold mt-1">${state.users.filter(u => u.role === 'customer').length}</h3>
             </div>
         `;
     } else {
@@ -4795,75 +5112,14 @@ function renderAdminDashboard() {
     if (tasksSection) {
         tasksSection.classList.toggle('hidden', !canManageTasks && !isTechnician);
     }
-    // Create Staff Account icon (opens the modal) — visible to head admin only
-    const btnOpenStaffAccount = document.getElementById('btnOpenStaffAccount');
-    if (btnOpenStaffAccount) btnOpenStaffAccount.classList.toggle('hidden', !isHeadAdmin);
-
-    // Staff Account Creation Form (Head Admin Only) — this is how Customer Services and Technician
-    // accounts get created, instead of them signing up as customers or being hardcoded.
-    const staffFormBox = document.getElementById('adminStaffFormBox');
-    if (staffFormBox) {
-        staffFormBox.innerHTML = isHeadAdmin ? `
-            <div class="space-y-4">
-                <p class="text-[11px] text-slate-400">Only the Admin or the Executive Director can add employees. Employee accounts never go through the public signup form.</p>
-                <form onsubmit="handleCreateStaffSubmit(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                    <div>
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Category</label>
-                        <select id="staffCategory" required onchange="updateStaffPositionOptions()" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
-                            <option value="technical">Technical</option>
-                            <option value="customer-service">Customer Service</option>
-                            ${isRealHead ? '<option value="executive">Executive Director</option>' : ''}
-                        </select>
-                    </div>
-                    <div id="staffPositionWrap">
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Position</label>
-                        <select id="staffPosition" required class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500"></select>
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Full Name</label>
-                        <input type="text" id="staffFullName" required placeholder="e.g., Mona Adel" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                    <div>
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Username</label>
-                        <input type="text" id="staffUsername" required placeholder="e.g., mona.cs" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                    <div>
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Password</label>
-                        <input type="text" id="staffPassword" required placeholder="Set a password" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                    <div>
-                        <label class="block font-bold uppercase text-slate-500 mb-1">WhatsApp Number</label>
-                        <input type="tel" id="staffWhatsApp" placeholder="e.g., 01098765432" maxlength="11" inputmode="numeric" pattern="[0-9]{11}" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                    <div>
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Contact Phone</label>
-                        <input type="tel" id="staffContactPhone" placeholder="e.g., 01098765432" maxlength="11" inputmode="numeric" pattern="[0-9]{11}" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block font-bold uppercase text-slate-500 mb-1">Profile Photo</label>
-                        <div class="flex items-center gap-4">
-                            <div id="staffPhotoPreview" class="w-16 h-16 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-300 dark:text-slate-600 shrink-0 overflow-hidden">
-                                <i class="fa-solid fa-user text-2xl"></i>
-                            </div>
-                            <input type="file" id="staffPhoto" accept="image/*" onchange="previewStaffPhoto(event)" class="flex-1 text-[11px] file:me-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:font-bold file:bg-sky-100 file:text-sky-600 dark:file:bg-sky-950 dark:file:text-sky-400 hover:file:bg-sky-200">
-                        </div>
-                        <p class="text-[10px] text-slate-400 mt-1">Optional — shown on the "Who Are We" team page. JPG/PNG, under 1&nbsp;MB.</p>
-                    </div>
-                    <div class="md:col-span-2">
-                        <button type="submit" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 rounded-xl uppercase tracking-wider transition">Add Employee</button>
-                    </div>
-                </form>
-            </div>
-        ` : '';
-    }
-    if (isHeadAdmin) updateStaffPositionOptions();
 
     // ---- Registered Customers section: visible to head admin & Customer Services only.
     // Only customer accounts are listed here — staff accounts live in "Who Are We". ----
     const usersSection = document.getElementById('adminUsersSection');
-    if (usersSection) usersSection.classList.toggle('hidden', isTechnician);
+    const seesCustomers = !isTechnician && state.currentUser.role !== 'admin';
+    if (usersSection) usersSection.classList.toggle('hidden', !seesCustomers);
 
-    if (!isTechnician) {
+    if (seesCustomers) {
         const usersTbody = document.getElementById('adminUsersTable');
         const userSearchInput = document.getElementById('adminUserSearch');
         const userSearchTerm = userSearchInput ? userSearchInput.value.trim().toLowerCase() : '';
@@ -4972,49 +5228,9 @@ function renderAdminDashboard() {
         }
     }
 
-    // ---- Team Accounts section: head admin only — shows all Customer Services & Technician staff ----
-    const teamSection = document.getElementById('adminTeamSection');
-    if (teamSection) teamSection.classList.toggle('hidden', !isHeadAdmin);
-
-    if (isHeadAdmin) {
-        const teamTbody = document.getElementById('adminTeamTable');
-        const staffUsers = state.users.filter(u => isStaffRole(u.role) && u.role !== 'head-admin');
-        if (staffUsers.length === 0) {
-            teamTbody.innerHTML = `<tr><td colspan="8" class="text-center p-6 text-slate-400 font-bold">No staff accounts created yet.</td></tr>`;
-        } else {
-            teamTbody.innerHTML = staffUsers.map(u => {
-                const roleColors = {
-                    'hr': 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400',
-                    'technician': 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400',
-                    'admin': 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400',
-                    'executive': 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
-                };
-                const roleColor = roleColors[u.role] || 'bg-slate-100 text-slate-500';
-                const roleLabel = getPositionLabel(u);
-                const canDeleteRow = !(u.role === 'executive' && !isRealHead);
-                return `
-                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        <td class="p-4">
-                            <div class="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden flex items-center justify-center text-slate-300 dark:text-slate-600">
-                                ${u.photo ? `<img src="${u.photo}" class="w-full h-full object-cover" alt="${escapeHtml(u.name || u.username)}">` : '<i class="fa-solid fa-user"></i>'}
-                            </div>
-                        </td>
-                        <td class="p-4 font-mono text-slate-400 text-[11px]">${u.id}</td>
-                        <td class="p-4 font-bold text-sky-500">@${u.username}</td>
-                        <td class="p-4 font-semibold">${u.name || 'N/A'}</td>
-                        <td class="p-4"><span class="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full ${roleColor}">${roleLabel}</span></td>
-                        <td class="p-4 text-slate-500 font-mono">${u.whatsapp || 'N/A'}</td>
-                        <td class="p-4 text-slate-500 font-mono">${u.contactPhone || 'N/A'}</td>
-                        <td class="p-4 text-center">
-                            ${canDeleteRow ? `<button onclick="openDeleteUserModal('${u.id}', '${u.username}')" class="text-xs font-bold text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="Delete Staff Account">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>` : ''}
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
-    }
+    // Team Accounts + Labor Dashboard now live on the Who Are We page (kept up to date from here too)
+    renderManagePanel();
+    renderCustomerFolders();
 
     taskBoardSignature = getTaskBoardSignature();
 
@@ -5048,8 +5264,8 @@ function renderAdminDashboard() {
     const taskTable = document.getElementById('adminTasksTable');
     if (taskTable) {
         // Done tasks leave the board — they live on the customer's row in the Global Orders list.
-        const activeTasks = state.tasks.filter(task => task.status !== 'Done' && task.source !== 'arabi');
-        const visibleTasks = canManageTasks ? activeTasks : activeTasks.filter(task => task.assignedTo === state.currentUser.username);
+        const activeTasks = state.tasks.filter(task => task.status !== 'Done');
+        const visibleTasks = canManageTasks ? activeTasks : activeTasks.filter(task => isTaskAssignedTo(task, state.currentUser.username) && getDelayState(task) !== 'delayed');
         if (visibleTasks.length === 0) {
             taskTable.innerHTML = `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">No active tasks.</td></tr>`;
         } else {
@@ -5057,17 +5273,576 @@ function renderAdminDashboard() {
         }
     }
 
-    renderArabiBoard(technicianUsers, canManageTasks);
-
     renderAdminChats();
     applyRoleBasedNav();
+}
+
+// ================= CUSTOMER INTAKE (Excel sheet -> customer folders + tasks) =================
+// Sheet columns: Customer Name, Building Number, Address, Issue, Call Center Notes, Bridge Number.
+//  - address = building number + address, and the bridge number is the customer's phone
+//  - every customer gets ONE folder (profile + history log); every new row becomes a task in that folder
+//  - uploading the same sheet again only adds the rows that are not in a folder's history yet
+function loadCustomerFolders() {
+    try {
+        const stored = JSON.parse(localStorage.getItem('ca_customer_folders'));
+        if (Array.isArray(stored)) return stored.filter(f => f && f.id);
+    } catch (e) { /* start empty */ }
+    return [];
+}
+
+// ---- Customer Log sources: our customers (registered accounts + call-center sheet) and Arabi customers ----
+function stableHash(text) {
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36);
+}
+
+// Same customer -> same folder id on every device, so two devices never create duplicates.
+function folderIdForKey(key) {
+    return 'CF-' + stableHash(key) + stableHash(key.split('').reverse().join(''));
+}
+
+function folderOrigins(f) {
+    const tags = Array.isArray(f.tags) ? f.tags : [];
+    return {
+        ours: tags.includes('ours') || f.source === 'excel' || f.source === 'account',
+        arabi: tags.includes('arabi') || f.source === 'arabi'
+    };
+}
+
+// Copies Arabi customers (from the Arabi extraction tasks) and registered customers into the folders.
+// Safe to run again and again: only missing folders / history lines are added.
+function syncCustomerLogSources() {
+    const folders = loadCustomerFolders();
+    const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+    const byKey = new Map(folders.map(f => [f.key, f]));
+    let foldersChanged = false, tasksChanged = false;
+
+    const ensureFolder = (row, source, tag, createdAt, altPhones) => {
+        const keys = [intakeFolderKey(row)].concat((altPhones || []).map(p => intakeFolderKey({ name: row.name, phone: p, address: row.address })));
+        let f = keys.map(k => byKey.get(k)).find(Boolean);
+        if (!f && intakePhoneDigits(row.phone).length >= 7) {
+            const nm = normalizeIntakeText(row.name), ad = normalizeIntakeText(row.address);
+            f = folders.find(x => intakePhoneDigits(x.phone).length < 7 && normalizeIntakeText(x.name) === nm && normalizeIntakeText(x.address) === ad);
+            if (f) { byKey.delete(f.key); f.key = keys[0]; f.phone = row.phone; byKey.set(f.key, f); foldersChanged = true; }
+        }
+        if (!f) {
+            f = { id: folderIdForKey(keys[0]), key: keys[0], name: row.name, phone: row.phone, address: row.address, source, createdAt: createdAt || new Date().toISOString(), history: [], tags: [tag] };
+            folders.push(f);
+            byKey.set(keys[0], f);
+            foldersChanged = true;
+        } else {
+            f.tags = Array.isArray(f.tags) ? f.tags : [];
+            if (!f.tags.includes(tag)) { f.tags.push(tag); foldersChanged = true; }
+            if (!f.name && row.name) { f.name = row.name; foldersChanged = true; }
+            if (!f.phone && row.phone) { f.phone = row.phone; foldersChanged = true; }
+            if (!f.address && row.address) { f.address = row.address; foldersChanged = true; }
+        }
+        return f;
+    };
+
+    tasks.forEach(t => {
+        if (t.source !== 'arabi' || t.parentTaskId) return;
+        const f = ensureFolder({ name: t.customerName || '', phone: t.phone || '', address: t.address || '' }, 'arabi', 'arabi', t.createdAt);
+        if (t.folderId !== f.id) { t.folderId = f.id; tasksChanged = true; }
+        f.history = f.history || [];
+        const issueText = normalizeIntakeText(t.fix || t.title);
+        if (!f.history.some(h => h.taskId === t.id || (h.file === 'Arabi Sheet' && normalizeIntakeText(h.issue) === issueText))) {
+            f.history.push({ id: 'H-' + t.id, type: 'issue', at: t.createdAt || new Date().toISOString(), issue: t.fix || t.title, notes: '', address: t.address || '', rowKey: 'arabi:' + t.id, taskId: t.id, file: 'Arabi Sheet' });
+            foldersChanged = true;
+        }
+    });
+
+    (state.users || []).forEach(u => {
+        if (u.role !== 'customer') return;
+        const phones = [u.contactPhone, u.whatsapp].filter(p => intakePhoneDigits(p).length >= 7);
+        const joined = u.joinedDate ? new Date(u.joinedDate) : null;
+        ensureFolder({ name: u.name || u.username, phone: phones[0] || '', address: '' }, 'account', 'ours',
+            joined && !isNaN(joined) ? joined.toISOString() : undefined, phones.slice(1));
+    });
+
+    // Live numbers: a folder is "ours" through an account only while that account still exists.
+    const livePhones = new Set();
+    (state.users || []).forEach(u => {
+        if (u.role !== 'customer') return;
+        [u.contactPhone, u.whatsapp].forEach(p => { const d = intakePhoneDigits(p); if (d.length >= 7) livePhones.add(d); });
+    });
+    const liveNames = new Set((state.users || []).filter(u => u.role === 'customer').map(u => normalizeIntakeText(u.name || u.username)));
+    const accountAlive = f => livePhones.has(intakePhoneDigits(f.phone)) || (intakePhoneDigits(f.phone).length < 7 && liveNames.has(normalizeIntakeText(f.name)));
+    for (let i = folders.length - 1; i >= 0; i--) {
+        const f = folders[i];
+        if (f.source === 'excel' || accountAlive(f)) continue;
+        if (Array.isArray(f.tags) && f.tags.includes('ours')) { f.tags = f.tags.filter(x => x !== 'ours'); foldersChanged = true; }
+        if (f.source === 'account') {
+            if (Array.isArray(f.tags) && f.tags.includes('arabi')) { f.source = 'arabi'; foldersChanged = true; }
+            else { folders.splice(i, 1); foldersChanged = true; }
+        }
+    }
+
+    state.customerFolders = folders;
+    if (foldersChanged || tasksChanged) saveState();
+    return foldersChanged || tasksChanged;
+}
+
+let folderSourceFilter = 'all'; // all | ours | arabi
+function setFolderSource(key) {
+    folderSourceFilter = key;
+    renderCustomerFolders();
+}
+
+// Arabic-Indic and Persian digits -> 0-9
+function toAsciiDigits(text) {
+    return String(text === null || text === undefined ? '' : text)
+        .replace(/[\u0660-\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))
+        .replace(/[\u06F0-\u06F9]/g, d => String(d.charCodeAt(0) - 0x06F0));
+}
+
+// For comparing Arabic text: ignores diacritics, tatweel, alef / ya / ta-marbuta spellings, case and extra spaces
+function normalizeIntakeText(text) {
+    return toAsciiDigits(text)
+        .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+        .replace(/[\u0623\u0625\u0622\u0671]/g, '\u0627')
+        .replace(/\u0649/g, '\u064A')
+        .replace(/\u0629/g, '\u0647')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+function intakePhoneDigits(phone) {
+    const digits = toAsciiDigits(phone).replace(/\D/g, '');
+    return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function cleanIntakePhone(value) {
+    const raw = toAsciiDigits(value).replace(/[\s\-()]/g, '');
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length === 10 && digits[0] === '1') return '0' + digits; // Excel dropped the leading 0
+    return raw;
+}
+
+// First match wins, and one column is used for one field only (so "Building Number" is not mistaken for the phone)
+const INTAKE_HEADERS = [
+    ['bridge', /bridge|\u0628\u0631\u064A\u062F\u062C|\u0627\u0644\u062C\u0633\u0631|\u062C\u0633\u0631/i],
+    ['building', /building|bldg|\u0628\u0646\u0627\u064A\u0629|\u0639\u0645\u0627\u0631\u0629|\u0645\u0628\u0646\u0649|\u0631\u0642\u0645 \u0627\u0644\u0639\u0645\u0627\u0631|\u0631\u0642\u0645 \u0627\u0644\u0645\u0628\u0646/i],
+    ['notes', /note|remark|comment|\u0645\u0644\u0627\u062D\u0638|\u0643\u0648\u0644 \u0633\u0646\u062A\u0631/i],
+    ['issue', /issue|problem|fault|fix|complaint|\u0639\u0637\u0644|\u0645\u0634\u0643\u0644|\u0634\u0643\u0648/i],
+    ['address', /address|street|area|\u0639\u0646\u0648\u0627\u0646|\u0634\u0627\u0631\u0639|\u0645\u0646\u0637\u0642/i],
+    ['phone', /phone|mobile|tel|whats|\u0647\u0627\u062A\u0641|\u0645\u0648\u0628\u0627\u064A\u0644|\u062A\u0644\u064A\u0641\u0648\u0646|\u0645\u062D\u0645\u0648\u0644|\u0631\u0642\u0645/i],
+    ['name', /name|customer|client|\u0627\u0633\u0645|\u0627\u0644\u0639\u0645\u064A\u0644|\u0639\u0645\u064A\u0644/i]
+];
+
+// Sheet (array of rows) -> [{ name, phone, address, issue, notes }]
+function parseIntakeRows(matrix) {
+    const rows = matrix
+        .map(r => r.map(c => String(c === null || c === undefined ? '' : c).trim()))
+        .filter(r => r.some(Boolean));
+    if (!rows.length) return [];
+
+    const map = {};
+    const usedColumns = new Set();
+    rows[0].forEach((cell, i) => {
+        for (const [key, pattern] of INTAKE_HEADERS) {
+            if (map[key] === undefined && !usedColumns.has(i) && pattern.test(cell)) {
+                map[key] = i;
+                usedColumns.add(i);
+                break;
+            }
+        }
+    });
+
+    let body = rows;
+    if (Object.keys(map).length >= 3) {
+        body = rows.slice(1);
+    } else {
+        // No recognisable header row: use the column order of the sheet
+        Object.keys(map).forEach(k => delete map[k]);
+        const order = rows[0].length >= 6
+            ? ['name', 'building', 'address', 'issue', 'notes', 'bridge']
+            : ['name', 'address', 'issue', 'notes', 'bridge'];
+        order.forEach((key, i) => { map[key] = i; });
+    }
+
+    const pick = (r, key) => (map[key] === undefined ? '' : (r[map[key]] || ''));
+    return body.map(r => ({
+        name: pick(r, 'name'),
+        phone: cleanIntakePhone(pick(r, 'bridge') || pick(r, 'phone')),
+        address: [pick(r, 'building'), pick(r, 'address')].filter(Boolean).join(' '),
+        issue: pick(r, 'issue'),
+        notes: pick(r, 'notes')
+    }));
+}
+
+// Same customer + same issue = same row, however it is typed (spaces, Arabic spellings, 0 in front of the number)
+function intakeRowKey(r) {
+    return [r.name, intakePhoneDigits(r.phone), r.address, r.issue].map(normalizeIntakeText).join('|');
+}
+
+// Same phone (or, without a phone, same name + address) = same customer = same folder
+function intakeFolderKey(r) {
+    const digits = intakePhoneDigits(r.phone);
+    return digits.length >= 7 ? 'tel:' + digits : 'name:' + normalizeIntakeText(r.name) + '|' + normalizeIntakeText(r.address);
+}
+
+function canImportCustomers() {
+    return !!state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
+}
+
+// Reads .xlsx / .xls / .csv. Arabic CSV files are UTF-8 or Windows-1256; reading them the default way turns the text into garbage.
+function readSheetMatrix(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = e => {
+            try {
+                const bytes = new Uint8Array(e.target.result);
+                let wb;
+                if (/\.csv$/i.test(file.name)) {
+                    let text;
+                    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+                    catch (err) { text = new TextDecoder('windows-1256').decode(bytes); }
+                    wb = XLSX.read(text, { type: 'string' });
+                } else {
+                    wb = XLSX.read(bytes, { type: 'array' });
+                }
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                resolve(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false }));
+            } catch (err) {
+                reject(err);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+let intakeLastResult = null;
+
+function handleCustomerSheet(input) {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file || !canImportCustomers()) return;
+    if (typeof XLSX === 'undefined') {
+        showToast(L('Excel reader could not load. Check your internet connection and refresh.', 'تعذر تحميل قارئ الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
+        return;
+    }
+    readSheetMatrix(file).then(matrix => {
+        intakeLastResult = importCustomerRows(parseIntakeRows(matrix), file.name);
+        renderCustomerFolders();
+        const r = intakeLastResult;
+        showToast(r.added
+            ? L(`${r.added} new row(s) imported.`, `تم استيراد ${r.added} صف جديد.`)
+            : L('No new rows were found in that file.', 'لم يتم العثور على صفوف جديدة في الملف.'),
+            r.added ? 'success' : 'error');
+    }).catch(() => {
+        showToast(L('That file is not a valid Excel sheet.', 'هذا الملف ليس ملف إكسل صالحاً.'), 'error');
+    });
+}
+
+function importCustomerRows(rows, fileName) {
+    // Work on the latest data: another device may have imported a moment ago
+    state.customerFolders = loadCustomerFolders();
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+
+    const knownRows = new Set();
+    state.customerFolders.forEach(f => (f.history || []).forEach(h => { if (h.rowKey) knownRows.add(h.rowKey); }));
+    const usedIds = new Set(state.tasks.map(t => t.id));
+    const now = new Date();
+    const result = { file: fileName, added: 0, repeated: 0, invalid: 0, newCustomers: 0 };
+    const newTasks = [];
+
+    rows.forEach(r => {
+        if (!r.issue || !(r.name || r.phone)) { result.invalid++; return; }
+        const rowKey = intakeRowKey(r);
+        if (knownRows.has(rowKey)) { result.repeated++; return; }   // already imported before
+        knownRows.add(rowKey);
+
+        const key = intakeFolderKey(r);
+        let folder = state.customerFolders.find(f => f.key === key);
+        if (!folder) {
+            folder = { id: createDateBasedId('CF'), key, name: r.name, phone: r.phone, address: r.address, source: 'excel', createdAt: now.toISOString(), history: [] };
+            state.customerFolders.push(folder);
+            result.newCustomers++;
+        } else {
+            // fill in what the first row left empty
+            if (!folder.name && r.name) folder.name = r.name;
+            if (!folder.phone && r.phone) folder.phone = r.phone;
+            if (!folder.address && r.address) folder.address = r.address;
+        }
+
+        let id = createDateBasedId('TSK');
+        while (usedIds.has(id)) id = createDateBasedId('TSK');
+        usedIds.add(id);
+
+        newTasks.push({
+            id,
+            title: r.issue,
+            description: `Customer ${r.name || 'N/A'} — Address: ${r.address || 'N/A'}.${r.notes ? ' Call center notes: ' + r.notes : ''}`,
+            assignedTo: '',
+            createdBy: 'Customer Sheet',
+            createdDate: getLocalDateString(now),
+            createdAt: now.toISOString(),
+            unassignedSince: now.toISOString(),
+            dueDate: '',
+            priority: 'Normal',
+            status: 'Open',
+            orderId: '',
+            orderType: 'Tech Fix Service',
+            phase: 'repair',
+            source: 'sheet',
+            folderId: folder.id,
+            customerName: r.name,
+            phone: r.phone,
+            address: r.address,
+            fix: r.issue,
+            notes: r.notes
+        });
+        folder.history = folder.history || [];
+        folder.history.push({ id: `${createDateBasedId('H')}-${result.added}`, type: 'issue', at: now.toISOString(), issue: r.issue, notes: r.notes, address: r.address, rowKey, taskId: id, file: fileName });
+        result.added++;
+    });
+
+    if (result.added) {
+        state.tasks = newTasks.concat(state.tasks);
+        saveState();
+    }
+    return result;
+}
+
+function downloadCustomerSheetTemplate() {
+    if (typeof XLSX === 'undefined') {
+        showToast(L('Excel reader could not load. Check your internet connection and refresh.', 'تعذر تحميل قارئ الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
+        return;
+    }
+    const ws = XLSX.utils.aoa_to_sheet([
+        ['Customer Name', 'Building Number', 'Address', 'Issue', 'Call Center Notes', 'Bridge Number'],
+        ['أحمد حسن', '12', 'شارع التحرير، الدقي', 'التكييف لا يبرد', 'العميل متاح بعد الساعة 5', '01012345678']
+    ]);
+    ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 30 }, { wch: 28 }, { wch: 30 }, { wch: 16 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Customers');
+    XLSX.writeFile(wb, 'customer-sheet-template.xlsx');
+}
+
+// ---- Customer folders ----
+const expandedCustomerFolders = new Set();
+
+function toggleCustomerFolder(id) {
+    if (expandedCustomerFolders.has(id)) expandedCustomerFolders.delete(id);
+    else expandedCustomerFolders.add(id);
+    renderCustomerFolders();
+}
+
+// From a task row: jump to that customer's folder
+function openCustomerFolder(id) {
+    expandedCustomerFolders.add(id);
+    const search = document.getElementById('folderSearch');
+    if (search) search.value = '';
+    navigateTo('customer-log');
+    setTimeout(() => {
+        const el = document.getElementById('folder-' + id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 200);
+}
+
+function deleteCustomerFolder(id) {
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) return;
+    if (!confirm(L('Delete this customer folder, its history and its tasks?', 'حذف ملف العميل وسجله ومهامه؟'))) return;
+    state.customerFolders = loadCustomerFolders().filter(f => f.id !== id);
+    state.tasks = (JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks).filter(t => t.folderId !== id);
+    expandedCustomerFolders.delete(id);
+    saveState();
+    renderCustomerFolders();
+}
+
+// A registered customer account with the same phone is this folder's profile
+function findProfileForFolder(folder) {
+    const digits = intakePhoneDigits(folder.phone);
+    if (digits.length < 7) return null;
+    return state.users.find(u => u.role === 'customer' && [u.whatsapp, u.contactPhone].some(p => intakePhoneDigits(p) === digits)) || null;
+}
+
+// The history log: what was imported, plus everything that happened to the folder's tasks and orders
+function buildFolderEvents(folder, tasks, profile) {
+    const events = [];
+    const person = username => {
+        const u = state.users.find(x => x.username === username);
+        return u ? (u.name || u.username) : '@' + username;
+    };
+    (folder.history || []).forEach(h => {
+        events.push({
+            icon: 'fa-circle-exclamation', tone: 'bg-amber-100 text-amber-600 dark:bg-amber-950 dark:text-amber-400',
+            label: `${L('Issue', 'العطل')}: ${h.issue}`,
+            detail: h.notes ? `${L('Call center notes', 'ملاحظات الكول سنتر')}: ${h.notes}` : '',
+            sub: [h.address, h.file].filter(Boolean).join(' · '),
+            when: h.at
+        });
+    });
+    tasks.forEach(t => {
+        const sub = t.title;
+        if (t.parentTaskId) events.push({ icon: 'fa-arrow-right', label: `${L('Next step', 'المرحلة التالية')}: ${getPhaseLabel(getTaskPhase(t))}`, sub, when: t.createdAt });
+        if (t.assignedTo && t.assignedAt) events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${person(t.assignedTo)}`, sub, when: t.assignedAt });
+        if (t.assistantTo) events.push({ icon: 'fa-user-group', label: `${L('Assistant', 'المساعد')}: ${person(t.assistantTo)}`, sub, when: t.assignedAt });
+        if (t.acceptedAt) events.push({ icon: 'fa-hand', label: L('Technician accepted', 'قبل الفني المهمة'), sub, when: t.acceptedAt });
+        if (t.delay && t.delay.at) events.push({ icon: 'fa-calendar-xmark', label: `${L('Delayed until', 'مؤجل حتى')} ${t.delay.until}`, detail: t.delay.reason, sub, when: t.delay.at });
+        const doneAt = t.completedAt || t.completedDate;
+        if (t.status === 'Done' && doneAt) {
+            events.push({ icon: 'fa-circle-check', label: L('Job done', 'تم الإنجاز'), sub, when: doneAt });
+            if (Number(t.amountReceived) > 0) events.push({ icon: 'fa-money-bill-wave', label: `${L('Collected on site', 'تم التحصيل')}: ${Number(t.amountReceived).toLocaleString()} EGP`, sub, when: doneAt });
+        }
+    });
+    if (profile) {
+        state.orders.filter(o => String(o.username).toLowerCase() === profile.username.toLowerCase()).forEach(o => {
+            events.push({ icon: 'fa-cart-shopping', label: `${L('Order placed', 'تم إنشاء الطلب')}: ${o.itemTitle}`, sub: o.id, when: o.createdAt || o.date });
+        });
+    }
+    return events.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
+}
+
+function buildIntakeFolderHtml(folder) {
+    const tasks = state.tasks.filter(t => t.folderId === folder.id);
+    const openTasks = tasks.filter(t => t.status !== 'Done').length;
+    const profile = findProfileForFolder(folder);
+    const open = expandedCustomerFolders.has(folder.id);
+    const issues = (folder.history || []).length;
+    const origins = folderOrigins(folder);
+    const chip = (text, cls) => `<span class="text-[11px] font-bold px-2.5 py-1 rounded-full ${cls}">${text}</span>`;
+
+    let body = '';
+    if (open) {
+        const events = buildFolderEvents(folder, tasks, profile);
+        const timeline = events.length ? events.map(e => `
+            <li class="flex items-start gap-2.5">
+                <span class="mt-0.5 w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[10px] ${e.tone || 'bg-sky-100 text-sky-600 dark:bg-sky-950 dark:text-sky-400'}"><i class="fa-solid ${e.icon}"></i></span>
+                <span class="text-xs min-w-0">
+                    <strong dir="auto" class="text-slate-800 dark:text-slate-100">${escapeHtml(e.label)}</strong>
+                    ${e.detail ? `<span dir="auto" class="block text-slate-500 dark:text-slate-400">${escapeHtml(e.detail)}</span>` : ''}
+                    ${e.sub ? `<span dir="auto" class="block text-[10px] text-slate-400">${escapeHtml(e.sub)}</span>` : ''}
+                    ${e.when ? `<span class="block text-[10px] text-slate-400">${escapeHtml(formatDateTime(e.when))}</span>` : ''}
+                </span>
+            </li>`).join('') : `<li class="text-xs text-slate-400">${L('No history yet.', 'لا يوجد سجل بعد.')}</li>`;
+
+        const info = (label, value) => value ? `<p class="text-xs"><strong class="text-slate-500 dark:text-slate-400">${label}</strong> <span dir="auto" class="text-slate-800 dark:text-slate-100">${escapeHtml(value)}</span></p>` : '';
+        const taskRows = tasks.length ? tasks.map(t => `
+            <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-2">
+                <span dir="auto" class="text-xs font-bold min-w-0 flex-1 basis-40">${escapeHtml(t.title)}</span>
+                <span class="text-[10px] text-slate-400">${escapeHtml(getPhaseLabel(getTaskPhase(t)))}</span>
+                <span class="text-[10px] text-slate-500">${escapeHtml(formatTaskAssignees(t) || L('Not assigned', 'غير معين'))}</span>
+                ${renderTaskStatusBadge(t.status)}
+            </div>`).join('') : '';
+
+        body = `
+        <div class="px-4 pb-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div class="space-y-1.5">
+                    <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider mb-2">${L('Profile', 'البيانات')}</p>
+                    ${info(L('Name:', 'الاسم:'), folder.name)}
+                    ${info(L('Phone:', 'الهاتف:'), folder.phone)}
+                    ${info(L('Address:', 'العنوان:'), folder.address)}
+                    ${info(L('Customer since:', 'عميل منذ:'), formatDateTime(folder.createdAt))}
+                    ${profile ? info(L('Linked profile:', 'الحساب المرتبط:'), `${profile.name || ''} (@${profile.username})`) : ''}
+                    ${state.currentUser && isTopAdmin(state.currentUser.role) ? `<button type="button" onclick="deleteCustomerFolder('${folder.id}')" class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-extrabold text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 rounded-lg px-2.5 py-1.5 transition"><i class="fa-solid fa-trash-can"></i>${L('Delete folder', 'حذف الملف')}</button>` : ''}
+                </div>
+                <div>
+                    <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider mb-2">${L('History log', 'سجل العميل')}</p>
+                    <ul class="space-y-2.5 max-h-[300px] overflow-y-auto custom-scrollbar pe-1">${timeline}</ul>
+                </div>
+            </div>
+            ${taskRows ? `<div class="space-y-2"><p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L('Tasks', 'المهام')}</p>${taskRows}</div>` : ''}
+        </div>`;
+    }
+
+    return `
+    <div id="folder-${folder.id}" class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 overflow-hidden">
+        <div onclick="toggleCustomerFolder('${folder.id}')" class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 cursor-pointer hover:bg-sky-50 dark:hover:bg-slate-800 transition select-none">
+            <i class="fa-solid ${open ? 'fa-folder-open' : 'fa-folder'} text-amber-400 text-lg"></i>
+            <span dir="auto" class="font-extrabold text-sm text-slate-800 dark:text-slate-100">${escapeHtml(folder.name || folder.phone || '—')}</span>
+            ${folder.phone ? `<span dir="ltr" class="text-xs text-slate-500 font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(folder.phone)}</span>` : ''}
+            ${profile ? chip('@' + escapeHtml(profile.username), 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400') : ''}
+            ${origins.ours ? chip(L('Ours', 'عملاؤنا'), 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400') : ''}
+            ${origins.arabi ? chip(L('Arabi', 'عربي'), 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400') : ''}
+            <span class="ms-auto inline-flex items-center gap-2">
+                ${chip(`${issues} ${issues === 1 ? L('issue', 'عطل') : L('issues', 'أعطال')}`, 'bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400')}
+                ${openTasks ? chip(`${openTasks} ${L('open', 'مفتوحة')}`, 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400') : ''}
+                <i class="fa-solid fa-chevron-down text-xs text-slate-400 transition-transform ${open ? 'rotate-180' : ''}"></i>
+            </span>
+        </div>
+        ${body}
+    </div>`;
+}
+
+function renderCustomerFolders() {
+    const section = document.getElementById('customerIntakeSection');
+    const list = document.getElementById('customerFoldersList');
+    if (!section || !list) return;
+    const allowed = canImportCustomers();
+    section.classList.toggle('hidden', !allowed);
+    if (!allowed) return;
+
+    state.customerFolders = loadCustomerFolders();
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
+    syncCustomerLogSources();
+
+    const head = document.getElementById('customerIntakeHead');
+    if (head) {
+        head.innerHTML = `
+        <div class="flex items-start gap-3">
+            <span class="w-12 h-12 rounded-2xl bg-sky-100 text-sky-600 dark:bg-sky-950 dark:text-sky-400 flex items-center justify-center text-xl shrink-0"><i class="fa-solid fa-folder-open"></i></span>
+            <div>
+                <h3 class="font-bold text-sm">${L('Customer Files', 'ملفات العملاء')}</h3>
+                <p class="text-[11px] text-slate-400 mt-0.5">${L('Our customers and Arabi customers. Arabi data comes from the Arabi Extraction page.', 'عملاؤنا وعملاء عربي. بيانات عربي تأتي من صفحة استخراج عربي.')}</p>
+            </div>
+        </div>`;
+    }
+
+    const res = intakeLastResult;
+    const resultBox = document.getElementById('intakeResult');
+    if (resultBox) {
+        resultBox.classList.toggle('hidden', !res);
+        if (res) {
+            resultBox.innerHTML = `
+            <i class="fa-solid fa-file-excel text-emerald-500 me-1"></i><span dir="auto" class="font-bold">${escapeHtml(res.file)}</span> —
+            ${L('new rows', 'صفوف جديدة')} <b class="text-emerald-500">${res.added}</b>
+            · ${L('new customers', 'عملاء جدد')} <b class="text-sky-500">${res.newCustomers}</b>
+            ${res.repeated ? ` · ${L('already imported (skipped)', 'مستوردة سابقاً (تم تخطيها)')} <b class="text-amber-500">${res.repeated}</b>` : ''}
+            ${res.invalid ? ` · ${L('rows skipped (missing name / issue)', 'صفوف متخطاة (بدون اسم / عطل)')} <b class="text-red-500">${res.invalid}</b>` : ''}`;
+        }
+    }
+
+    const searchBox = document.getElementById('folderSearch');
+    if (searchBox) searchBox.placeholder = L('Search folders by name, phone, address or issue...', 'ابحث في الملفات بالاسم أو الهاتف أو العنوان أو العطل...');
+    const term = searchBox ? normalizeIntakeText(searchBox.value) : '';
+    const termDigits = searchBox ? toAsciiDigits(searchBox.value).replace(/\D/g, '') : '';
+
+    const lastActivity = f => Math.max(new Date(f.createdAt || 0).getTime(), ...(f.history || []).map(h => new Date(h.at || 0).getTime()));
+    const tabsBox = document.getElementById('folderSourceTabs');
+    if (tabsBox) {
+        const countOf = k => state.customerFolders.filter(f => k === 'all' || folderOrigins(f)[k]).length;
+        tabsBox.innerHTML = [['all', L('All', 'الكل')], ['ours', L('Our customers', 'عملاؤنا')], ['arabi', L('Arabi', 'عربي')]]
+            .map(([k, label]) => `<button type="button" onclick="setFolderSource('${k}')" class="cs-tab ${folderSourceFilter === k ? 'active' : ''}">${label}<span class="cs-tab-count">${countOf(k)}</span></button>`).join('');
+    }
+
+    const folders = state.customerFolders
+        .filter(f => folderSourceFilter === 'all' || folderOrigins(f)[folderSourceFilter])
+        .filter(f => {
+            if (!term) return true;
+            const text = normalizeIntakeText([f.name, f.address, ...(f.history || []).map(h => h.issue)].join(' '));
+            return text.includes(term) || (termDigits.length > 2 && intakePhoneDigits(f.phone).includes(termDigits));
+        })
+        .sort((a, b) => lastActivity(b) - lastActivity(a));
+
+    const count = document.getElementById('customerFoldersCount');
+    if (count) count.textContent = folders.length;
+    list.innerHTML = folders.length
+        ? folders.map(buildIntakeFolderHtml).join('')
+        : `<p class="text-center p-6 text-slate-400 font-bold text-xs">${L('No customer folders yet. Upload an Excel sheet above.', 'لا توجد ملفات عملاء بعد. ارفع ملف إكسل بالأعلى.')}</p>`;
 }
 
 // ================= ARABI EXTRACTION (Excel sheet -> table + tasks) =================
 // Each row of the sheet becomes one task (source 'arabi'). Because they are normal tasks they
 // are assigned, accepted and finished like any other, and they feed every dashboard counter.
 const ARABI_HEADERS = {
-    phone: /phone|mobile|tel|number|whats|هاتف|رقم|موبايل|تليفون|محمول/i,
+    phone: /phone|mobile|tel|bridge|بريدج|البريدج|whats|هاتف|موبايل|تليفون|محمول|جوال|رقم\s*(ال)?(هاتف|موبايل|تليفون|محمول|جوال|تواصل|بريدج)/i,
     address: /address|location|area|عنوان|العنوان|منطقة|موقع/i,
     fix: /fix|repair|problem|issue|fault|service|عطل|العطل|صيانة|الصيانة|مشكلة|خدمة/i,
     name: /name|customer|client|اسم|الاسم|عميل|العميل/i
@@ -5091,6 +5866,7 @@ function parseArabiRows(matrix) {
     // Header row? Match column titles (English or Arabic); otherwise use the column order.
     const map = {};
     rows[0].forEach((cell, i) => {
+        if (/building|bldg|عمار|مبنى|بناي/i.test(cell)) return; // building number is not a phone
         for (const key of ['phone', 'address', 'fix', 'name']) {
             if (map[key] === undefined && ARABI_HEADERS[key].test(cell)) { map[key] = i; break; }
         }
@@ -5113,8 +5889,31 @@ function parseArabiRows(matrix) {
     }));
 }
 
+// Same customer + address + issue = same row. The phone is NOT part of the key, so a row never
+// turns into a "new" one just because its phone was read differently.
 function arabiKey(r) {
-    return [r.name, r.phone, r.address, r.fix].map(v => String(v || '').trim().toLowerCase()).join('|');
+    return [r.name, r.address, r.fix].map(normalizeIntakeText).join('|');
+}
+const arabiTaskKey = t => arabiKey({ name: t.customerName, address: t.address, fix: t.fix });
+
+// Removes copies of the same row that are still untouched (open + unassigned); keeps the one that has a phone.
+function dedupeArabiTasks() {
+    const seen = new Map();
+    const drop = new Set();
+    state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).forEach(t => {
+        const k = arabiTaskKey(t);
+        const first = seen.get(k);
+        if (!first) { seen.set(k, t); return; }
+        const untouched = x => x.status === 'Open' && !x.assignedTo && !x.assistantTo;
+        if (!untouched(t) && !untouched(first)) return;
+        // keep a worked-on row, else the one with the longer phone, else the first
+        const keepNew = !untouched(first) ? false : (!untouched(t) || intakePhoneDigits(t.phone).length > intakePhoneDigits(first.phone).length);
+        if (keepNew) { drop.add(first.id); seen.set(k, t); } else drop.add(t.id);
+    });
+    if (!drop.size) return false;
+    state.tasks = state.tasks.filter(t => !drop.has(t.id));
+    saveState();
+    return true;
 }
 
 function handleArabiFile(input) {
@@ -5140,7 +5939,13 @@ function handleArabiFile(input) {
             return;
         }
 
-        const existing = new Set(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(arabiKey));
+        // Already known = an Arabi row now, or one already filed in a customer folder (rows survive a reset there).
+        const existing = new Set(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(arabiTaskKey));
+        const folders = loadCustomerFolders();
+        folders.forEach(f => (f.history || []).forEach(h => {
+            if (h.file === 'Arabi Sheet') existing.add(arabiKey({ name: f.name, address: h.address, fix: h.issue }));
+        }));
+        let healed = false;
         const usedIds = new Set(state.tasks.map(t => t.id));
         const batch = Date.now();
         const now = new Date();
@@ -5150,7 +5955,19 @@ function handleArabiFile(input) {
         parsed.forEach((r, i) => {
             if (!r.fix || !(r.name || r.address)) { invalid++; return; }
             const key = arabiKey(r);
-            if (existing.has(key)) { duplicates++; return; }
+            if (existing.has(key)) {
+                duplicates++;
+                // Same row again: only fill in a phone that was missing / read wrongly before.
+                if (intakePhoneDigits(r.phone).length >= 7) {
+                    state.tasks.forEach(t => { if (t.source === 'arabi' && arabiTaskKey(t) === key && intakePhoneDigits(t.phone).length < 7) { t.phone = r.phone; healed = true; } });
+                    folders.forEach(f => {
+                        if (normalizeIntakeText(f.name) === normalizeIntakeText(r.name) && normalizeIntakeText(f.address) === normalizeIntakeText(r.address) && intakePhoneDigits(f.phone).length < 7) {
+                            f.phone = r.phone; f.key = intakeFolderKey(f); healed = true;
+                        }
+                    });
+                }
+                return;
+            }
             existing.add(key);
             let id = createDateBasedId('TSK');
             while (usedIds.has(id)) id = createDateBasedId('TSK');
@@ -5181,10 +5998,10 @@ function handleArabiFile(input) {
             added++;
         });
 
-        if (added) {
-            state.tasks = created.concat(state.tasks);
-            saveState();
-        }
+        if (added) state.tasks = created.concat(state.tasks);
+        if (healed) state.customerFolders = folders;
+        if (added || healed) saveState();
+        if (added) syncCustomerLogSources();
         arabiLastResult = { file: file.name, added, duplicates, invalid };
         renderArabiPage();
         showToast(added
@@ -5222,6 +6039,7 @@ function renderArabiPage() {
     const box = document.getElementById('arabiPageBody');
     if (!box) return;
     state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    dedupeArabiTasks();
     const rows = getArabiTasks();
     const res = arabiLastResult;
 
@@ -5293,39 +6111,329 @@ function renderArabiPage() {
         </div>`;
 }
 
-// Dashboard copy: same columns as the Task Board, titled "Arabi"
-function renderArabiBoard(technicianUsers, canManageTasks) {
-    const box = document.getElementById('adminArabiSection');
-    if (!box) return;
-    box.classList.toggle('hidden', !canManageTasks);
-    if (!canManageTasks) { box.innerHTML = ''; return; }
+// ================= LIVE LOCATIONS (technicians + assistants -> Map page) =================
+// Every technician / assistant device sends its position (about every 20-60 seconds) to the
+// shared key 'ca_live_locations': [{ id: username, lat, lng, accuracy, at }]. The Map page
+// (Admin + Customer Services) shows them next to the open tasks and ranks who is nearest.
+const LIVE_LOCATIONS_KEY = 'ca_live_locations';
+const LOCATION_LIVE_MS = 2 * 60 * 1000;        // newer than this = "Live"
+const LOCATION_OFFLINE_MS = 30 * 60 * 1000;    // older than this = treated as not sharing
+const LOCATION_WRITE_MIN_MS = 20 * 1000;       // at most one update per 20 s while moving
+const LOCATION_HEARTBEAT_MS = 60 * 1000;       // standing still: one update per minute
+const locShare = { watchId: null, user: null, lastWriteAt: 0, lastPos: null, status: 'off' };
+// status: off | starting | on | paused | blocked | unsupported
 
-    const active = state.tasks.filter(t => t.source === 'arabi' && t.status !== 'Done')
-        .sort((a, b) => (b.arabiBatch || 0) - (a.arabiBatch || 0) || (a.arabiRow || 0) - (b.arabiRow || 0));
-    const th = (en, ar) => `<th class="p-4">${L(en, ar)}</th>`;
+function readLiveLocations() {
+    try {
+        const list = JSON.parse(localStorage.getItem(LIVE_LOCATIONS_KEY));
+        return Array.isArray(list) ? list.filter(l => l && l.id) : [];
+    } catch (e) { return []; }
+}
+
+function writeLiveLocations(list) {
+    localStorage.setItem(LIVE_LOCATIONS_KEY, JSON.stringify(list));
+}
+
+function distanceKm(a, b) {
+    const rad = x => x * Math.PI / 180;
+    const dLat = rad(b.lat - a.lat);
+    const dLng = rad(b.lng - a.lng);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+    return 6371 * 2 * Math.asin(Math.sqrt(h));
+}
+
+function formatAgo(iso) {
+    const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (mins < 1) return L('just now', 'الآن');
+    if (mins < 60) return L(`${mins} min ago`, `منذ ${mins} دقيقة`);
+    const hours = Math.round(mins / 60);
+    return L(`${hours} h ago`, `منذ ${hours} ساعة`);
+}
+
+function isLocationSharingPaused(username) {
+    return localStorage.getItem('ca_share_loc_off_' + username) === '1';
+}
+
+// ---- worker side ----
+function startLocationSharing() {
+    const me = state.currentUser;
+    if (!me || me.role !== 'technician') return;
+    if (isLocationSharingPaused(me.username)) {
+        if (locShare.status !== 'paused') { stopLocationWatch(); locShare.user = me.username; locShare.status = 'paused'; renderLocationShareControl(); }
+        return;
+    }
+    if (locShare.watchId !== null && locShare.user === me.username) return;
+    stopLocationWatch();
+    locShare.user = me.username;
+    locShare.lastWriteAt = 0;
+    locShare.lastPos = null;
+    if (!navigator.geolocation || !window.isSecureContext) {
+        locShare.status = 'unsupported';
+        renderLocationShareControl();
+        return;
+    }
+    locShare.status = 'starting';
+    locShare.watchId = navigator.geolocation.watchPosition(onMyPosition, onMyPositionError, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+    renderLocationShareControl();
+}
+
+function stopLocationWatch() {
+    if (locShare.watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(locShare.watchId);
+    locShare.watchId = null;
+}
+
+function stopLocationSharing() {
+    stopLocationWatch();
+    locShare.user = null;
+    locShare.status = 'off';
+}
+
+function onMyPosition(pos) {
+    const me = state.currentUser;
+    if (!me || me.username !== locShare.user) return;
+    const here = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    const now = Date.now();
+    const movedMeters = locShare.lastPos ? distanceKm(locShare.lastPos, here) * 1000 : Infinity;
+    const sinceWrite = now - locShare.lastWriteAt;
+    const wasOn = locShare.status === 'on';
+    locShare.status = 'on';
+
+    const moving = sinceWrite >= LOCATION_WRITE_MIN_MS && movedMeters >= 15;
+    if (moving || sinceWrite >= LOCATION_HEARTBEAT_MS) {
+        locShare.lastWriteAt = now;
+        locShare.lastPos = here;
+        const entry = { id: me.username, lat: here.lat, lng: here.lng, accuracy: Math.round(pos.coords.accuracy || 0), at: new Date(now).toISOString() };
+        writeLiveLocations(readLiveLocations().filter(l => l.id !== me.username).concat(entry));
+    }
+    if (!wasOn) renderLocationShareControl();
+}
+
+function onMyPositionError(err) {
+    if (err && err.code === 1) {            // permission denied
+        stopLocationWatch();
+        locShare.status = 'blocked';
+    } else if (locShare.status !== 'on') {  // position unavailable / timeout: keep trying
+        locShare.status = 'starting';
+    }
+    renderLocationShareControl();
+}
+
+function setLocationSharingPaused(paused) {
+    const me = state.currentUser;
+    if (!me) return;
+    if (paused) {
+        localStorage.setItem('ca_share_loc_off_' + me.username, '1');
+        stopLocationWatch();
+        locShare.status = 'paused';
+        writeLiveLocations(readLiveLocations().filter(l => l.id !== me.username)); // off the map
+    } else {
+        localStorage.removeItem('ca_share_loc_off_' + me.username);
+        startLocationSharing();
+    }
+    renderLocationShareControl();
+}
+
+function retryLocationSharing() {
+    stopLocationWatch();
+    locShare.user = null;
+    startLocationSharing();
+}
+
+// The small status card at the top of the technician's Home.
+function renderLocationShareControl() {
+    const box = document.getElementById('techLocationBox');
+    if (!box) return;
+    if (!state.currentUser || state.currentUser.role !== 'technician') { box.innerHTML = ''; return; }
+    const cards = {
+        on: ['bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900', 'text-emerald-600', 'fa-location-crosshairs',
+            L('Sharing your live location with the office', 'تشارك موقعك المباشر مع المكتب'), L('Pause', 'إيقاف مؤقت'), 'setLocationSharingPaused(true)'],
+        starting: ['bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900', 'text-amber-600', 'fa-spinner fa-spin',
+            L('Getting your location… allow location access if your browser asks.', 'جارٍ تحديد موقعك… اسمح بالوصول للموقع إذا طلب المتصفح ذلك.'), '', ''],
+        paused: ['bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700', 'text-slate-400', 'fa-location-pin-lock',
+            L('Location sharing is paused — the office cannot see where you are.', 'مشاركة الموقع متوقفة — المكتب لا يستطيع رؤية مكانك.'), L('Resume', 'استئناف'), 'setLocationSharingPaused(false)'],
+        blocked: ['bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', 'text-red-600', 'fa-ban',
+            L('Location access is blocked. Allow it in your browser settings, then tap Try again.', 'الوصول للموقع محظور. اسمح به من إعدادات المتصفح ثم اضغط حاول مجدداً.'), L('Try again', 'حاول مجدداً'), 'retryLocationSharing()'],
+        unsupported: ['bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', 'text-red-600', 'fa-ban',
+            L('This device or page cannot share location (it needs a secure https page).', 'لا يمكن مشاركة الموقع من هذا الجهاز أو الصفحة (يلزم اتصال https آمن).'), '', '']
+    };
+    const c = cards[locShare.status];
+    if (!c) { box.innerHTML = ''; return; }
     box.innerHTML = `
-        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
-            <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
-                <div>
-                    <h3 class="font-bold text-sm">${L('Arabi', 'عربي')}</h3>
-                    <p class="text-[11px] text-slate-400">${L('Tasks extracted from the Arabi Excel sheet', 'مهام مستخرجة من ملف إكسل عربي')}</p>
-                </div>
-                <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400">${active.length}</span>
-            </div>
-            <div class="overflow-x-auto overflow-y-auto max-h-[320px] custom-scrollbar">
-                <table class="w-full text-left border-collapse text-xs">
-                    <thead class="sticky top-0 z-10">
-                        <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
-                            ${th('Title', 'العنوان')}${th('Details', 'التفاصيل')}${th('Customer', 'العميل')}${th('Assigned To', 'المسند إليه')}${th('Priority', 'الأولوية')}${th('Due Date', 'تاريخ الاستحقاق')}${th('Status', 'الحالة')}
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                        ${active.length ? active.map(t => buildTaskRow(t, technicianUsers, canManageTasks)).join('') : `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">${L('No active Arabi tasks.', 'لا توجد مهام عربي نشطة.')}</td></tr>`}
-                    </tbody>
-                </table>
-            </div>
+        <div class="rounded-2xl border ${c[0]} px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+            <span class="flex items-center gap-2.5 text-xs font-bold"><i class="fa-solid ${c[2]} ${c[1]}"></i>${c[3]}</span>
+            ${c[4] ? `<button type="button" onclick="${c[5]}" class="text-[11px] font-extrabold bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 transition">${c[4]}</button>` : ''}
         </div>`;
 }
+
+// ---- Map page (Admin + Customer Services): just the live position of every technician / assistant ----
+let liveMap = null;
+let liveMapTiles = null;
+const liveMapMarkers = {};
+let liveMapFitted = false;
+
+function mapCanSee() {
+    return !!state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
+}
+
+// The map's own look: a real map pin with the worker's data card attached to it.
+// Added once from here so no CSS file is needed.
+function ensureMapStyles() {
+    if (document.getElementById('liveMapStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'liveMapStyles';
+    style.textContent = `
+        .lm-marker { position: absolute; left: 0; bottom: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+        .lm-card { position: relative; background: #fff; color: #0f172a; border-radius: 14px; padding: 8px 13px; min-width: 120px; max-width: 210px;
+                   margin-bottom: 9px; box-shadow: 0 6px 18px rgba(2,6,23,.3); text-align: start; }
+        .lm-card::after { content: ''; position: absolute; left: 50%; bottom: -7px; margin-left: -7px; border: 7px solid transparent; border-bottom: 0; border-top-color: #fff; }
+        .dark .lm-card { background: #0f172a; color: #f1f5f9; border: 1px solid #334155; }
+        .dark .lm-card::after { border-top-color: #0f172a; }
+        .lm-name { font-weight: 800; font-size: 12.5px; line-height: 1.35; }
+        .lm-job { display: inline-block; margin-top: 4px; padding: 1px 9px; border-radius: 999px; background: var(--lm-c); color: #fff; font-size: 10px; font-weight: 800; }
+        .lm-status { margin-top: 5px; display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; color: #94a3b8; }
+        .lm-status.live { color: #10b981; }
+        .lm-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+        .lm-dropwrap { position: relative; width: 40px; height: 48px; flex-shrink: 0; }
+        .lm-drop { position: absolute; top: 0; left: 0; width: 40px; height: 40px; box-sizing: border-box; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+                   background: var(--lm-c); border: 3px solid #fff; box-shadow: 0 3px 8px rgba(0,0,0,.45); }
+        .lm-face { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; transform: rotate(45deg); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; }
+        .lm-face img { width: 100%; height: 100%; object-fit: cover; }
+        .lm-marker.stale .lm-drop { opacity: .6; }
+        .lm-pulse { position: absolute; left: 50%; bottom: -7px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--lm-ring); animation: lmGround 2s ease-out infinite; }
+        .lm-compact .lm-card { min-width: 0; padding: 5px 11px; }
+        .lm-compact .lm-job, .lm-compact .lm-status { display: none; }
+        .lm-compact .lm-marker:hover .lm-job { display: inline-block; }
+        .lm-compact .lm-marker:hover .lm-status { display: flex; }
+        @keyframes lmGround { 0% { transform: scale(.4); opacity: .9; } 100% { transform: scale(2.6); opacity: 0; } }
+    `;
+    document.head.appendChild(style);
+}
+
+// Zoomed far out: pins show just the name (hover for details) so cards do not pile up.
+function updateMapCompact() {
+    if (liveMap) liveMap.getContainer().classList.toggle('lm-compact', liveMap.getZoom() < 14);
+}
+
+// One marker = pin + attached card (name, colored job chip, Live / Last seen). The pin's tip is the exact position.
+function mapMarkerIcon(worker, color, ring) {
+    const u = worker.user;
+    const face = u.photo ? `<img src="${escapeHtml(u.photo)}" alt="">` : '<i class="fa-solid fa-user"></i>';
+    const status = worker.live
+        ? `<div class="lm-status live"><span class="lm-dot"></span>${L('Live', 'مباشر')}</div>`
+        : `<div class="lm-status"><span class="lm-dot"></span>${L('Last seen', 'آخر ظهور')} ${escapeHtml(formatAgo(worker.at))}</div>`;
+    return Leaflet.divIcon({
+        className: '',
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+        html: `
+        <div class="lm-marker ${worker.live ? 'live' : 'stale'}" style="--lm-c:${color};--lm-ring:${ring}">
+            <div class="lm-card">
+                <div class="lm-name">${escapeHtml(u.name || u.username)}</div>
+                <div class="lm-job">${escapeHtml(getPositionLabel(u))}</div>
+                ${status}
+            </div>
+            <div class="lm-dropwrap">
+                ${worker.live ? '<span class="lm-pulse"></span>' : ''}
+                <div class="lm-drop"><div class="lm-face">${face}</div></div>
+            </div>
+        </div>`
+    });
+}
+
+// Technician-role accounts that have a recent position (older than 30 minutes = not sharing).
+function getMapWorkers() {
+    const readings = new Map(readLiveLocations().map(l => [l.id, l]));
+    return state.users.filter(u => u.role === 'technician').map(u => {
+        const r = readings.get(u.username);
+        const age = r ? Date.now() - new Date(r.at).getTime() : Infinity;
+        return {
+            user: u,
+            pos: r && age <= LOCATION_OFFLINE_MS ? { lat: Number(r.lat), lng: Number(r.lng) } : null,
+            at: r ? r.at : null,
+            live: age <= LOCATION_LIVE_MS
+        };
+    });
+}
+
+// Map pictures. Esri's street map needs no key. If its tiles fail to load, the map switches
+// to OpenStreetMap's tiles by itself.
+const MAP_TILES = {
+    esri: {
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+        attribution: 'Tiles &copy; Esri'
+    },
+    osm: {
+        url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }
+};
+
+function renderMapPage() {
+    if (!mapCanSee()) return;
+    const canvas = document.getElementById('liveMapCanvas');
+    if (!canvas) return;
+    if (!window.Leaflet) {
+        canvas.innerHTML = `<p class="p-6 text-xs font-bold text-slate-400">${L('The map could not load. Check the internet connection and refresh.', 'تعذر تحميل الخريطة. تحقق من الاتصال بالإنترنت ثم أعد التحميل.')}</p>`;
+        return;
+    }
+    ensureMapStyles();
+    if (!liveMap) {
+        liveMap = Leaflet.map(canvas).setView([30.0444, 31.2357], 10); // Cairo until someone shares a position
+        liveMap.on('zoomend', updateMapCompact);
+        let tileErrors = 0;
+        let usingFallback = false;
+        liveMapTiles = Leaflet.tileLayer(MAP_TILES.esri.url, { maxZoom: 19, attribution: MAP_TILES.esri.attribution }).addTo(liveMap);
+        liveMapTiles.on('tileload', () => { tileErrors = 0; });
+        liveMapTiles.on('tileerror', () => {
+            tileErrors++;
+            if (tileErrors >= 4 && !usingFallback) {
+                usingFallback = true;
+                liveMap.removeLayer(liveMapTiles);
+                liveMapTiles = Leaflet.tileLayer(MAP_TILES.osm.url, { maxZoom: 19, attribution: MAP_TILES.osm.attribution, referrerPolicy: 'origin' }).addTo(liveMap);
+            }
+        });
+    }
+    setTimeout(() => { if (liveMap) liveMap.invalidateSize(); }, 60);
+    refreshLiveMap();
+}
+
+// Called on the map page, by the cloud sync when positions change, and every 15 seconds.
+function refreshLiveMap() {
+    if (!liveMap || !mapCanSee() || getCurrentViewId() !== 'map') return;
+    const shown = new Set();
+    getMapWorkers().forEach(w => {
+        if (!w.pos) return;
+        const name = w.user.username;
+        shown.add(name);
+        const isAssistant = isAssistantUser(w.user);
+        const color = isAssistant ? '#10b981' : '#0ea5e9';
+        const ring = isAssistant ? 'rgba(16,185,129,.55)' : 'rgba(14,165,233,.55)';
+        const icon = mapMarkerIcon(w, color, ring);
+        if (liveMapMarkers[name]) {
+            liveMapMarkers[name].setLatLng([w.pos.lat, w.pos.lng]);
+            liveMapMarkers[name].setIcon(icon);
+        } else {
+            const marker = Leaflet.marker([w.pos.lat, w.pos.lng], { icon }).addTo(liveMap);
+            marker.on('mouseover', () => marker.setZIndexOffset(1000)); // hovered card comes to the front
+            marker.on('mouseout', () => marker.setZIndexOffset(0));
+            liveMapMarkers[name] = marker;
+        }
+    });
+    Object.keys(liveMapMarkers).forEach(name => {
+        if (!shown.has(name)) { liveMap.removeLayer(liveMapMarkers[name]); delete liveMapMarkers[name]; }
+    });
+
+    updateMapCompact();
+    const empty = document.getElementById('liveMapEmpty');
+    if (empty) empty.classList.toggle('hidden', shown.size > 0);
+    if (!liveMapFitted && shown.size > 0) {
+        liveMap.fitBounds(Object.values(liveMapMarkers).map(m => m.getLatLng()), { padding: [60, 60], maxZoom: 15 });
+        liveMapFitted = true;
+    }
+}
+
+// Keeps "Live / last seen" and the distances fresh while the Map page is open
+setInterval(() => { if (typeof refreshLiveMap === 'function') refreshLiveMap(); }, 15000);
 
 // ================= SERVICE AREAS MANAGER (head admin & admin) =================
 function canManageAreas() {
@@ -5799,7 +6907,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             dateBox.innerHTML = `<i class="fa-solid fa-calendar-day mr-1.5"></i>${new Date().toLocaleDateString(state.currentLang === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'long', month: 'short', day: 'numeric' })}`;
         }
 
-        const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.username);
+        // A delayed fix is hidden from the worker (as if finished) until its delay date arrives.
+        const myTasks = state.tasks.filter(t => isTaskAssignedTo(t, state.currentUser.username) && getDelayState(t) !== 'delayed');
         const openCount = myTasks.filter(t => t.status === 'Open').length;
         const progressCount = myTasks.filter(t => t.status === 'In Progress').length;
         const activeTasks = myTasks.filter(t => t.status === 'Open' || t.status === 'In Progress');
@@ -5839,10 +6948,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             // stays pinned at the top of "In Progress" instead of sinking under
             // older jobs, making it easy to find again.
             const byMostRecentlyAccepted = (a, b) => new Date(b.acceptedAt || b.assignedAt || b.createdDate || 0) - new Date(a.acceptedAt || a.assignedAt || a.createdDate || 0);
-            const openSorted = myTasks.filter(t => t.status === 'Open').sort(byOldest);
-            const progressSorted = myTasks.filter(t => t.status === 'In Progress').sort(byMostRecentlyAccepted);
+            const openSorted = myTasks.filter(t => t.status === 'Open' && !t.delay).sort(byOldest);
+            const progressSorted = myTasks.filter(t => t.status === 'In Progress' && !t.delay).sort(byMostRecentlyAccepted);
+            // Fixes that are due back from a delay come first.
+            const returnedSorted = myTasks.filter(t => getDelayState(t) === 'returned').sort((a, b) => a.delay.until.localeCompare(b.delay.until));
 
-            if (openSorted.length === 0 && progressSorted.length === 0) {
+            if (openSorted.length + progressSorted.length + returnedSorted.length === 0) {
                 grid.innerHTML = `
                 <div class="flex flex-col items-center justify-center py-16 text-center bg-white dark:bg-slate-900 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
                     <div class="w-14 h-14 rounded-2xl bg-sky-50 dark:bg-slate-800 text-sky-400 flex items-center justify-center text-2xl mb-4">
@@ -5862,10 +6973,13 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 ${tasks.map(task => renderTechTaskCard(task)).join('')}
             ` : '';
                 grid.innerHTML =
+                    lane(L('Back From Delay — Due Now', 'عادت من التأجيل — مستحقة الآن'), 'fa-calendar-check', 'text-teal-500', returnedSorted) +
                     lane(L('Needs Your Action', 'بحاجة لإجراء منك'), 'fa-hourglass-half', 'text-amber-500', openSorted) +
                     lane(L('In Progress', 'قيد التنفيذ'), 'fa-screwdriver-wrench', 'text-sky-500', progressSorted);
             }
         }
+        checkTechNotifications();
+        renderLocationShareControl();
     }
 
     // ================= TECHNICIAN DASHBOARD (COMPLETED TASK LOG) =================
@@ -5886,7 +7000,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             dateBox.innerHTML = `<i class="fa-solid fa-calendar-day mr-1.5"></i>${new Date().toLocaleDateString(state.currentLang === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'long', month: 'short', day: 'numeric' })}`;
         }
 
-        const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.username);
+        const myTasks = state.tasks.filter(t => isTaskAssignedTo(t, state.currentUser.username));
         const completedTasks = myTasks.filter(t => t.status === 'Done');
 
         const now = new Date();
@@ -5967,7 +7081,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 </div>
                 <span class="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full shrink-0 ${badgeStyle}">${task.priority}</span>
             </div>
-            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(getTaskDescription(task))}</p>
+            ${renderTaskDescription(task)}
             ${renderReceivedLine(task)}
             <div class="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-slate-100 dark:border-slate-800">
                 <span class="text-[11px] text-emerald-500 font-bold flex items-center gap-1.5">
@@ -6009,6 +7123,118 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             ${pinPart}
         </div>
     `;
+    }
+
+    // While a fix is delayed it is hidden from the technician and the assistant completely:
+    // only CS and the Admin see it (and why). Once the delay date arrives it comes back with this banner.
+    function renderTaskDelayBlock(task) {
+        if (getDelayState(task) !== 'returned') return '';
+        return `
+        <div class="rounded-xl border p-3 flex items-center justify-between gap-3 flex-wrap bg-teal-50 dark:bg-teal-950/30 border-teal-200 dark:border-teal-900">
+            <span class="flex items-center gap-1.5 text-[10px] font-extrabold uppercase text-teal-700 dark:text-teal-400">
+                <i class="fa-solid fa-calendar-check"></i> ${L('Back from delay — due', 'عاد من التأجيل — موعده')} ${escapeHtml(task.delay.until)}
+            </span>
+            <button type="button" onclick="resumeDelayedTask('${task.id}')"
+                class="text-[11px] font-extrabold bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 transition">
+                <i class="fa-solid fa-play me-1"></i>${L('Resume now', 'استئناف الآن')}
+            </button>
+        </div>`;
+    }
+
+    // "Delay" button, next to the other buttons of an accepted (In Progress) fix.
+    function renderDelayButton(task) {
+        if (task.status !== 'In Progress' || !isFixTask(task) || task.delay) return '';
+        return `
+                        <button onclick="openDelayModal('${task.id}')"
+                            class="text-xs font-extrabold bg-fuchsia-100 hover:bg-fuchsia-200 text-fuchsia-700 dark:bg-fuchsia-950 dark:hover:bg-fuchsia-900 dark:text-fuchsia-300 rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-calendar-xmark"></i> ${L('Delay', 'تأجيل')}
+                        </button>`;
+    }
+
+    function openDelayModal(taskId) {
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task) return;
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const minDate = getLocalDateString(tomorrow);
+        const current = task.delay || {};
+        openDynamicModal(`
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <h3 class="font-bold text-lg">${L('Delay this fix', 'تأجيل الإصلاح')}</h3>
+                <button type="button" onclick="closeDynamicModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div class="space-y-4 text-xs">
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">${L('Delay date (when the fix returns)', 'تاريخ التأجيل (موعد عودة الإصلاح)')}</label>
+                    <input type="date" id="delayDate" min="${minDate}" value="${escapeHtml(current.until || '')}" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">${L('Reason (customer circumstances)', 'السبب (ظروف العميل)')}</label>
+                    <textarea id="delayReason" rows="3" maxlength="300" placeholder="${escapeHtml(L('e.g., Customer is travelling until the weekend', 'مثال: العميل مسافر حتى نهاية الأسبوع'))}" class="${STAFF_INPUT_CLS}">${escapeHtml(current.reason || '')}</textarea>
+                </div>
+                <div class="flex items-center justify-end gap-2">
+                    <button type="button" onclick="closeDynamicModal()" class="text-xs font-extrabold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl px-4 py-2.5 transition">${L('Cancel', 'إلغاء')}</button>
+                    <button type="button" onclick="saveTaskDelay('${task.id}')" class="text-xs font-extrabold bg-fuchsia-500 hover:bg-fuchsia-600 text-white rounded-xl px-4 py-2.5 transition">${L('Save delay', 'حفظ التأجيل')}</button>
+                </div>
+            </div>`);
+    }
+
+    function refreshAfterTaskChange() {
+        const current = getCurrentViewId();
+        if (current === 'tech-home') renderTechHome();
+        else if (current === 'tech-dashboard') renderTechDashboard();
+        else renderAdminDashboard();
+    }
+
+    function saveTaskDelay(taskId) {
+        state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task || !state.currentUser) return;
+        if (state.currentUser.role !== 'technician' || !isTaskAssignedTo(task, state.currentUser.username)) {
+            showToast('You can only delay your own assigned tasks.', 'error');
+            return;
+        }
+        if (task.status !== 'In Progress') {
+            showToast(L('Accept the task first.', 'اقبل المهمة أولاً.'), 'error');
+            return;
+        }
+        if (!isFixTask(task)) {
+            showToast(L('Only a fix can be delayed.', 'يمكن تأجيل الإصلاحات فقط.'), 'error');
+            return;
+        }
+        const until = document.getElementById('delayDate').value;
+        const reason = document.getElementById('delayReason').value.trim();
+        if (!until || until <= getLocalDateString()) {
+            showToast(L('Choose a delay date after today.', 'اختر تاريخ تأجيل بعد اليوم.'), 'error');
+            return;
+        }
+        if (!reason) {
+            showToast(L('Please write the reason for the delay.', 'يرجى كتابة سبب التأجيل.'), 'error');
+            return;
+        }
+        task.delay = { until, reason, by: state.currentUser.username, at: new Date().toISOString() };
+        saveState();
+        closeDynamicModal();
+        showToast(L(`Fix delayed until ${until}. It now shows only to Customer Services and the Admin.`, `تم تأجيل الإصلاح حتى ${until}. يظهر الآن لخدمة العملاء والمدير فقط.`), 'success');
+        refreshAfterTaskChange();
+    }
+
+    // Takes the fix off hold (early, or after its delay date arrived).
+    function resumeDelayedTask(taskId) {
+        state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task || !state.currentUser) return;
+        const isTaskManager = isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr';
+        const isWorkerOnTask = state.currentUser.role === 'technician' && isTaskAssignedTo(task, state.currentUser.username);
+        if (!isTaskManager && !isWorkerOnTask) {
+            showToast('You can only update your own assigned tasks.', 'error');
+            return;
+        }
+        task.delay = null;
+        if (task.status === 'Open') task.assignedAt = new Date().toISOString(); // restart the 4-hour accept window
+        saveState();
+        showToast(L('Fix resumed.', 'تم استئناف الإصلاح.'), 'success');
+        refreshAfterTaskChange();
     }
 
     function renderTechTaskCard(task) {
@@ -6056,7 +7282,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 </div>
                 <span class="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full shrink-0 ${badgeStyle}">${task.priority}</span>
             </div>
-            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(getTaskDescription(task))}</p>
+            ${renderTaskDescription(task)}
+            ${renderTaskDelayBlock(task)}
             ${renderTechLocationBox(task)}
             ${moneyBlock}
             ${task.status === 'In Progress' ? renderRepairPhotosInput(task) : ''}
@@ -6081,6 +7308,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                             class="text-xs font-extrabold bg-slate-100 hover:bg-amber-100 text-slate-600 hover:text-amber-700 dark:bg-slate-800 dark:hover:bg-amber-950 dark:text-slate-300 rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2 min-h-[42px]">
                             <i class="fa-solid fa-rotate-left"></i> ${L('Undo Accept', 'تراجع عن القبول')}
                         </button>
+                        ${renderDelayButton(task)}
                         ${(PHASE_NEXT[phase] || []).includes('replace') ? `
                         <button onclick="handOffTask('${task.id}', 'replace')"
                             class="text-xs font-extrabold bg-rose-100 hover:bg-rose-200 text-rose-700 dark:bg-rose-950 dark:hover:bg-rose-900 dark:text-rose-300 rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2 min-h-[42px]">
@@ -6115,14 +7343,98 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     `;
     }
 
+    // ---- Add / Edit Employee ----
+    // null = adding a new employee, otherwise the id of the employee being edited.
+    let editingStaffId = null;
+
+    const STAFF_INPUT_CLS = 'w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500';
+
+    function renderStaffForm() {
+        const box = document.getElementById('adminStaffFormBox');
+        if (!box) return;
+        if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { box.innerHTML = ''; return; }
+
+        const isRealHead = state.currentUser.role === 'head-admin';
+        const editing = editingStaffId ? state.users.find(u => u.id === editingStaffId) : null;
+        const cats = getStaffCategories();
+        const catOptions = Object.keys(cats)
+            .map(k => `<option value="${escapeHtml(k)}">${escapeHtml(L(cats[k].en, cats[k].ar))}</option>`)
+            .join('') + (isRealHead || (editing && editing.role === 'executive') ? `<option value="executive">${L('Executive Director', 'المدير التنفيذي')}</option>` : '');
+
+        const title = document.getElementById('staffModalTitle');
+        if (title) title.textContent = editing ? L('Edit Employee', 'تعديل الموظف') : L('Add Employee', 'إضافة موظف');
+
+        box.innerHTML = `
+            <form onsubmit="handleCreateStaffSubmit(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Category</label>
+                    <select id="staffCategory" required onchange="updateStaffPositionOptions()" class="${STAFF_INPUT_CLS}">${catOptions}</select>
+                </div>
+                <div id="staffPositionWrap">
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Position</label>
+                    <select id="staffPosition" required class="${STAFF_INPUT_CLS}"></select>
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Full Name</label>
+                    <input type="text" id="staffFullName" required placeholder="e.g., Mona Adel" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Username</label>
+                    <input type="text" id="staffUsername" ${editing ? 'readonly' : 'required'} placeholder="e.g., mona.cs" class="${STAFF_INPUT_CLS} ${editing ? 'opacity-60 cursor-not-allowed' : ''}">
+                </div>
+                ${editing ? `
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">${L('New Password', 'كلمة سر جديدة')}</label>
+                    <input type="text" id="staffNewPassword" autocomplete="off" placeholder="${L('Leave empty to keep the current one', 'اتركها فارغة للإبقاء على الحالية')}" class="${STAFF_INPUT_CLS}">
+                    <p class="text-[10px] text-slate-400 mt-1">${L('The username can\'t be changed. 6+ characters: letters, numbers, _', 'لا يمكن تغيير اسم المستخدم. 6 أحرف أو أكثر: حروف وأرقام و _')}</p>
+                </div>` : `
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Password</label>
+                    <input type="text" id="staffPassword" required placeholder="Set a password" class="${STAFF_INPUT_CLS}">
+                </div>`}
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">WhatsApp Number</label>
+                    <input type="tel" id="staffWhatsApp" placeholder="e.g., 01098765432" maxlength="11" inputmode="numeric" pattern="[0-9]{11}" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Contact Phone</label>
+                    <input type="tel" id="staffContactPhone" placeholder="e.g., 01098765432" maxlength="11" inputmode="numeric" pattern="[0-9]{11}" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Profile Photo</label>
+                    <div class="flex items-center gap-4">
+                        <div id="staffPhotoPreview" class="w-16 h-16 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-300 dark:text-slate-600 shrink-0 overflow-hidden">
+                            ${editing && editing.photo ? `<img src="${editing.photo}" class="w-full h-full object-cover" alt="Photo">` : '<i class="fa-solid fa-user text-2xl"></i>'}
+                        </div>
+                        <input type="file" id="staffPhoto" accept="image/*" onchange="previewStaffPhoto(event)" class="flex-1 text-[11px] file:me-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:font-bold file:bg-sky-100 file:text-sky-600 dark:file:bg-sky-950 dark:file:text-sky-400 hover:file:bg-sky-200">
+                    </div>
+                    <p class="text-[10px] text-slate-400 mt-1">Optional — shown on the "Who Are We" team page. JPG/PNG, under 1&nbsp;MB.</p>
+                </div>
+                <div class="md:col-span-2">
+                    <button type="submit" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 rounded-xl uppercase tracking-wider transition">${editing ? L('Save Changes', 'حفظ التغييرات') : 'Add Employee'}</button>
+                </div>
+            </form>`;
+
+        if (editing) {
+            document.getElementById('staffCategory').value = getUserCategoryKey(editing) || 'executive';
+            updateStaffPositionOptions(editing.position);
+            document.getElementById('staffFullName').value = editing.name || '';
+            document.getElementById('staffUsername').value = editing.username || '';
+            document.getElementById('staffWhatsApp').value = editing.whatsapp || '';
+            document.getElementById('staffContactPhone').value = editing.contactPhone || '';
+        } else {
+            updateStaffPositionOptions();
+        }
+    }
+
     // Fills the Position dropdown to match the chosen Category. The Executive Director
     // (Admin only) has no sub-position, so the dropdown is hidden for it.
-    function updateStaffPositionOptions() {
+    function updateStaffPositionOptions(selectedKey) {
         const cat = document.getElementById('staffCategory');
         const pos = document.getElementById('staffPosition');
         const wrap = document.getElementById('staffPositionWrap');
         if (!cat || !pos || !wrap) return;
-        const def = STAFF_CATEGORIES[cat.value];
+        const def = getStaffCategories()[cat.value];
         if (!def) {
             wrap.classList.add('hidden');
             pos.required = false;
@@ -6132,11 +7444,16 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         wrap.classList.remove('hidden');
         pos.required = true;
         pos.innerHTML = def.positions
-            .map(p => `<option value="${p.key}">${state.currentLang === 'ar' ? p.ar : p.en}</option>`)
+            .map(p => `<option value="${escapeHtml(p.key)}">${escapeHtml(state.currentLang === 'ar' ? p.ar : p.en)}</option>`)
             .join('');
+        if (typeof selectedKey === 'string' && def.positions.some(p => p.key === selectedKey)) pos.value = selectedKey;
     }
 
-    function openStaffAccountModal() {
+    // staffId = edit that employee; no argument = add a new one.
+    function openStaffAccountModal(staffId) {
+        editingStaffId = typeof staffId === 'string' ? staffId : null;
+        pendingStaffPhotoDataUrl = null;
+        renderStaffForm();
         const modal = document.getElementById('staffAccountModal');
         if (modal) modal.classList.remove('hidden');
     }
@@ -6144,6 +7461,484 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function closeStaffAccountModal() {
         const modal = document.getElementById('staffAccountModal');
         if (modal) modal.classList.add('hidden');
+        editingStaffId = null;
+        pendingStaffPhotoDataUrl = null;
+    }
+
+    // ---- Add Job (new positions, or a whole new department) ----
+    function slugifyJob(text) {
+        return String(text).trim().toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]+/g, '-').replace(/^-+|-+$/g, '') || String(Date.now());
+    }
+
+    function renderJobForm() {
+        const box = document.getElementById('adminJobFormBox');
+        if (!box) return;
+        if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { box.innerHTML = ''; return; }
+
+        const cats = getStaffCategories();
+        const catOptions = Object.keys(cats)
+            .map(k => `<option value="${escapeHtml(k)}">${escapeHtml(L(cats[k].en, cats[k].ar))}</option>`)
+            .join('') + `<option value="__new__">+ ${L('New category...', 'قسم جديد...')}</option>`;
+
+        const jobs = state.customJobs || [];
+        const jobRows = jobs.length === 0
+            ? `<p class="text-[11px] text-slate-400 text-center p-3">${L('No custom jobs added yet.', 'لم تتم إضافة وظائف جديدة بعد.')}</p>`
+            : jobs.map(j => {
+                const cat = cats[j.category];
+                const catName = cat ? L(cat.en, cat.ar) : j.categoryEn || j.category;
+                return `
+                <div class="flex items-center justify-between gap-3 py-2">
+                    <div class="min-w-0">
+                        <span class="font-bold">${escapeHtml(L(j.en, j.ar || j.en))}</span>
+                        <span class="text-slate-400"> — ${escapeHtml(catName)}</span>
+                    </div>
+                    <button type="button" onclick="removeCustomJob('${j.id}')" class="text-red-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="Remove job">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
+                </div>`;
+            }).join('');
+
+        box.innerHTML = `
+            <form onsubmit="handleAddJobSubmit(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                <div class="md:col-span-2">
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Category</label>
+                    <select id="jobCategory" onchange="toggleNewCategoryFields()" class="${STAFF_INPUT_CLS}">${catOptions}</select>
+                </div>
+                <div id="jobNewCategoryWrap" class="hidden md:col-span-2 grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block font-bold uppercase text-slate-500 mb-1">New Category Name (English)</label>
+                        <input type="text" id="jobNewCategoryEn" placeholder="e.g., Warehouse" class="${STAFF_INPUT_CLS}">
+                    </div>
+                    <div>
+                        <label class="block font-bold uppercase text-slate-500 mb-1">New Category Name (Arabic, optional)</label>
+                        <input type="text" id="jobNewCategoryAr" dir="rtl" class="${STAFF_INPUT_CLS}">
+                    </div>
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Job Title (English)</label>
+                    <input type="text" id="jobTitleEn" required placeholder="e.g., Team Leader" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Job Title (Arabic, optional)</label>
+                    <input type="text" id="jobTitleAr" dir="rtl" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div class="md:col-span-2">
+                    <button type="submit" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 rounded-xl uppercase tracking-wider transition">Add Job</button>
+                </div>
+            </form>
+            <div class="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <h4 class="text-[11px] font-extrabold uppercase text-slate-500 mb-1">${L('Jobs you added', 'الوظائف التي أضفتها')}</h4>
+                <div class="divide-y divide-slate-100 dark:divide-slate-800 text-xs max-h-[200px] overflow-y-auto custom-scrollbar">${jobRows}</div>
+            </div>`;
+    }
+
+    function toggleNewCategoryFields() {
+        const sel = document.getElementById('jobCategory');
+        const wrap = document.getElementById('jobNewCategoryWrap');
+        if (!sel || !wrap) return;
+        const isNew = sel.value === '__new__';
+        wrap.classList.toggle('hidden', !isNew);
+        wrap.classList.toggle('grid', isNew);
+    }
+
+    // ---- Labor Dashboard: jobs done + ratings for every technician / assistant ----
+    const expandedLaborUsers = new Set();
+
+    function toggleLaborJobs(userId) {
+        if (expandedLaborUsers.has(userId)) expandedLaborUsers.delete(userId);
+        else expandedLaborUsers.add(userId);
+        renderManagePanel();
+    }
+
+    // Admin rating for one worker on one finished job: 1-5 stars, 0 clears it.
+    function rateLaborJob(taskId, username, value) {
+        if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+            showToast('Only the Admin or the Executive Director can rate employees.', 'error');
+            return;
+        }
+        state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task || !isTaskAssignedTo(task, username)) return;
+        task.laborRatings = task.laborRatings || {};
+        if (value >= 1 && value <= 5) task.laborRatings[username] = value;
+        else delete task.laborRatings[username];
+        saveState();
+        renderManagePanel();
+    }
+
+    function renderLaborDashboard() {
+        const grid = document.getElementById('manageLaborGrid');
+        if (!grid) return;
+        const workers = state.users.filter(u => u.role === 'technician');
+        if (workers.length === 0) {
+            grid.innerHTML = `<p class="col-span-full text-center p-6 text-slate-400 font-bold text-xs">${L('No technicians or assistants yet.', 'لا يوجد فنيون أو مساعدون بعد.')}</p>`;
+            return;
+        }
+        const now = new Date();
+        const tile = (value, label, color) => `
+            <div class="rounded-xl bg-slate-50 dark:bg-slate-800/60 px-2 py-2.5 text-center">
+                <span class="block text-lg font-extrabold ${color}">${value}</span>
+                <span class="block text-[9px] font-bold uppercase text-slate-400 mt-0.5">${label}</span>
+            </div>`;
+
+        grid.innerHTML = workers.map(u => {
+            const mine = state.tasks.filter(t => isTaskAssignedTo(t, u.username));
+            const openCount = mine.filter(t => t.status === 'Open').length;
+            const progressCount = mine.filter(t => t.status === 'In Progress').length;
+            const done = mine.filter(t => t.status === 'Done')
+                .sort((a, b) => new Date(b.completedAt || b.completedDate || 0) - new Date(a.completedAt || a.completedDate || 0));
+            const doneMonth = done.filter(t => {
+                const d = getTaskCompletionDate(t);
+                return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+            }).length;
+
+            const mine5 = done.map(t => t.laborRatings && t.laborRatings[u.username]).filter(v => typeof v === 'number');
+            const myAvg = mine5.length ? mine5.reduce((s, v) => s + v, 0) / mine5.length : null;
+            const myRatingCell = myAvg === null
+                ? `<span class="text-[10px] text-slate-400 italic">${L('Not rated yet', 'لم يتم التقييم بعد')}</span>`
+                : `<div class="flex items-center gap-1.5">${renderStarRow(myAvg, 'text-xs')}<span class="text-[10px] text-slate-400 font-bold">${myAvg.toFixed(1)} (${mine5.length})</span></div>`;
+
+            const expanded = expandedLaborUsers.has(u.id);
+            const jobRows = done.length === 0
+                ? `<p class="text-[11px] text-slate-400 p-4 text-center">${L('No finished jobs yet.', 'لا توجد مهام منتهية بعد.')}</p>`
+                : done.map(t => {
+                    const order = t.orderId ? state.orders.find(o => o.id === t.orderId) : null;
+                    const customer = order ? `@${order.username}${order.customerName ? ' · ' + order.customerName : ''}` : (t.customerName || '—');
+                    const fb = order && order.customerFeedback && typeof order.customerFeedback.rating === 'number' ? order.customerFeedback.rating : null;
+                    const cur = t.laborRatings && t.laborRatings[u.username];
+                    const starBtns = [1, 2, 3, 4, 5].map(n => `
+                        <button type="button" onclick="rateLaborJob('${t.id}', '${u.username}', ${n})"
+                            class="text-sm ${cur && n <= cur ? 'text-amber-400' : 'text-slate-300 dark:text-slate-600'} hover:text-amber-400 transition" title="${n}">
+                            <i class="fa-solid fa-star"></i></button>`).join('');
+                    const clearBtn = cur ? `<button type="button" onclick="rateLaborJob('${t.id}', '${u.username}', 0)" class="ms-1 text-[10px] text-slate-400 hover:text-red-500" title="${L('Clear rating', 'مسح التقييم')}"><i class="fa-solid fa-xmark"></i></button>` : '';
+                    return `
+                    <div class="px-4 py-3 space-y-1.5">
+                        <div class="min-w-0">
+                            <span class="block font-semibold text-xs">${escapeHtml(t.title)}</span>
+                            <span class="block text-[10px] text-slate-400">${escapeHtml(customer)} · ${escapeHtml(formatDateTime(t.completedAt || t.completedDate))}</span>
+                        </div>
+                        <div class="flex items-center justify-between gap-3 flex-wrap">
+                            <div class="text-[10px] text-slate-400">${L('Customer', 'العميل')}: ${fb === null ? '—' : renderStarRow(fb, 'text-[11px]')}</div>
+                            <div class="flex items-center"><span class="text-[10px] text-slate-400 me-1.5">${L('Your rating', 'تقييمك')}:</span>${starBtns}${clearBtn}</div>
+                        </div>
+                    </div>`;
+                }).join('');
+
+            return `
+            <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-4">
+                <div class="flex items-center gap-3">
+                    <div class="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 overflow-hidden flex items-center justify-center text-slate-300 dark:text-slate-600 shrink-0">
+                        ${u.photo ? `<img src="${u.photo}" class="w-full h-full object-cover" alt="">` : '<i class="fa-solid fa-user text-xl"></i>'}
+                    </div>
+                    <div class="min-w-0 flex-1">
+                        <span class="block font-extrabold text-sm truncate">${escapeHtml(u.name || u.username)}</span>
+                        <span class="block text-[11px] font-bold text-sky-500">@${escapeHtml(u.username)}</span>
+                        <span class="inline-block mt-1 text-[10px] font-extrabold px-2.5 py-1 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400">${escapeHtml(getPositionLabel(u))}</span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-4 gap-2">
+                    ${tile(openCount, L('Open', 'مفتوحة'), 'text-amber-500')}
+                    ${tile(progressCount, L('In Progress', 'قيد التنفيذ'), 'text-sky-500')}
+                    ${tile(done.length, L('Done', 'منتهية'), 'text-emerald-500')}
+                    ${tile(doneMonth, L('This Month', 'هذا الشهر'), 'text-slate-600 dark:text-slate-300')}
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-1">
+                        <span class="block text-[9px] font-bold uppercase text-slate-400">${L('Customer Rating', 'تقييم العميل')}</span>
+                        ${renderStaffRating(u.username)}
+                    </div>
+                    <div class="space-y-1">
+                        <span class="block text-[9px] font-bold uppercase text-slate-400">${L('Your Rating', 'تقييمك')}</span>
+                        ${myRatingCell}
+                    </div>
+                </div>
+                <button type="button" onclick="toggleLaborJobs('${u.id}')" class="w-full text-[11px] font-extrabold px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-sky-950 text-slate-600 dark:text-slate-300 transition">
+                    ${L('Finished jobs', 'المهام المنتهية')} (${done.length}) <i class="fa-solid fa-chevron-${expanded ? 'up' : 'down'} ms-1 text-[9px]"></i>
+                </button>
+                ${expanded ? `<div class="rounded-xl border border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 max-h-[280px] overflow-y-auto custom-scrollbar">${jobRows}</div>` : ''}
+            </div>`;
+        }).join('');
+    }
+
+    // ---- Management panel on the Who Are We page (Admin & Executive Director) ----
+    // Two icon cards: Team Accounts and Labor Dashboard. The one you click opens below, click again to close.
+    let manageTab = sessionStorage.getItem('ca_manage_tab') || '';
+
+    function selectManageTab(tab) {
+        manageTab = (manageTab === tab) ? '' : tab;
+        sessionStorage.setItem('ca_manage_tab', manageTab);
+        renderManagePanel();
+    }
+
+    function renderManagePanel() {
+        const section = document.getElementById('whoManageSection');
+        if (!section) return;
+        const me = state.currentUser;
+        const allowed = !!me && isTopAdmin(me.role);
+        section.classList.toggle('hidden', !allowed);
+        if (!allowed) return;
+
+        // The Add / Edit forms are rebuilt while their window is closed, so a refresh never wipes what is being typed.
+        const staffModalEl = document.getElementById('staffAccountModal');
+        const jobModalEl = document.getElementById('jobModal');
+        if (staffModalEl && staffModalEl.classList.contains('hidden')) renderStaffForm();
+        if (jobModalEl && jobModalEl.classList.contains('hidden')) renderJobForm();
+
+        const staffCount = state.users.filter(u => isStaffRole(u.role) && u.role !== 'head-admin').length;
+        const workers = state.users.filter(u => u.role === 'technician');
+        const doneJobs = state.tasks.filter(t => t.status === 'Done' && workers.some(w => isTaskAssignedTo(t, w.username))).length;
+
+        const tab = (key, icon, color, title, sub) => `
+            <button type="button" onclick="selectManageTab('${key}')"
+                class="text-start rounded-2xl border p-5 flex items-center gap-4 transition shadow-sm ${manageTab === key ? 'border-sky-500 ring-2 ring-sky-500/30 bg-sky-50/60 dark:bg-sky-950/20' : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-sky-400'}">
+                <span class="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${color}"><i class="fa-solid ${icon}"></i></span>
+                <span class="min-w-0 flex-1">
+                    <span class="block font-extrabold text-sm">${title}</span>
+                    <span class="block text-[11px] text-slate-400 mt-0.5">${sub}</span>
+                </span>
+                <i class="fa-solid fa-chevron-${manageTab === key ? 'up' : 'down'} text-slate-400 text-xs"></i>
+            </button>`;
+        document.getElementById('manageTabs').innerHTML =
+            tab('team', 'fa-users-gear', 'bg-sky-100 text-sky-600 dark:bg-sky-950 dark:text-sky-400',
+                L('Team Accounts', 'حسابات الفريق'), `${staffCount} ${L('employees', 'موظف')}`) +
+            tab('labor', 'fa-helmet-safety', 'bg-amber-100 text-amber-600 dark:bg-amber-950 dark:text-amber-400',
+                L('Labor Dashboard', 'لوحة العمال'), `${workers.length} ${L('workers', 'عامل')} · ${doneJobs} ${L('jobs done', 'مهمة منجزة')}`);
+
+        document.getElementById('managePanelTeam').classList.toggle('hidden', manageTab !== 'team');
+        document.getElementById('managePanelLabor').classList.toggle('hidden', manageTab !== 'labor');
+        if (manageTab === 'team') renderTeamCards();
+        if (manageTab === 'labor') renderLaborDashboard();
+    }
+
+    // Employee cards (search + edit + delete)
+    function renderTeamCards() {
+        const grid = document.getElementById('manageTeamGrid');
+        if (!grid || !state.currentUser || !isTopAdmin(state.currentUser.role)) return;
+        const isRealHead = state.currentUser.role === 'head-admin';
+        const searchBox = document.getElementById('manageTeamSearch');
+        const term = searchBox ? searchBox.value.trim().toLowerCase() : '';
+        const staff = state.users
+            .filter(u => isStaffRole(u.role) && u.role !== 'head-admin')
+            .filter(u => !term || [u.name, u.username, getPositionLabel(u)].some(v => String(v || '').toLowerCase().includes(term)));
+
+        if (staff.length === 0) {
+            grid.innerHTML = `<p class="col-span-full text-center p-6 text-slate-400 font-bold text-xs">${L('No staff accounts found.', 'لا توجد حسابات موظفين.')}</p>`;
+            return;
+        }
+        const roleColors = {
+            'hr': 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400',
+            'technician': 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400',
+            'admin': 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400',
+            'executive': 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
+        };
+        grid.innerHTML = staff.map(u => {
+            const canChange = !(u.role === 'executive' && !isRealHead);
+            const actions = canChange ? `
+                <button onclick="openStaffAccountModal('${u.id}')" class="w-8 h-8 rounded-lg text-sky-500 hover:bg-sky-50 dark:hover:bg-slate-800 transition" title="Edit Staff Account"><i class="fa-solid fa-pen-to-square"></i></button>
+                <button onclick="openDeleteUserModal('${u.id}', '${u.username}')" class="w-8 h-8 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 transition" title="Delete Staff Account"><i class="fa-solid fa-trash-can"></i></button>` : '';
+            return `
+            <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-3 hover:border-sky-400 transition">
+                <div class="flex items-start gap-3">
+                    <div class="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 overflow-hidden flex items-center justify-center text-slate-300 dark:text-slate-600 shrink-0">
+                        ${u.photo ? `<img src="${u.photo}" class="w-full h-full object-cover" alt="${escapeHtml(u.name || u.username)}">` : '<i class="fa-solid fa-user text-xl"></i>'}
+                    </div>
+                    <div class="min-w-0 flex-1">
+                        <span class="block font-extrabold text-sm truncate">${escapeHtml(u.name || 'N/A')}</span>
+                        <span class="block text-[11px] font-bold text-sky-500">@${escapeHtml(u.username)}</span>
+                        <span class="inline-block mt-1.5 text-[10px] font-extrabold px-2.5 py-1 rounded-full ${roleColors[u.role] || 'bg-slate-100 text-slate-500'}">${escapeHtml(getPositionLabel(u))}</span>
+                    </div>
+                    <div class="flex items-center shrink-0">${actions}</div>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-[11px]">
+                    <div class="rounded-xl bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+                        <span class="block text-[9px] font-bold uppercase text-slate-400"><i class="fa-brands fa-whatsapp me-1"></i>${L('WhatsApp', 'واتساب')}</span>
+                        <span class="font-mono text-slate-600 dark:text-slate-300">${escapeHtml(u.whatsapp || 'N/A')}</span>
+                    </div>
+                    <div class="rounded-xl bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+                        <span class="block text-[9px] font-bold uppercase text-slate-400"><i class="fa-solid fa-phone me-1"></i>${L('Contact Phone', 'هاتف التواصل')}</span>
+                        <span class="font-mono text-slate-600 dark:text-slate-300">${escapeHtml(u.contactPhone || 'N/A')}</span>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    // ---- Add Customer (Admin / Executive Director) ----
+    function renderCustomerForm() {
+        const box = document.getElementById('adminCustomerFormBox');
+        if (!box) return;
+        if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { box.innerHTML = ''; return; }
+        box.innerHTML = `
+            <form onsubmit="handleAddCustomerSubmit(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                <div class="md:col-span-2">
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Full Name</label>
+                    <input type="text" id="custFullName" required placeholder="e.g., Ahmed Hassan" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Username</label>
+                    <input type="text" id="custUsername" required placeholder="e.g., ahmed.h" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Password</label>
+                    <input type="text" id="custPassword" required placeholder="6+ letters, digits or _" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">WhatsApp Number</label>
+                    <input type="tel" id="custWhatsApp" required placeholder="e.g., 01098765432" maxlength="11" inputmode="numeric" pattern="[0-9]{11}" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase text-slate-500 mb-1">Contact Phone</label>
+                    <input type="tel" id="custContactPhone" required placeholder="e.g., 01098765432" maxlength="11" inputmode="numeric" pattern="[0-9]{11}" class="${STAFF_INPUT_CLS}">
+                </div>
+                <div class="md:col-span-2">
+                    <button type="submit" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 rounded-xl uppercase tracking-wider transition">Add Customer</button>
+                </div>
+            </form>`;
+    }
+
+    function openCustomerModal() {
+        renderCustomerForm();
+        const modal = document.getElementById('customerModal');
+        if (modal) modal.classList.remove('hidden');
+    }
+
+    function closeCustomerModal() {
+        const modal = document.getElementById('customerModal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    async function handleAddCustomerSubmit(e) {
+        e.preventDefault();
+        if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+            showToast('Only the Admin or the Executive Director can add customers.', 'error');
+            return;
+        }
+        const name = document.getElementById('custFullName').value.trim();
+        const username = document.getElementById('custUsername').value.trim();
+        const password = document.getElementById('custPassword').value;
+        const whatsapp = document.getElementById('custWhatsApp').value.trim();
+        const contactPhone = document.getElementById('custContactPhone').value.trim();
+
+        if (!name || !username) { showToast('Please complete the customer form.', 'error'); return; }
+        if (!/^[A-Za-z0-9_]{6,}$/.test(password)) {
+            showToast('Password must be at least 6 characters: letters, digits or _ only.', 'error');
+            return;
+        }
+        const phoneRegex = /^\d{11}$/;
+        if (!phoneRegex.test(whatsapp)) { showToast('WhatsApp number must be exactly 11 digits.', 'error'); return; }
+        if (!phoneRegex.test(contactPhone)) { showToast('Contact number must be exactly 11 digits.', 'error'); return; }
+        if (state.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
+            showToast('That username is already taken.', 'error');
+            return;
+        }
+        if (state.users.some(u => u.whatsapp && u.whatsapp.trim() === whatsapp)) {
+            showToast('WhatsApp number already taken.', 'error');
+            return;
+        }
+        if (state.users.some(u => u.contactPhone && u.contactPhone.trim() === contactPhone)) {
+            showToast('Contact number already taken.', 'error');
+            return;
+        }
+
+        // Same registration as the public signup form
+        if (supabaseClient) {
+            try {
+                const { error } = await supabaseClient.auth.signUp({
+                    email: getSupabaseEmail(username),
+                    password: password,
+                    options: { data: { username, name, whatsapp, contactPhone, role: 'customer' } }
+                });
+                if (error) console.warn('[Supabase Auth] Customer SignUp notice/warning:', error.message);
+            } catch (sbErr) {
+                console.warn('[Supabase Auth] Exception during customer signup:', sbErr);
+            }
+        }
+
+        state.users.push({
+            id: createDateBasedId('USR'),
+            username,
+            password: await hashPassword(password),
+            role: 'customer',
+            name,
+            whatsapp,
+            contactPhone,
+            joinedDate: getLocalDateString()
+        });
+        saveState();
+        showToast(`Customer ${name} added.`, 'success');
+        closeCustomerModal();
+        renderAdminDashboard();
+    }
+
+    function openJobModal() {
+        renderJobForm();
+        const modal = document.getElementById('jobModal');
+        if (modal) modal.classList.remove('hidden');
+    }
+
+    function closeJobModal() {
+        const modal = document.getElementById('jobModal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    function handleAddJobSubmit(e) {
+        e.preventDefault();
+        if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+            showToast('Only the Admin or the Executive Director can add jobs.', 'error');
+            return;
+        }
+        const cats = getStaffCategories();
+        const sameName = (a, b) => a && b && a.trim().toLowerCase() === b.trim().toLowerCase();
+        const jobEn = document.getElementById('jobTitleEn').value.trim();
+        const jobAr = document.getElementById('jobTitleAr').value.trim();
+        if (!jobEn) { showToast('Please enter the job title.', 'error'); return; }
+
+        let category = document.getElementById('jobCategory').value;
+        let categoryEn = '';
+        let categoryAr = '';
+        if (category === '__new__') {
+            categoryEn = document.getElementById('jobNewCategoryEn').value.trim();
+            categoryAr = document.getElementById('jobNewCategoryAr').value.trim();
+            if (!categoryEn) { showToast('Please enter the new category name.', 'error'); return; }
+            // Typing the name of a category that already exists just adds the job to it.
+            const existing = Object.keys(cats).find(k => sameName(cats[k].en, categoryEn) || (categoryAr && sameName(cats[k].ar, categoryAr)));
+            category = existing || 'custom-' + slugifyJob(categoryEn);
+            if (existing) { categoryEn = ''; categoryAr = ''; }
+        } else if (cats[category] && cats[category].custom) {
+            categoryEn = cats[category].en;
+            categoryAr = cats[category].ar;
+        }
+
+        const catPositions = (cats[category] && cats[category].positions) || [];
+        if (catPositions.some(p => sameName(p.en, jobEn) || (jobAr && sameName(p.ar, jobAr)))) {
+            showToast('That job already exists in this category.', 'error');
+            return;
+        }
+
+        let key = category + '-' + slugifyJob(jobEn);
+        const taken = new Set(catPositions.map(p => p.key));
+        while (taken.has(key)) key += '-x';
+
+        state.customJobs = state.customJobs || [];
+        state.customJobs.push({ id: createDateBasedId('JOB'), category, categoryEn, categoryAr, key, en: jobEn, ar: jobAr });
+        saveState();
+        showToast(`Job "${jobEn}" added.`, 'success');
+        renderJobForm();
+        renderStaffForm();
+    }
+
+    function removeCustomJob(jobId) {
+        const job = (state.customJobs || []).find(j => j.id === jobId);
+        if (!job) return;
+        if (state.users.some(u => u.position === job.key)) {
+            showToast('This job is assigned to an employee. Edit or delete that employee first.', 'error');
+            return;
+        }
+        state.customJobs = state.customJobs.filter(j => j.id !== jobId);
+        saveState();
+        showToast('Job removed.', 'success');
+        renderJobForm();
+        renderStaffForm();
     }
 
     // Holds the base64 data URL of the photo picked in the Create Staff Account form,
@@ -6243,7 +8038,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const positionEl = document.getElementById('staffPosition');
         const positionKey = positionEl ? positionEl.value : '';
         const username = document.getElementById('staffUsername').value.trim();
-        const password = document.getElementById('staffPassword').value;
+        const passwordEl = document.getElementById('staffPassword');
+        const password = passwordEl ? passwordEl.value : '';
+        const editingUser = editingStaffId ? state.users.find(u => u.id === editingStaffId) : null;
         const whatsapp = document.getElementById('staffWhatsApp').value.trim();
         const contactPhone = document.getElementById('staffContactPhone').value.trim();
 
@@ -6258,7 +8055,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             role = 'executive';
             position = 'executive-director';
         } else {
-            const catDef = STAFF_CATEGORIES[category];
+            const catDef = getStaffCategories()[category];
             const posDef = catDef && catDef.positions.find(p => p.key === positionKey);
             if (!catDef || !posDef) {
                 showToast('Please select a valid staff role.', 'error');
@@ -6268,7 +8065,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             position = posDef.key;
         }
 
-        if (!name || !username || !password) {
+        if (!name || !username || (!editingUser && !password)) {
             showToast('Please complete the staff account form.', 'error');
             return;
         }
@@ -6282,6 +8079,64 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             showToast('Contact number must be exactly 11 digits.', 'error');
             return;
         }
+
+        // ---- Edit an existing employee ----
+        if (editingStaffId) {
+            if (!editingUser) { showToast('Employee not found.', 'error'); closeStaffAccountModal(); return; }
+            if (editingUser.role === 'head-admin' || (editingUser.role === 'executive' && state.currentUser.role !== 'head-admin')) {
+                showToast('Only the Admin can add or delete an Executive Director.', 'error');
+                return;
+            }
+            // Optional new password: the real login password is in Supabase Auth, so it is changed there first.
+            const newPwEl = document.getElementById('staffNewPassword');
+            const newPw = newPwEl ? newPwEl.value.trim() : '';
+            let newPwHash = null;
+            if (newPw) {
+                if (!/^[A-Za-z0-9_]{6,}$/.test(newPw)) {
+                    showToast(t('fp_invalid_pw'), 'error');
+                    return;
+                }
+                if (supabaseClient) {
+                    const { data: sess } = await supabaseClient.auth.getSession();
+                    if (!sess || !sess.session) {
+                        showToast(L('Your server session has ended. Log out, log in again, then retry.', 'انتهت جلسة الخادم. سجّل الخروج ثم الدخول وأعد المحاولة.'), 'error');
+                        return;
+                    }
+                    const { error } = await supabaseClient.rpc('admin_set_password', { p_username: editingUser.username, p_new_password: newPw });
+                    if (error) {
+                        const m = error.message || '';
+                        showToast(
+                            (error.code === 'PGRST202' || /could not find the function/i.test(m)) ? L('Run supabase_admin_set_password.sql once in Supabase first.', 'شغّل ملف supabase_admin_set_password.sql مرة واحدة في Supabase أولاً.')
+                            : /not_signed_in|permission denied/i.test(m) ? L('Session expired. Log out and log in again, then retry.', 'انتهت الجلسة. سجّل الخروج ثم الدخول وأعد المحاولة.')
+                            : /not_allowed/.test(m) ? L('You are not allowed to change this password.', 'غير مسموح لك بتغيير كلمة السر هذه.')
+                            : /no_auth_account/.test(m) ? L('This employee has no login on the server.', 'هذا الموظف ليس لديه حساب دخول على الخادم.')
+                            : (m || 'Password change failed.'), 'error');
+                        return;
+                    }
+                }
+                newPwHash = await hashPassword(newPw);
+            }
+            const oldRole = editingUser.role;
+            if (newPwHash) {
+                editingUser.password = newPwHash;
+                if (state.currentUser && state.currentUser.id === editingUser.id) state.currentUser.password = newPwHash;
+            }
+            editingUser.name = name;
+            editingUser.role = role;
+            editingUser.position = position;
+            editingUser.category = category === 'executive' ? null : category;
+            editingUser.whatsapp = whatsapp;
+            editingUser.contactPhone = contactPhone;
+            if (pendingStaffPhotoDataUrl) editingUser.photo = pendingStaffPhotoDataUrl;
+            // Moved out of the Technical team: their open tasks go back to "Not Assigned".
+            if (oldRole === 'technician' && role !== 'technician') releaseTechnicianTasks(editingUser.username);
+            saveState();
+            showToast(newPwHash ? `${name} updated — new password set.` : `${name} updated.`, 'success');
+            closeStaffAccountModal();
+            renderAdminDashboard();
+            return;
+        }
+
         if (state.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
             showToast('That username is already taken.', 'error');
             return;
@@ -6321,6 +8176,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             password: await hashPassword(password),
             role,
             position,
+            category: category === 'executive' ? null : category,
             name,
             whatsapp,
             contactPhone,
@@ -6332,15 +8188,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         saveState();
         showToast(`${getPositionLabel(newStaff)} account created for ${name}.`, 'success');
 
-        pendingStaffPhotoDataUrl = null;
-        e.target.reset();
-        const preview = document.getElementById('staffPhotoPreview');
-        if (preview) preview.innerHTML = '<i class="fa-solid fa-user text-2xl"></i>';
-        renderAdminDashboard();
         closeStaffAccountModal();
+        renderAdminDashboard();
     }
 
-    function reassignTask(taskId, newAssignee) {
+    // kind: 'technician' (default) or 'assistant'. Both get the task and can work on it.
+    function reassignTask(taskId, newAssignee, kind) {
         const isTaskManager = state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
         if (!isTaskManager) {
             showToast('Only the head admin or Customer Services can reassign tasks.', 'error');
@@ -6357,21 +8210,40 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             return;
         }
 
-        const newTech = state.users.find(u => u.username === newAssignee && u.role === 'technician');
-        if (!newTech) {
-            showToast('Please choose a valid technician to reassign to.', 'error');
+        const isAssistant = kind === 'assistant';
+        const field = isAssistant ? 'assistantTo' : 'assignedTo';
+        const otherField = isAssistant ? 'assignedTo' : 'assistantTo';
+
+        // Choosing "No assistant" just takes the assistant off the task.
+        if (isAssistant && !newAssignee) {
+            task.assistantTo = '';
+            if (isTaskUnassigned(task)) task.unassignedSince = new Date().toISOString();
+            saveState();
+            showToast(L('Assistant removed from the task.', 'تم إزالة المساعد من المهمة.'), 'success');
             renderAdminDashboard();
             return;
         }
 
-        const previousAssignee = task.assignedTo;
-        task.assignedTo = newAssignee;
+        if (!isValidAssignee(newAssignee)) {
+            showToast('Please choose a valid technician to reassign to.', 'error');
+            renderAdminDashboard();
+            return;
+        }
+        if (task[otherField] === newAssignee) {
+            showToast(L('That person is already on this task.', 'هذا الشخص موجود بالفعل في المهمة.'), 'error');
+            renderAdminDashboard();
+            return;
+        }
+
+        const previousAssignee = task[field];
+        task[field] = newAssignee;
         task.assignedAt = new Date().toISOString(); // starts the 4-hour "late" clock for this assignment
         saveState();
+        const who = isAssistant ? L('Assistant', 'المساعد') : L('Technician', 'الفني');
         if (!previousAssignee) {
-            showToast(`Task assigned to @${newAssignee}.`, 'success');
+            showToast(`${who}: task assigned to @${newAssignee}.`, 'success');
         } else {
-            showToast(`Task withdrawn from @${previousAssignee} and reassigned to @${newAssignee}.`, 'success');
+            showToast(`${who}: task withdrawn from @${previousAssignee} and reassigned to @${newAssignee}.`, 'success');
         }
         renderAdminDashboard();
     }
@@ -6431,7 +8303,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!task) return;
 
         const isTaskManager = state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
-        if (!isTaskManager && task.assignedTo !== state.currentUser.username) {
+        if (!isTaskManager && !isTaskAssignedTo(task, state.currentUser.username)) {
             showToast('You can only update your own assigned tasks.', 'error');
             renderAdminDashboard();
             return;
@@ -6458,12 +8330,15 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
 
         task.status = newStatus;
+        if (newStatus === 'In Progress' || newStatus === 'Done') task.delay = null; // work started or finished: no longer on hold
         if (newStatus === 'In Progress' && previousStatus === 'Open') {
             // Marks the moment the technician accepted it, so Home can float the
             // just-accepted task to the top of "In Progress" instead of sorting
             // it by how long it had been waiting before that.
             task.acceptedAt = new Date().toISOString();
+            task.acceptedBy = state.currentUser ? state.currentUser.username : null;
         }
+        if (newStatus === 'Open') task.acceptedBy = null;
         if (newStatus === 'Done') {
             // Record the exact moment (date AND time) the task was marked Done.
             const doneNow = new Date();
@@ -6488,7 +8363,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
         saveState();
         const isUndo = (previousStatus === 'In Progress' && newStatus === 'Open') || (previousStatus === 'Done' && newStatus === 'In Progress');
-        showToast(isUndo ? `Undone — task ${taskId} is back to ${newStatus}` : `Task ${taskId} updated to ${newStatus}`, 'success');
+        const isAccept = previousStatus === 'Open' && newStatus === 'In Progress';
+        if (isAccept && state.currentUser && state.currentUser.role === 'technician') {
+            showTaskPopup(L('Task accepted', 'تم قبول المهمة'), task.title, 'fa-circle-check', 'sky');
+        } else {
+            showToast(isUndo ? `Undone — task ${taskId} is back to ${newStatus}` : `Task ${taskId} updated to ${newStatus}`, 'success');
+        }
         const current = getCurrentViewId();
         if (current === 'tech-home') renderTechHome();
         else if (current === 'tech-dashboard') renderTechDashboard();
@@ -6506,7 +8386,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!task || !state.currentUser) return;
 
         const isTaskManager = isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr';
-        if (!isTaskManager && task.assignedTo !== state.currentUser.username) {
+        if (!isTaskManager && !isTaskAssignedTo(task, state.currentUser.username)) {
             showToast('You can only update your own assigned tasks.', 'error');
             return;
         }
@@ -6535,6 +8415,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         task.completedDate = getLocalDateString(now);
         task.handedOff = true;
         task.handedOffTo = nextPhase;
+        task.delay = null;
 
         const itemTitle = order ? order.itemTitle : task.title;
         // A withdrawal is handed over as a "Get It" job that continues as a
@@ -6557,7 +8438,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             phase: nextPhase,
             parentTaskId: task.id,
             locationCoords: task.locationCoords || null,
-            ...(task.source === 'arabi' ? { source: 'arabi', customerName: task.customerName, phone: task.phone, address: task.address, fix: task.fix } : {})
+            ...((task.source === 'arabi' || task.source === 'sheet') ? { source: task.source, customerName: task.customerName, phone: task.phone, address: task.address, fix: task.fix, notes: task.notes, folderId: task.folderId } : {})
         };
         state.tasks.unshift(next);
 
@@ -6583,7 +8464,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const task = state.tasks.find(item => item.id === taskId);
         if (!task) return;
 
-        if (!state.currentUser || state.currentUser.role !== 'technician' || task.assignedTo !== state.currentUser.username) {
+        if (!state.currentUser || state.currentUser.role !== 'technician' || !isTaskAssignedTo(task, state.currentUser.username)) {
             showToast('You can only decline your own assigned tasks.', 'error');
             return;
         }
@@ -6592,8 +8473,11 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             return;
         }
 
-        task.assignedTo = null;
-        task.unassignedSince = new Date().toISOString(); // the "late" clock restarts
+        // Only this person leaves the task; the other one (technician / assistant) stays on it.
+        if (task.assignedTo === state.currentUser.username) task.assignedTo = null;
+        else task.assistantTo = '';
+        if (isTaskUnassigned(task)) task.unassignedSince = new Date().toISOString(); // the "late" clock restarts
+        if (isTaskUnassigned(task)) task.delay = null; // nobody left on it, so nobody is waiting on the customer
         saveState();
         showToast(`Task ${taskId} declined. It has been sent back for reassignment.`, 'info');
 
@@ -6645,6 +8529,76 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         setTimeout(() => toast.remove(), duration);
     }
 
+    // Pop-up notification card for technicians / assistants. Closes by itself after about 10 seconds.
+    function showTaskPopup(title, message, icon = 'fa-bell', tone = 'sky') {
+        const tones = {
+            sky: 'border-l-sky-500 text-sky-500',
+            amber: 'border-l-amber-500 text-amber-500',
+            teal: 'border-l-teal-500 text-teal-500'
+        };
+        const toneClass = tones[tone] || tones.sky;
+        let box = document.getElementById('taskPopupContainer');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'taskPopupContainer';
+            box.className = 'fixed top-20 right-4 left-4 sm:left-auto sm:w-80 z-[60] space-y-3 pointer-events-none';
+            document.body.appendChild(box);
+        }
+        const card = document.createElement('div');
+        card.className = `pointer-events-auto rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 border-l-4 ${toneClass.split(' ')[0]} shadow-2xl p-4 flex items-start gap-3`;
+        card.innerHTML = `
+            <i class="fa-solid ${icon} ${toneClass.split(' ')[1]} mt-0.5 shrink-0"></i>
+            <div class="min-w-0 flex-1">
+                <span class="block text-xs font-extrabold">${escapeHtml(title)}</span>
+                <span class="block text-xs text-slate-500 dark:text-slate-400 mt-0.5 break-words">${escapeHtml(message)}</span>
+            </div>
+            <button type="button" class="text-slate-400 hover:text-slate-600 dark:hover:text-white shrink-0"><i class="fa-solid fa-xmark"></i></button>`;
+        card.querySelector('button').addEventListener('click', () => card.remove());
+        box.appendChild(card);
+        setTimeout(() => card.remove(), 10000);
+    }
+
+    // Looks for things the technician / assistant should be told about and shows each once:
+    // a task newly assigned to them, a teammate accepting a shared task, a delayed fix coming back.
+    function checkTechNotifications() {
+        const me = state.currentUser;
+        if (!me || me.role !== 'technician') return;
+        state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+        const key = `ca_task_seen_${me.username}`;
+        let seen = {};
+        try { seen = JSON.parse(localStorage.getItem(key)) || {}; } catch (e) { seen = {}; }
+
+        const popups = [];
+        state.tasks.forEach(task => {
+            if (task.status === 'Done' || !isTaskAssignedTo(task, me.username)) return;
+            const delayState = getDelayState(task);
+            if (delayState === 'delayed') return; // hidden from workers while delayed
+            let stamp;
+            let popup = null;
+            if (delayState === 'returned') {
+                stamp = 'returned:' + task.delay.until;
+                popup = [L('Delayed fix is due back', 'إصلاح مؤجل حان موعد عودته'), task.title, 'fa-calendar-check', 'teal'];
+            } else if (task.status === 'Open') {
+                stamp = 'assigned:' + (task.assignedAt || '');
+                popup = [L('New task assigned to you', 'مهمة جديدة معيّنة لك'), task.title, 'fa-bell', 'amber'];
+            } else {
+                stamp = 'accepted:' + (task.acceptedAt || '');
+                if (task.acceptedBy && task.acceptedBy !== me.username) {
+                    popup = [L('Task accepted by your teammate', 'قبل زميلك المهمة'), `@${task.acceptedBy} — ${task.title}`, 'fa-hand', 'sky'];
+                }
+            }
+            if (seen[task.id] === stamp) return;
+            seen[task.id] = stamp;
+            if (popup) popups.push(popup);
+        });
+        localStorage.setItem(key, JSON.stringify(seen));
+
+        popups.slice(0, 3).forEach(p => showTaskPopup(...p));
+        if (popups.length > 3) {
+            showTaskPopup(L(`${popups.length - 3} more updates`, `${popups.length - 3} تحديثات أخرى`), L('Open Home to see all your tasks.', 'افتح الرئيسية لرؤية كل مهامك.'), 'fa-bell', 'sky');
+        }
+    }
+
     function renderApp() {
         applyLanguage();
         renderAuthBox();
@@ -6666,6 +8620,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const customerLogNav = document.getElementById('nav-customer-log');
         const chatsNav = document.getElementById('nav-chats');
         const arabiNav = document.getElementById('nav-arabi');
+        const mapNav = document.getElementById('nav-map');
 
         const role = state.currentUser ? state.currentUser.role : null;
         const isTechnician = role === 'technician';
@@ -6687,6 +8642,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (customerLogNav) customerLogNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (chatsNav) chatsNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (arabiNav) arabiNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
+        if (mapNav) mapNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
+        if (typeof updateChatsBadge === 'function') updateChatsBadge();
+
+        // Technicians and assistants share their live position while they are logged in.
+        if (isTechnician) startLocationSharing();
+        else if (locShare.user) stopLocationSharing();
     }
 
     // Brand logo click: everyone goes "home" — navigateTo transparently sends
@@ -6699,14 +8660,13 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (window.__coolingArtBootstrapped) return;
         window.__coolingArtBootstrapped = true;
         setInterval(checkLateTasks, 10000);
+        setInterval(checkTechNotifications, 10000);
         // Keeps Customer Services / Head Admin's "Customer Chats" list live so a new
         // chat request (or a customer's new message) shows up without a manual refresh.
         setInterval(() => {
-            if (getCurrentViewId() === 'chats' && state.currentUser &&
-                (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) {
-                renderAdminChats();
-            }
-        }, 5000);
+            if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+            if (getCurrentViewId() === 'chats') renderAdminChats(); else updateChatsBadge();
+        }, 3000);
         applyLanguage();
         renderApp();
         initContactBot();
@@ -6767,7 +8727,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
     function executeRevenueReset() {
         closeRevenueResetModal();
-        state.revenueResetBaseline = state.orders.reduce((sum, order) => sum + getOrderRevenue(order), 0);
+        state.revenueResetBaseline = getAllRevenue();
         saveState();
         showToast('Total revenue has been reset.', 'success');
         renderAdminDashboard();
@@ -6795,7 +8755,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             .filter(o => o.customerFeedback && typeof o.customerFeedback.rating === 'number')
             .filter(o => {
                 const task = getLinkedTaskForOrder(o.id);
-                return task && task.assignedTo === username;
+                return task && isTaskAssignedTo(task, username);
             });
         if (!ratings.length) {
             return `<p class="text-[10px] text-slate-400 italic pt-0.5">${L('No ratings yet', 'لا توجد تقييمات بعد')}</p>`;
@@ -6960,6 +8920,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
     // ================= FORGOT PASSWORD (sign in with registered phone number) =================
     let fpVerifiedUserId = null;
+    let fpVerifiedPhone = '';
+    let fpBusy = false;
 
     function openForgotPasswordModal() {
         fpVerifiedUserId = null;
@@ -6989,7 +8951,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         box.classList.remove('hidden');
     }
 
-    function handleForgotPassword() {
+    async function handleForgotPassword() {
+        if (fpBusy) return;
         document.getElementById('fpError').classList.add('hidden');
 
         if (!fpVerifiedUserId) {
@@ -7003,6 +8966,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 return;
             }
             fpVerifiedUserId = user.id;
+            fpVerifiedPhone = phoneDigits;
             document.getElementById('fpPasswordBox').classList.remove('hidden');
             document.getElementById('fpActionBtn').textContent = t('fp_reset');
             setTimeout(() => document.getElementById('fpNewPassword').focus(), 50);
@@ -7017,8 +8981,29 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
         const user = state.users.find(u => u.id === fpVerifiedUserId);
         if (!user) { closeForgotPasswordModal(); return; }
-        hashPassword(pw).then(hashed => {
-            user.password = hashed;
+
+        fpBusy = true;
+        const btn = document.getElementById('fpActionBtn');
+        if (btn) btn.disabled = true;
+        try {
+            if (supabaseClient) {
+                // The password that logs people in lives in Supabase Auth. Changing only the local copy
+                // left the OLD password working, so the change has to be made there.
+                const { data: ok, error } = await supabaseClient.rpc('reset_password_by_phone', {
+                    p_username: user.username, p_phone: fpVerifiedPhone, p_new_password: pw
+                });
+                if (error) {
+                    const missing = error.code === 'PGRST202' || /could not find the function|does not exist/i.test(error.message || '');
+                    fpShowError(missing
+                        ? L('Password reset is not set up on the server yet. Run supabase_password_setup.sql once in the Supabase SQL editor.', 'إعادة تعيين كلمة السر غير مفعلة على الخادم بعد. شغّل ملف supabase_password_setup.sql مرة واحدة في Supabase.')
+                        : (/no_auth_account/.test(error.message || '') ? L('This account has no login on the server. Ask the admin to re-create it.', 'هذا الحساب غير مسجل على الخادم. اطلب من الأدمن إعادة إنشائه.') : (error.message || t('fp_not_found'))));
+                    return;
+                }
+                if (ok === false) { fpShowError(t('fp_not_found')); return; }
+                const { error: signErr } = await supabaseClient.auth.signInWithPassword({ email: getSupabaseEmail(user.username), password: pw });
+                if (signErr) { fpShowError(L('Password was changed but sign-in failed. Try signing in with the new password.', 'تم تغيير كلمة السر لكن تعذر تسجيل الدخول. جرّب الدخول بكلمة السر الجديدة.')); return; }
+            }
+            user.password = await hashPassword(pw);
             state.currentUser = user;
             saveState();
             closeForgotPasswordModal();
@@ -7026,7 +9011,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             showToast(t('fp_success'), 'success');
             renderApp();
             navigateTo(isStaffRole(user.role) ? 'admin-dashboard' : 'home');
-        });
+        } catch (e) {
+            fpShowError(L('Server connection error.', 'حدث خطأ في الاتصال بالخادم.'));
+        } finally {
+            fpBusy = false;
+            if (btn) btn.disabled = false;
+        }
     }
 
 
@@ -7520,7 +9510,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         };
         chats.unshift(chat);
         saveCsChats(chats);
-        if (getCurrentViewId() === 'admin-dashboard') renderAdminDashboard();
+        if (getCurrentViewId() === 'chats') renderAdminChats(); else updateChatsBadge();
         return chat;
     }
 
@@ -7528,101 +9518,231 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
         if (!chat) return;
+        if (from === 'cs') {
+            const u = state.currentUser;
+            if (!u || u.role !== 'hr' || chat.assignedTo !== u.username || chat.status !== 'open') {
+                showToast(L('Only the assigned Customer Services agent can reply.', 'فقط موظف خدمة العملاء المعيّن يمكنه الرد.'), 'error');
+                return;
+            }
+        }
         chat.messages.push({ from, text: String(text).slice(0, 500), at: new Date().toISOString() });
         chat.lastActivity = new Date().toISOString();
         saveCsChats(chats);
         // Refresh just the chats card, not the whole dashboard — a full dashboard
         // rebuild would wipe out whatever an agent is mid-typing into a reply box.
-        if (getCurrentViewId() === 'admin-dashboard') renderAdminChats();
+        if (getCurrentViewId() === 'chats') renderAdminChats(); else updateChatsBadge();
         if (from === 'cs' && botChatId === chatId && botStep === 'in_chat') renderBotMessages();
     }
 
-    // "Customer Chats" card on the admin dashboard: the head admin sees every open
-    // chat (with its assigned CS agent), and each CS sees only the chats assigned
-    // to them. Replies go straight back to the customer's bot chat window.
+    // ================= CS CHATS PAGE: conversation list + chat window + history =================
+    // Head admin: sees every chat (open + history) but is READ-ONLY (no reply, no close).
+    // Customer Services: sees only chats assigned to them and can reply / close them.
+    let csChatsTab = 'active';      // 'active' | 'history'
+    let csSelectedChatId = null;
+    let csWindowKey = '';           // which chat/state the window frame was last built for
+
+    function csIsStaff() {
+        const u = state.currentUser;
+        return !!u && (isTopAdmin(u.role) || u.role === 'hr');
+    }
+    function csCanReply() {
+        return !!state.currentUser && state.currentUser.role === 'hr';
+    }
+    function csVisibleChats() {
+        const u = state.currentUser;
+        if (!csIsStaff()) return [];
+        const all = loadCsChats();
+        return isTopAdmin(u.role) ? all : all.filter(c => c.assignedTo === u.username);
+    }
+    // Unread = the customer spoke last and this viewer hasn't opened the chat since.
+    function csIsUnread(c) {
+        const u = state.currentUser;
+        const msgs = c.messages || [];
+        const last = msgs[msgs.length - 1];
+        if (!u || !last || last.from !== 'customer') return false;
+        return !(c.seen && c.seen[u.username] === c.lastActivity);
+    }
+    function csMarkSeen(chatId) {
+        const u = state.currentUser;
+        if (!u) return;
+        const chats = loadCsChats();
+        const c = chats.find(x => x.id === chatId);
+        if (!c) return;
+        if (!c.seen) c.seen = {};
+        if (c.seen[u.username] === c.lastActivity) return;
+        c.seen[u.username] = c.lastActivity;
+        saveCsChats(chats);
+    }
+
+    // Red counter on the "Chats" nav icon: open chats with something new for this viewer.
+    function updateChatsBadge() {
+        const badge = document.getElementById('navChatsBadge');
+        if (!badge) return;
+        const n = csIsStaff() ? csVisibleChats().filter(c => c.status === 'open' && csIsUnread(c)).length : 0;
+        badge.textContent = n > 99 ? '99+' : String(n);
+        badge.classList.toggle('hidden', n === 0);
+    }
+
+    function csSetTab(tab) {
+        csChatsTab = tab === 'history' ? 'history' : 'active';
+        csSelectedChatId = null;
+        csWindowKey = '';
+        renderAdminChats();
+    }
+    function csSelectChat(id) {
+        csSelectedChatId = id;
+        csWindowKey = '';
+        renderAdminChats();
+    }
+    function csBackToList() {
+        csSelectedChatId = null;
+        csWindowKey = '';
+        renderAdminChats();
+    }
+
     function renderAdminChats() {
         const section = document.getElementById('adminChatsSection');
         if (!section) return;
-        const isManager = state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
+        const isManager = csIsStaff();
         section.classList.toggle('hidden', !isManager);
+        updateChatsBadge();
         if (!isManager) return;
 
-        const openChats = loadCsChats().filter(c => c.status === 'open');
-        const visible = isTopAdmin(state.currentUser.role)
-            ? openChats
-            : openChats.filter(c => c.assignedTo === state.currentUser.username);
+        // Opening a chat (while this page is on screen) marks it as seen.
+        const onChatsPage = getCurrentViewId() === 'chats' && !document.hidden;
+        if (onChatsPage && csSelectedChatId) {
+            const sel = csVisibleChats().find(c => c.id === csSelectedChatId);
+            if (sel && sel.status === 'open') { csMarkSeen(csSelectedChatId); updateChatsBadge(); }
+        }
 
-        const badge = document.getElementById('adminChatsCount');
-        if (badge) badge.textContent = visible.length;
+        const mine = csVisibleChats();
+        const active = mine.filter(c => c.status === 'open');
+        const history = mine.filter(c => c.status !== 'open');
+        const byRecent = (a, b) => String(b.lastActivity || b.createdAt || '').localeCompare(String(a.lastActivity || a.createdAt || ''));
+        const shown = (csChatsTab === 'history' ? history : active).slice().sort(byRecent);
+        if (csSelectedChatId && !shown.some(c => c.id === csSelectedChatId)) { csSelectedChatId = null; csWindowKey = ''; }
+
+        const countEl = document.getElementById('adminChatsCount');
+        if (countEl) countEl.textContent = active.length;
+        const roTag = document.getElementById('chatsReadOnlyTag');
+        if (roTag) roTag.classList.toggle('hidden', csCanReply());
+        const tabA = document.getElementById('csTabActive');
+        const tabH = document.getElementById('csTabHistory');
+        if (tabA) tabA.classList.toggle('active', csChatsTab === 'active');
+        if (tabH) tabH.classList.toggle('active', csChatsTab === 'history');
+        section.classList.toggle('cs-has-sel', !!csSelectedChatId);
 
         const list = document.getElementById('adminChatsList');
-        if (!list) return;
-
-        // This list re-renders on every incoming/outgoing message and on a timer,
-        // so capture whatever an agent is mid-typing (and cursor/focus) before we
-        // rebuild the DOM, then restore it after — otherwise a reply in progress
-        // gets wiped out from under them before they can send it.
-        const drafts = {};
-        let focusedChatId = null;
-        let focusedSelectionStart = null;
-        list.querySelectorAll('input[data-chat-id]').forEach(inp => {
-            const id = inp.getAttribute('data-chat-id');
-            if (inp.value) drafts[id] = inp.value;
-            if (document.activeElement === inp) {
-                focusedChatId = id;
-                focusedSelectionStart = inp.selectionStart;
-            }
-        });
-
-        if (!visible.length) {
-            list.innerHTML = `<p class="text-xs text-slate-400 text-center py-6 font-bold">${L('No customer chats waiting for a response.', 'لا توجد محادثات عملاء بانتظار رد.')}</p>`;
-            return;
+        if (list) {
+            list.innerHTML = shown.length
+                ? shown.map(csListRow).join('')
+                : `<p class="text-xs text-slate-400 text-center py-10 px-4 font-bold">${csChatsTab === 'history'
+                    ? L('No chat history yet.', 'لا يوجد سجل محادثات بعد.')
+                    : L('No customer chats waiting for a response.', 'لا توجد محادثات عملاء بانتظار رد.')}</p>`;
         }
-        list.innerHTML = visible.map(c => renderCsChatCard(c)).join('');
-
-        Object.keys(drafts).forEach(id => {
-            const inp = list.querySelector(`input[data-chat-id="${id}"]`);
-            if (inp) inp.value = drafts[id];
-        });
-        if (focusedChatId) {
-            const inp = list.querySelector(`input[data-chat-id="${focusedChatId}"]`);
-            if (inp) {
-                inp.focus();
-                if (focusedSelectionStart !== null) inp.setSelectionRange(focusedSelectionStart, focusedSelectionStart);
-            }
-        }
+        csRenderWindow(shown.find(c => c.id === csSelectedChatId) || null);
     }
 
-    function renderCsChatCard(c) {
-        const assignedUser = state.users.find(u => u.username === c.assignedTo);
-        const msgs = (c.messages || []).map(m => `
+    function csListRow(c) {
+        const msgs = c.messages || [];
+        const last = msgs[msgs.length - 1];
+        const preview = last ? (last.from === 'cs' ? L('You: ', 'أنت: ') : '') + last.text : '';
+        const unread = c.status === 'open' && csIsUnread(c);
+        const isAdm = isTopAdmin(state.currentUser.role);
+        const agent = isAdm ? state.users.find(u => u.username === c.assignedTo) : null;
+        const rating = c.customerRating && typeof c.customerRating.rating === 'number' ? c.customerRating.rating : null;
+        return `
+    <button type="button" onclick="csSelectChat('${c.id}')" class="cs-row ${c.id === csSelectedChatId ? 'selected' : ''}">
+        <span class="w-9 h-9 rounded-xl bg-sky-100 dark:bg-sky-950 text-sky-500 flex items-center justify-center shrink-0"><i class="fa-solid fa-user"></i></span>
+        <span class="min-w-0 flex-1 text-start">
+            <span class="flex items-center justify-between gap-2">
+                <span class="text-xs ${unread ? 'font-extrabold' : 'font-bold'} truncate">${escapeHtml(c.customerName)}</span>
+                <span class="text-[9px] text-slate-400 shrink-0">${escapeHtml(formatDateTime(c.lastActivity || c.createdAt))}</span>
+            </span>
+            <span class="flex items-center justify-between gap-2 mt-0.5">
+                <span class="text-[11px] truncate ${unread ? 'text-slate-700 dark:text-slate-200 font-bold' : 'text-slate-400'}">${escapeHtml(preview)}</span>
+                ${unread ? '<span class="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0"></span>' : ''}
+            </span>
+            ${isAdm || rating !== null ? `<span class="flex items-center gap-2 mt-1 text-[9px] font-bold">
+                ${isAdm ? `<span class="text-purple-600 dark:text-purple-400"><i class="fa-solid fa-headset me-1"></i>${escapeHtml(agent ? agent.name : c.assignedTo || '—')}</span>` : ''}
+                ${rating !== null ? `<span class="text-amber-500"><i class="fa-solid fa-star me-0.5"></i>${rating}</span>` : ''}
+            </span>` : ''}
+        </span>
+    </button>`;
+    }
+
+    function csMessagesHtml(chat) {
+        return (chat.messages || []).map(m => `
         <div class="flex ${m.from === 'cs' ? 'justify-end' : 'justify-start'}">
-            <div class="max-w-[80%] rounded-xl px-3 py-1.5 leading-relaxed ${m.from === 'cs' ? 'bg-sky-500 text-white' : 'bg-slate-100 dark:bg-slate-800'}">
+            <div class="max-w-[80%] rounded-xl px-3 py-1.5 leading-relaxed text-xs ${m.from === 'cs' ? 'bg-sky-500 text-white' : 'bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700'}">
                 ${escapeHtml(m.text)}
                 <span class="block text-[9px] opacity-70 mt-0.5">${escapeHtml(formatDateTime(m.at))}</span>
             </div>
         </div>`).join('');
-        return `
-    <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4 space-y-3">
-        <div class="flex items-center justify-between gap-3 flex-wrap">
-            <div class="flex items-center gap-2.5 text-xs font-bold">
-                <span class="w-8 h-8 rounded-xl bg-sky-100 dark:bg-sky-950 text-sky-500 flex items-center justify-center shrink-0"><i class="fa-solid fa-user"></i></span>
-                <span>${escapeHtml(c.customerName)}</span>
-                ${c.customerPhone ? `<span class="text-slate-400 font-mono font-normal" dir="ltr">${escapeHtml(c.customerPhone)}</span>` : ''}
-                <span class="text-[10px] text-slate-400 font-normal">${escapeHtml(formatDateTime(c.createdAt))}</span>
+    }
+
+    // The separate window for the currently opened chat. The frame (header + reply box) is only
+    // rebuilt when the chat/state changes, so a reply being typed survives the live refresh.
+    function csRenderWindow(chat) {
+        const pane = document.getElementById('csChatWindow');
+        if (!pane) return;
+        if (!chat) {
+            csWindowKey = '';
+            pane.innerHTML = `<div class="flex-1 flex flex-col items-center justify-center gap-2 text-slate-400 p-6 text-center">
+                <i class="fa-regular fa-comments text-3xl"></i>
+                <p class="text-xs font-bold">${L('Select a chat to open it', 'اختر محادثة لفتحها')}</p></div>`;
+            return;
+        }
+        const me = state.currentUser;
+        const writable = csCanReply() && chat.status === 'open' && chat.assignedTo === me.username;
+        const key = [chat.id, chat.status, writable].join('|');
+        let fresh = false;
+        if (key !== csWindowKey) {
+            fresh = true;
+            csWindowKey = key;
+            const agent = isTopAdmin(me.role) ? state.users.find(u => u.username === chat.assignedTo) : null;
+            const open = chat.status === 'open';
+            const footer = writable
+                ? `<form onsubmit="csReplySubmit(event, '${chat.id}')" class="shrink-0 flex gap-2 p-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+                    <input type="text" id="csReplyInput" data-chat-id="${chat.id}" required maxlength="500" autocomplete="off" placeholder="${L('Type your reply...', 'اكتب ردك...')}" class="flex-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    <button type="submit" class="w-9 h-9 rounded-xl bg-sky-500 hover:bg-sky-600 text-white flex items-center justify-center transition shrink-0"><i class="fa-solid fa-paper-plane"></i></button>
+                </form>`
+                : `<div class="shrink-0 p-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 text-center text-[11px] font-bold text-slate-400">
+                    <i class="fa-solid fa-eye me-1"></i>${!open
+                        ? L('This chat is closed.', 'هذه المحادثة مغلقة.')
+                        : L('View only — admins cannot reply to customers.', 'عرض فقط — لا يمكن للمسؤول الرد على العملاء.')}</div>`;
+            pane.innerHTML = `
+            <div class="shrink-0 flex items-center justify-between gap-3 p-3 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <button type="button" onclick="csBackToList()" class="md:hidden w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 flex items-center justify-center shrink-0" aria-label="Back"><i class="fa-solid fa-arrow-left rtl:rotate-180"></i></button>
+                    <span class="w-9 h-9 rounded-xl bg-sky-100 dark:bg-sky-950 text-sky-500 flex items-center justify-center shrink-0"><i class="fa-solid fa-user"></i></span>
+                    <div class="min-w-0">
+                        <p class="text-xs font-extrabold truncate">${escapeHtml(chat.customerName)}${chat.customerPhone ? ` <span class="text-slate-400 font-mono font-normal" dir="ltr">${escapeHtml(chat.customerPhone)}</span>` : ''}</p>
+                        <p class="text-[10px] text-slate-400 truncate">${escapeHtml(formatDateTime(chat.createdAt))}${chat.closedAt ? ' → ' + escapeHtml(formatDateTime(chat.closedAt)) : ''}</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 text-[10px] font-extrabold uppercase shrink-0">
+                    ${isTopAdmin(me.role) ? `<span class="hidden sm:inline px-2.5 py-1 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400"><i class="fa-solid fa-headset me-1"></i>${escapeHtml(agent ? agent.name : chat.assignedTo || '—')}</span>` : ''}
+                    <span class="px-2.5 py-1 rounded-full ${open ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}">${open ? L('Open', 'مفتوحة') : L('Closed', 'مغلقة')}</span>
+                    ${writable ? `<button type="button" onclick="closeCsChat('${chat.id}')" class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-500 hover:bg-emerald-200 hover:text-emerald-700 dark:bg-slate-800 dark:hover:bg-emerald-950 dark:hover:text-emerald-400 transition" title="${L('Close chat', 'إغلاق المحادثة')}"><i class="fa-solid fa-check"></i></button>` : ''}
+                </div>
             </div>
-            <div class="flex items-center gap-2 text-[10px] font-extrabold uppercase">
-                ${isTopAdmin(state.currentUser.role) ? `<span class="px-2.5 py-1 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400"><i class="fa-solid fa-headset me-1"></i>${escapeHtml(assignedUser ? assignedUser.name : c.assignedTo || '—')}</span>` : ''}
-                <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">Open</span>
-                <button type="button" onclick="closeCsChat('${c.id}')" class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-500 hover:bg-emerald-200 hover:text-emerald-700 dark:bg-slate-800 dark:hover:bg-emerald-950 dark:hover:text-emerald-400 transition" title="${L('Close chat', 'إغلاق المحادثة')}"><i class="fa-solid fa-check"></i></button>
-            </div>
-        </div>
-        <div class="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5 bg-white dark:bg-slate-900 rounded-xl p-3 border border-slate-100 dark:border-slate-800">${msgs}</div>
-        <form onsubmit="csReplySubmit(event, '${c.id}')" class="flex gap-2">
-            <input type="text" data-chat-id="${c.id}" required maxlength="500" placeholder="${L('Type your reply...', 'اكتب ردك...')}" class="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
-            <button type="submit" class="w-9 h-9 rounded-xl bg-sky-500 hover:bg-sky-600 text-white flex items-center justify-center transition shrink-0"><i class="fa-solid fa-paper-plane"></i></button>
-        </form>
-    </div>`;
+            <div id="csMsgs" class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-1.5"></div>
+            ${footer}`;
+        }
+        const box = pane.querySelector('#csMsgs');
+        if (!box) return;
+        const sig = (chat.messages || []).length + ':' + chat.lastActivity;
+        if (fresh || box.dataset.sig !== sig) {
+            const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+            box.innerHTML = csMessagesHtml(chat);
+            box.dataset.sig = sig;
+            if (fresh || nearBottom) box.scrollTop = box.scrollHeight;
+        }
+        if (fresh && writable) {
+            const inp = pane.querySelector('#csReplyInput');
+            if (inp && window.matchMedia('(min-width: 768px)').matches) inp.focus();
+        }
     }
 
     function csReplySubmit(e, chatId) {
@@ -7630,21 +9750,28 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const input = e.target.querySelector('input');
         const text = input ? input.value.trim() : '';
         if (!text) return;
-        if (input) input.value = ''; // clear before re-render so it isn't treated as a leftover draft
+        if (input) input.value = '';
         appendChatMessage(chatId, 'cs', text);
     }
 
     function closeCsChat(chatId) {
-        if (!state.currentUser || (!isTopAdmin(state.currentUser.role) && state.currentUser.role !== 'hr')) return;
+        // Only the assigned Customer Services agent can close — the head admin is view-only.
+        if (!csCanReply()) return;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
-        if (!chat) return;
+        if (!chat || chat.assignedTo !== state.currentUser.username) return;
         chat.status = 'closed';
         chat.closedAt = new Date().toISOString();
         saveCsChats(chats);
         showToast(L('Chat closed.', 'تم إغلاق المحادثة.'), 'success');
         renderAdminChats();
     }
+
+    window.csSetTab = csSetTab;
+    window.csSelectChat = csSelectChat;
+    window.csBackToList = csBackToList;
+    window.csReplySubmit = csReplySubmit;
+    window.closeCsChat = closeCsChat;
 
     // ================= INSURANCE PAGE LOGIC =================
     function populateInsuranceLocations() {

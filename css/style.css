@@ -148,3 +148,40 @@ body:has(#view-home:not(.hidden)) #contactBotPanel { bottom: calc(var(--bar-h) +
 @media (prefers-reduced-motion: reduce) {
     #contactBotBtn, #contactBotBtn > span:first-child { animation: none; }
 }
+
+
+/* ================= CS chats: nav badge, tabs, list + window layout ================= */
+.chat-badge {
+    min-width: 1.1rem; height: 1.1rem; padding: 0 .3rem; border-radius: 9999px;
+    background: #ef4444; color: #fff; font-size: .62rem; font-weight: 800; line-height: 1.1rem;
+    text-align: center; letter-spacing: 0; display: inline-block;
+}
+.chat-badge.hidden { display: none !important; }
+.nav-link .fa-comments { font-size: .8rem; }
+
+.cs-tab {
+    display: inline-flex; align-items: center; gap: .4rem; height: 2.25rem; padding: 0 .8rem;
+    border-radius: .75rem; font-size: .8rem; font-weight: 800; color: #64748b;
+    background: #f1f5f9; border: 1px solid #e2e8f0; transition: all .15s ease;
+}
+.dark .cs-tab { background: #1e293b; border-color: #334155; color: #94a3b8; }
+.cs-tab:hover { color: #0284c7; }
+.cs-tab.active { background: #e0f2fe; border-color: #7dd3fc; color: #0284c7; }
+.dark .cs-tab.active { background: #082f49; border-color: #0369a1; color: #38bdf8; }
+.cs-tab-count { font-size: .7rem; padding: 0 .4rem; border-radius: 9999px; background: #0ea5e9; color: #fff; line-height: 1.1rem; }
+
+.cs-layout { display: grid; grid-template-columns: 1fr; }
+@media (min-width: 768px) { .cs-layout { grid-template-columns: 19rem 1fr; } }
+
+.cs-row {
+    display: flex; align-items: flex-start; gap: .65rem; width: 100%; padding: .75rem 1rem;
+    border-bottom: 1px solid rgba(148,163,184,.18); transition: background .15s ease;
+}
+.cs-row:hover { background: rgba(14,165,233,.06); }
+.cs-row.selected { background: rgba(14,165,233,.12); }
+
+/* phones: show either the list or the open chat window */
+@media (max-width: 767px) {
+    #adminChatsSection.cs-has-sel #csListPane { display: none; }
+    #adminChatsSection:not(.cs-has-sel) #csWindowPane { display: none; }
+}

@@ -21,6 +21,10 @@
     <!-- Supabase JS Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- Leaflet (Map page). The app already has its own global function L(), so Leaflet is moved to window.Leaflet. -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script>if (window.L && window.L.noConflict) window.Leaflet = window.L.noConflict();</script>
 
     <script>
         tailwind.config = {
@@ -93,7 +97,9 @@
                     <i class="fa-solid fa-clock-rotate-left me-1"></i><span
                         data-i18n="nav_dashboard_text">Dashboard</span></a>
                 <a href="javascript:void(0)" id="nav-chats" onclick="navigateTo('chats')"
-                    class="nav-link hover:text-sky-500 hidden">Chats</a>
+                    class="nav-link hover:text-sky-500 hidden">
+                    <i class="fa-solid fa-comments"></i><span>Chats</span>
+                    <span id="navChatsBadge" class="chat-badge hidden" aria-label="New chats">0</span></a>
                 <a href="javascript:void(0)" id="nav-products" onclick="navigateTo('products')"
                     class="nav-link hover:text-sky-500" data-i18n="nav_products">Products</a>
                 <a href="javascript:void(0)" id="nav-tech-fix" onclick="navigateTo('tech-fix')"
@@ -112,6 +118,8 @@
                     class="nav-link hover:text-sky-500 hidden">Customer Log</a>
                 <a href="javascript:void(0)" id="nav-arabi" onclick="navigateTo('arabi')"
                     class="nav-link hover:text-sky-500 hidden">Arabi Extraction</a>
+                <a href="javascript:void(0)" id="nav-map" onclick="navigateTo('map')"
+                    class="nav-link hover:text-sky-500 hidden">Map</a>
             </nav>
 
             <!-- Actions & Utility -->
@@ -563,16 +571,6 @@
                     <h1 class="text-2xl font-bold mt-1">Cooling Art Admin Dashboard</h1>
                     <p class="text-xs text-slate-400 mt-0.5">Manage customer orders and technical repair requests</p>
                 </div>
-                <!-- Quick Action: Add Employee (Admin & Executive Director) -->
-                <div class="flex items-center gap-3 shrink-0">
-                    <button id="btnOpenStaffAccount" onclick="openStaffAccountModal()"
-                        class="hidden flex flex-col items-center justify-center gap-1.5 px-5 h-16 rounded-2xl bg-slate-800 hover:bg-sky-600 border border-slate-700 text-white transition"
-                        title="Add Employee">
-                        <i class="fa-solid fa-user-plus text-base text-sky-400"></i>
-                        <span class="text-[10px] font-bold uppercase tracking-wide whitespace-nowrap"
-                            data-i18n="btn_create_staff">Add Employee</span>
-                    </button>
-                </div>
             </div>
 
             <!-- Analytics Cards -->
@@ -594,7 +592,7 @@
                             team</p>
                     </div>
                     <div id="adminTaskCounters"
-                        class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 p-4 border-b border-slate-100 dark:border-slate-800">
+                        class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 p-4 border-b border-slate-100 dark:border-slate-800">
                     </div>
                     <div id="adminTaskFilterPanel"
                         class="hidden border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/20">
@@ -635,38 +633,6 @@
             </div>
 
             <!-- Arabi board: tasks extracted from the Arabi Excel sheet (same layout as the Task Board) -->
-            <div id="adminArabiSection" class="hidden"></div>
-
-            <!-- Team / Staff Section (Admin & Executive Director) -->
-            <div id="adminTeamSection"
-                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
-                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
-                    <h3 class="font-bold text-sm flex items-center gap-2">
-                        <i class="fa-solid fa-users-gear text-sky-500"></i> Team Accounts
-                    </h3>
-                    <p class="text-[11px] text-slate-400 mt-0.5">All employee accounts added by the Admin and the Executive Director</p>
-                </div>
-                <div class="overflow-x-auto overflow-y-auto max-h-[220px] custom-scrollbar">
-                    <table class="w-full text-left border-collapse text-xs">
-                        <thead class="sticky top-0 z-10">
-                            <tr
-                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
-                                <th class="p-4">Photo</th>
-                                <th class="p-4">User ID</th>
-                                <th class="p-4">Username</th>
-                                <th class="p-4">Full Name</th>
-                                <th class="p-4">Role</th>
-                                <th class="p-4">WhatsApp</th>
-                                <th class="p-4">Contact Phone</th>
-                                <th class="p-4 text-center">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="adminTeamTable" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <!-- Injected via JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
 
         </section>
 
@@ -678,6 +644,28 @@
                 <h1 class="text-2xl font-bold">Customer Log</h1>
                 <p class="text-xs text-slate-500 dark:text-slate-400">Registered customers and every order &amp; repair
                     request in the system.</p>
+            </div>
+
+            <!-- Customer Files: Excel import + one folder (profile + history log) per customer -->
+            <div id="customerIntakeSection"
+                class="hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div id="customerIntakeHead" class="p-5 border-b border-slate-100 dark:border-slate-800"></div>
+                <div id="intakeResult"
+                    class="hidden px-5 py-3 border-b border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+                </div>
+                <div class="px-5 pt-4 flex items-center gap-3">
+                    <div class="relative flex-1 sm:max-w-sm">
+                        <i
+                            class="fa-solid fa-magnifying-glass absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <input type="search" id="folderSearch" oninput="renderCustomerFolders()"
+                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl ps-9 pe-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    </div>
+                    <div id="folderSourceTabs" class="flex items-center gap-2 flex-wrap"></div>
+                    <span id="customerFoldersCount"
+                        class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">0</span>
+                </div>
+                <div id="customerFoldersList"
+                    class="p-5 space-y-3 max-h-[680px] overflow-y-auto custom-scrollbar"></div>
             </div>
 
             <!-- Registered Customers Section (Head Admin & Customer Services) - compact, sits on top -->
@@ -763,25 +751,66 @@
             <div id="arabiPageBody" class="space-y-6"></div>
         </section>
 
+        <!-- ================= MAP: live technicians / assistants + open tasks (Admin & Customer Services) ================= -->
+        <section id="view-map" class="hidden space-y-6 w-full">
+            <div
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div
+                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                        <h3 class="font-bold text-sm flex items-center gap-2">
+                            <i class="fa-solid fa-map-location-dot text-sky-500"></i> Map
+                        </h3>
+                        <p class="text-[11px] text-slate-400 mt-0.5">Live location of every technician and assistant</p>
+                    </div>
+                    <div class="flex items-center gap-3 text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                        <span class="flex items-center gap-1"><i class="fa-solid fa-circle text-sky-500"></i> Technician</span>
+                        <span class="flex items-center gap-1"><i class="fa-solid fa-circle text-emerald-500"></i> Assistant</span>
+                    </div>
+                </div>
+                <div class="relative isolate">
+                    <div id="liveMapCanvas" style="height: 560px; width: 100%;" class="bg-slate-100 dark:bg-slate-800"></div>
+                    <div id="liveMapEmpty" style="z-index: 1000;"
+                        class="absolute inset-x-0 top-4 flex justify-center pointer-events-none">
+                        <span class="bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-xs font-bold text-slate-500 dark:text-slate-300 shadow">Nobody is sharing a location right now</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <section id="view-chats" class="hidden space-y-8 w-full">
-            <!-- ================= CUSTOMER CHATS (Head Admin & Customer Services) ================= -->
+            <!-- ================= CUSTOMER CHATS (Head Admin: view only | Customer Services: reply) ================= -->
             <div id="adminChatsSection"
                 class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
                 <div
-                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
-                    <div>
-                        <h3 class="font-bold text-sm flex items-center gap-2">
+                    class="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 flex-wrap">
+                    <div class="min-w-0">
+                        <h3 class="font-bold text-sm flex items-center gap-2 flex-wrap">
                             <i class="fa-solid fa-comments text-sky-500"></i> Customer Chats
+                            <span id="chatsReadOnlyTag"
+                                class="hidden text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400"><i
+                                    class="fa-solid fa-eye me-1"></i>View only</span>
                         </h3>
                         <p class="text-[11px] text-slate-400 mt-0.5">Conversations from the Contact Us bot, assigned
-                            round-robin across the Customer Services team — first chat → CS1, next → CS2, next → CS3,
-                            then back to CS1. Once assigned, the chat stays with that agent.</p>
+                            round-robin across the Customer Services team. Once assigned, the chat stays with that
+                            agent.</p>
                     </div>
-                    <span id="adminChatsCount"
-                        class="shrink-0 text-base font-extrabold px-4 py-2 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400">0</span>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button type="button" id="csTabActive" onclick="csSetTab('active')" title="Current chats"
+                            class="cs-tab active"><i class="fa-solid fa-comments"></i><span id="adminChatsCount"
+                                class="cs-tab-count">0</span></button>
+                        <button type="button" id="csTabHistory" onclick="csSetTab('history')" title="Chat history"
+                            class="cs-tab"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                    </div>
                 </div>
-                <div id="adminChatsList" class="p-5 space-y-4 max-h-[420px] overflow-y-auto custom-scrollbar">
-                    <!-- Injected via JS -->
+                <div class="cs-layout">
+                    <div id="csListPane"
+                        class="h-[560px] overflow-y-auto custom-scrollbar border-b md:border-b-0 md:border-e border-slate-100 dark:border-slate-800">
+                        <div id="adminChatsList"><!-- Injected via JS --></div>
+                    </div>
+                    <div id="csWindowPane" class="h-[560px] flex flex-col bg-slate-50/60 dark:bg-slate-950/30">
+                        <div id="csChatWindow" class="flex flex-col flex-1 min-h-0"><!-- Injected via JS --></div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -810,6 +839,9 @@
                     class="text-xs font-bold bg-white/15 border border-white/25 px-3.5 py-2 rounded-xl whitespace-nowrap">
                 </div>
             </div>
+
+            <!-- Live location sharing status -->
+            <div id="techLocationBox"></div>
 
             <!-- Stat Strip -->
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="techHomeStatsGrid"></div>
@@ -962,6 +994,60 @@
                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" data-i18n="who_we_are_subtitle">Every
                     registered account in our
                     organization — by name and job</p>
+            </div>
+
+            <!-- Management (Admin & Executive Director only): two icon cards, the one you click opens below -->
+            <div id="whoManageSection" class="hidden space-y-5">
+                <div id="manageTabs" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
+
+                <!-- Team Accounts -->
+                <div id="managePanelTeam"
+                    class="hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                    <div
+                        class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                        <div class="relative w-full lg:max-w-xs">
+                            <i
+                                class="fa-solid fa-magnifying-glass absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                            <input id="manageTeamSearch" type="search" oninput="renderTeamCards()"
+                                placeholder="Search by name, username or job..."
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl ps-9 pe-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <button id="btnOpenStaffAccount" onclick="openStaffAccountModal()"
+                                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition shadow-sm"
+                                title="Add Employee">
+                                <i class="fa-solid fa-user-plus"></i>
+                                <span data-i18n="btn_create_staff">Add Employee</span>
+                            </button>
+                            <button id="btnOpenJobModal" onclick="openJobModal()"
+                                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-sky-950 text-slate-700 dark:text-slate-200 text-xs font-bold transition"
+                                title="Add Job">
+                                <i class="fa-solid fa-briefcase text-sky-500"></i>
+                                <span data-i18n="btn_add_job">Add Job</span>
+                            </button>
+                            <button id="btnOpenCustomerModal" onclick="openCustomerModal()"
+                                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-sky-950 text-slate-700 dark:text-slate-200 text-xs font-bold transition"
+                                title="Add Customer">
+                                <i class="fa-solid fa-user-tag text-sky-500"></i>
+                                <span data-i18n="btn_add_customer">Add Customer</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="manageTeamGrid"
+                        class="p-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 max-h-[560px] overflow-y-auto custom-scrollbar">
+                    </div>
+                </div>
+
+                <!-- Labor Dashboard -->
+                <div id="managePanelLabor"
+                    class="hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                    <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                        <p class="text-xs text-slate-500 dark:text-slate-400">Jobs done by each technician and assistant, with customer ratings and your own rating</p>
+                    </div>
+                    <div id="manageLaborGrid"
+                        class="p-5 grid grid-cols-1 xl:grid-cols-2 gap-4 items-start max-h-[680px] overflow-y-auto custom-scrollbar">
+                    </div>
+                </div>
             </div>
 
             <!-- Head Admin + Executive Director -->
@@ -1266,7 +1352,7 @@
             class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
             <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
                 <div>
-                    <h3 class="font-bold text-lg" data-i18n="btn_create_staff">Add Employee</h3>
+                    <h3 id="staffModalTitle" class="font-bold text-lg">Add Employee</h3>
                     <p class="text-[11px] text-slate-400 mt-0.5">Add Technical and Customer Service employees (Admin and Executive Director only)
                     </p>
                 </div>
@@ -1275,6 +1361,41 @@
                         class="fa-solid fa-xmark text-lg"></i></button>
             </div>
             <div id="adminStaffFormBox"></div>
+        </div>
+    </div>
+
+    <!-- ADD CUSTOMER MODAL -->
+    <div id="customerModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                    <h3 class="font-bold text-lg" data-i18n="btn_add_customer">Add Customer</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Create a customer account (Admin and Executive Director only)</p>
+                </div>
+                <button onclick="closeCustomerModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div id="adminCustomerFormBox"></div>
+        </div>
+    </div>
+
+    <!-- ADD JOB MODAL (new positions or a new department) -->
+    <div id="jobModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                    <h3 class="font-bold text-lg" data-i18n="btn_add_job">Add Job</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Add a new job to a category, or create a new category
+                        (Admin and Executive Director only)</p>
+                </div>
+                <button onclick="closeJobModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
+                        class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div id="adminJobFormBox"></div>
         </div>
     </div>
 
