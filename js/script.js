@@ -40,7 +40,7 @@ const CLOUD_SYNC_KEYS = [
     'ca_users', 'ca_products', 'ca_services', 'ca_orders', 'ca_tasks', 'ca_areas',
     'ca_about_videos', 'ca_revenue_reset_baseline', 'ca_contact', 'ca_policies',
     'ca_cs_chats', 'ca_cs_counter', 'ca_custom_jobs', 'ca_live_locations', 'ca_customer_folders',
-    'ca_maintenance_id'
+    'ca_maintenance_id', 'ca_import_ledger'
 ];
 const CLOUD_POLL_MS = 5000;
 const CLOUD_MEDIA_LIMIT = 150 * 1024; // data: URLs bigger than this go to Supabase Storage
@@ -95,6 +95,24 @@ function cloudQueuePush(key) {
     cloud.timers[key] = setTimeout(() => { delete cloud.timers[key]; cloudPush(key); }, 600);
 }
 
+function mergeCsChat(a, b) {
+    const out = { ...b, ...a };
+    const seen = new Set();
+    out.messages = (a.messages || []).concat(b.messages || [])
+        .filter(m => { const k = m.at + '|' + m.from + '|' + m.text; if (seen.has(k)) return false; seen.add(k); return true; })
+        .sort((x, y) => String(x.at).localeCompare(String(y.at)));
+    out.answeredBy = Array.from(new Set([].concat(a.answeredBy || [], b.answeredBy || [])));
+    if (a.status === 'closed' || b.status === 'closed') {
+        out.status = 'closed';
+        out.closedAt = a.closedAt || b.closedAt;
+        out.closedBy = a.closedBy || b.closedBy;
+    }
+    out.customerRating = a.customerRating || b.customerRating;
+    out.lastActivity = String(a.lastActivity || '') >= String(b.lastActivity || '') ? a.lastActivity : b.lastActivity;
+    out.seen = { ...(b.seen || {}), ...(a.seen || {}) };
+    return out;
+}
+
 // Items from both lists, matched by id (this device's version wins), minus anything deleted here.
 function cloudMergeById(remote, local, deletedSet, key) {
     // Live positions: every device holds a copy of everybody's last position, so the
@@ -107,6 +125,14 @@ function cloudMergeById(remote, local, deletedSet, key) {
             if (!other || String(i.at) >= String(other.at)) byId.set(i.id, i);
         });
         return Array.from(byId.values());
+    }
+    // Chats: two agents can write the same chat from two devices, so keep every message from both sides.
+    if (key === 'ca_cs_chats') {
+        const remoteById = new Map(remote.map(i => [i.id, i]));
+        const mergedChats = local.map(l => (remoteById.has(l.id) ? mergeCsChat(l, remoteById.get(l.id)) : l));
+        const haveIds = new Set(local.map(i => i.id));
+        const onlyRemote = remote.filter(i => !haveIds.has(i.id) && !(deletedSet && deletedSet.has(i.id)));
+        return mergedChats.concat(onlyRemote);
     }
     const localIds = new Set(local.map(i => i.id));
     const extra = remote.filter(i => !localIds.has(i.id) && !(deletedSet && deletedSet.has(i.id)));
@@ -1360,30 +1386,7 @@ async function syncOrdersToSupabase(showNotification = false) {
         return;
     }
     try {
-        const payload = state.orders.map(o => {
-            const customerUser = state.users.find(u => u.username.toLowerCase() === (o.username || '').toLowerCase());
-            const task = state.tasks.find(t => t.orderId === o.id);
-            return {
-                id: o.id,
-                order_ref: o.id,
-                status: o.status || 'Pending',
-                date: o.date || '',
-                type: o.type || 'Product',
-                username: o.username || '',
-                customer_name: customerUser ? (customerUser.name || o.username) : o.username,
-                customer_phone: customerUser ? (customerUser.contactPhone || customerUser.whatsapp || '') : '',
-                item_title: o.itemTitle || '',
-                amount: o.amount || 0,
-                gateway: o.gateway || '',
-                location: o.location || '',
-                customer_address: o.customerAddress || '',
-                assigned_tech: task ? task.assignedTo : '',
-                notes: o.notes || '',
-                rating: o.customerFeedback ? o.customerFeedback.rating : null,
-                feedback: o.customerFeedback ? o.customerFeedback.text : null,
-                updated_at: new Date().toISOString()
-            };
-        });
+        const payload = buildOrderRecords();
 
         const { error } = await supabaseClient
             .from('orders_and_services')
@@ -1410,6 +1413,76 @@ async function syncOrdersToSupabase(showNotification = false) {
     }
 }
 window.syncOrdersToSupabase = syncOrdersToSupabase;
+
+// One record per order. Used by the Supabase backup and by the Excel download.
+function buildOrderRecords() {
+    return state.orders.map(o => {
+        const customerUser = state.users.find(u => u.username.toLowerCase() === (o.username || '').toLowerCase());
+        const task = state.tasks.find(t => t.orderId === o.id);
+        return {
+            id: o.id,
+            order_ref: o.id,
+            status: o.status || 'Pending',
+            date: o.date || '',
+            type: o.type || 'Product',
+            username: o.username || '',
+            customer_name: customerUser ? (customerUser.name || o.username) : o.username,
+            customer_phone: customerUser ? (customerUser.contactPhone || customerUser.whatsapp || '') : '',
+            item_title: o.itemTitle || '',
+            amount: o.amount || 0,
+            gateway: o.gateway || '',
+            location: o.location || '',
+            customer_address: o.customerAddress || '',
+            assigned_tech: task ? task.assignedTo : '',
+            notes: o.notes || '',
+            rating: o.customerFeedback ? o.customerFeedback.rating : null,
+            feedback: o.customerFeedback ? o.customerFeedback.text : null,
+            updated_at: new Date().toISOString()
+        };
+    });
+}
+
+// Downloads EVERY order (not just the filtered list on screen) as an Excel sheet.
+function downloadOrdersExcel() {
+    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    if (typeof XLSX === 'undefined') {
+        showToast(L('Excel library could not load. Check your internet connection and refresh.', 'تعذر تحميل مكتبة الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
+        return;
+    }
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    if (!state.orders.length) {
+        showToast(L('No orders to download.', 'لا توجد طلبات للتحميل.'), 'info');
+        return;
+    }
+    const byId = new Map(state.orders.map(o => [o.id, o]));
+    const head = [
+        L('Order Ref', 'رقم الطلب'), L('Date', 'التاريخ'), L('Type', 'النوع'), L('Status', 'الحالة'),
+        L('Customer', 'العميل'), L('Username', 'اسم المستخدم'), L('Phone', 'الهاتف'), L('Item / Service', 'المنتج / الخدمة'),
+        L('Amount', 'المبلغ'), L('Payment', 'وسيلة الدفع'), L('Transaction Ref', 'مرجع العملية'),
+        L('Area', 'المنطقة'), L('Address', 'العنوان'), L('Technician', 'الفني'), L('Assistant', 'المساعد'),
+        L('Notes', 'ملاحظات'), L('Rating', 'التقييم'), L('Feedback', 'رأي العميل')
+    ];
+    const rows = buildOrderRecords().map(r => {
+        const o = byId.get(r.id) || {};
+        const task = state.tasks.find(t => t.orderId === r.id);
+        return [
+            r.order_ref, r.date, r.type, r.status,
+            r.customer_name, r.username, r.customer_phone, r.item_title,
+            r.amount, r.gateway, o.transactionRef || '',
+            r.location, r.customer_address, r.assigned_tech || '', (task && task.assistantTo) || '',
+            r.notes, r.rating === null || r.rating === undefined ? '' : r.rating, r.feedback || ''
+        ];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([head].concat(rows));
+    ws['!cols'] = [18, 12, 14, 12, 22, 16, 16, 30, 10, 14, 18, 18, 30, 16, 16, 30, 8, 30].map(w => ({ wch: w }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Orders');
+    XLSX.writeFile(wb, `orders-${getLocalDateString()}.xlsx`);
+    showToast(L(`Downloaded ${rows.length} orders.`, `تم تحميل ${rows.length} طلب.`), 'success');
+}
+window.downloadOrdersExcel = downloadOrdersExcel;
+
 
 // ================= INTERNATIONALIZATION (i18n) DICTIONARY =================
 const TRANSLATIONS = {
@@ -4229,7 +4302,7 @@ function renderWhoWeAreDetails() {
 // after their chats — pulled from ca_cs_chats rather than orders/tasks, since
 // a CS conversation isn't tied to a purchase or repair job.
 function renderCsRating(username) {
-    const rated = loadCsChats().filter(c => c.assignedTo === username && c.customerRating && typeof c.customerRating.rating === 'number');
+    const rated = loadCsChats().filter(c => (Array.isArray(c.answeredBy) ? c.answeredBy : (c.assignedTo ? [c.assignedTo] : [])).includes(username) && c.customerRating && typeof c.customerRating.rating === 'number');
     if (!rated.length) {
         return `<p class="text-[10px] text-slate-400 italic pt-0.5">${L('No ratings yet', 'لا توجد تقييمات بعد')}</p>`;
     }
@@ -5484,6 +5557,21 @@ function intakeFolderKey(r) {
     return digits.length >= 7 ? 'tel:' + digits : 'name:' + normalizeIntakeText(r.name) + '|' + normalizeIntakeText(r.address);
 }
 
+// ---- Memory of rows already read from sheets ----
+// A row that was read once is never read again, even if its task / row was deleted or finished later.
+// Uploading the same file (or an updated copy of it) only picks up rows that are really new.
+const IMPORT_LEDGER_KEY = 'ca_import_ledger';
+function loadImportLedger() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(IMPORT_LEDGER_KEY));
+        if (Array.isArray(stored)) return stored.filter(i => i && typeof i.id === 'string');
+    } catch (e) { /* nothing saved yet */ }
+    return [];
+}
+function saveImportLedger(items) {
+    localStorage.setItem(IMPORT_LEDGER_KEY, JSON.stringify(items));
+}
+
 function canImportCustomers() {
     return !!state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
 }
@@ -5545,6 +5633,9 @@ function importCustomerRows(rows, fileName) {
 
     const knownRows = new Set();
     state.customerFolders.forEach(f => (f.history || []).forEach(h => { if (h.rowKey) knownRows.add(h.rowKey); }));
+    const ledger = loadImportLedger();
+    ledger.forEach(i => { if (i.id.startsWith('intake:')) knownRows.add(i.id.slice(7)); });
+    const newLedger = [];
     const usedIds = new Set(state.tasks.map(t => t.id));
     const now = new Date();
     const result = { file: fileName, added: 0, repeated: 0, invalid: 0, newCustomers: 0 };
@@ -5555,6 +5646,7 @@ function importCustomerRows(rows, fileName) {
         const rowKey = intakeRowKey(r);
         if (knownRows.has(rowKey)) { result.repeated++; return; }   // already imported before
         knownRows.add(rowKey);
+        newLedger.push({ id: 'intake:' + rowKey });
 
         const key = intakeFolderKey(r);
         let folder = state.customerFolders.find(f => f.key === key);
@@ -5604,6 +5696,7 @@ function importCustomerRows(rows, fileName) {
     if (result.added) {
         state.tasks = newTasks.concat(state.tasks);
         saveState();
+        saveImportLedger(ledger.concat(newLedger));
     }
     return result;
 }
@@ -5940,7 +6033,11 @@ function handleArabiFile(input) {
         }
 
         // Already known = an Arabi row now, or one already filed in a customer folder (rows survive a reset there).
+        state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;   // work on the latest data
         const existing = new Set(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(arabiTaskKey));
+        const ledger = loadImportLedger();
+        const ledgerSeen = new Set(ledger.filter(i => i.id.startsWith('arabi:')).map(i => i.id.slice(6)));
+        const newLedger = [];
         const folders = loadCustomerFolders();
         folders.forEach(f => (f.history || []).forEach(h => {
             if (h.file === 'Arabi Sheet') existing.add(arabiKey({ name: f.name, address: h.address, fix: h.issue }));
@@ -5955,7 +6052,7 @@ function handleArabiFile(input) {
         parsed.forEach((r, i) => {
             if (!r.fix || !(r.name || r.address)) { invalid++; return; }
             const key = arabiKey(r);
-            if (existing.has(key)) {
+            if (existing.has(key) || ledgerSeen.has(key)) {
                 duplicates++;
                 // Same row again: only fill in a phone that was missing / read wrongly before.
                 if (intakePhoneDigits(r.phone).length >= 7) {
@@ -5969,6 +6066,7 @@ function handleArabiFile(input) {
                 return;
             }
             existing.add(key);
+            newLedger.push({ id: 'arabi:' + key });
             let id = createDateBasedId('TSK');
             while (usedIds.has(id)) id = createDateBasedId('TSK');
             usedIds.add(id);
@@ -5999,6 +6097,7 @@ function handleArabiFile(input) {
         });
 
         if (added) state.tasks = created.concat(state.tasks);
+        if (added) saveImportLedger(ledger.concat(newLedger));
         if (healed) state.customerFolders = folders;
         if (added || healed) saveState();
         if (added) syncCustomerLogSources();
@@ -9306,8 +9405,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             }
             botChatId = chat.id;
             botStep = 'in_chat';
-            const csUser = state.users.find(u => u.username === chat.assignedTo);
-            botAddMessage('bot', `${L('Thank you! Your message has been passed to', 'شكراً! تم تمرير رسالتك إلى')} <strong>${escapeHtml(csUser ? csUser.name : L('Customer Service', 'خدمة العملاء'))}</strong> ${L('from our support team. You can keep typing here — replies will appear in this chat.', 'من فريق الدعم. يمكنك الاستمرار في الكتابة هنا — ستظهر الردود في هذه المحادثة.')}`);
+            botAddMessage('bot', L('Thank you! Your message has been passed to our customer service team. The first available agent will reply here — you can keep typing in this chat.', 'شكراً! تم تمرير رسالتك إلى فريق خدمة العملاء. سيرد عليك أول موظف متاح هنا — يمكنك الاستمرار في الكتابة في هذه المحادثة.'));
         }
     }
 
@@ -9466,7 +9564,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
     }
 
-    // ================= CUSTOMER SERVICE CHATS (round-robin assignment) =================
+    // ================= CUSTOMER SERVICE CHATS (no assignment: any agent can answer) =================
     function loadCsChats() {
         try {
             const stored = JSON.parse(localStorage.getItem('ca_cs_chats'));
@@ -9479,22 +9577,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         localStorage.setItem('ca_cs_chats', JSON.stringify(chats));
     }
 
-    // Distributes incoming chats across the CS team one by one: first chat → CS1,
-    // next → CS2, next → CS3, then back to CS1. The counter persists in localStorage.
-    function assignCsRoundRobin() {
-        const csList = state.users
-            .filter(u => u.role === 'hr')
-            .sort((a, b) => String(a.joinedDate || '').localeCompare(String(b.joinedDate || '')) || a.username.localeCompare(b.username));
-        if (!csList.length) return null;
-        const counter = Number(localStorage.getItem('ca_cs_counter') || 0);
-        localStorage.setItem('ca_cs_counter', String(counter + 1));
-        return csList[counter % csList.length];
-    }
-
     function createCsChat({ name, phone, topic, userId }) {
         const chats = loadCsChats();
-        const cs = assignCsRoundRobin();
-        if (!cs) return null;
+        // Chats are not assigned to anyone: every Customer Services agent sees them and any of them can answer.
+        if (!state.users.some(u => u.role === 'hr')) return null;
         const now = new Date().toISOString();
         const chat = {
             id: createDateBasedId('CHAT'),
@@ -9502,7 +9588,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             customerPhone: phone || '',
             customerUserId: userId || null,   // links back to the registered account, when known
             topic: String(topic || '').slice(0, 300),
-            assignedTo: cs.username,      // assignment is permanent for the life of the chat
+            answeredBy: [],               // usernames of the agents who replied (filled in when they answer)
             status: 'open',
             createdAt: now,
             lastActivity: now,
@@ -9518,14 +9604,20 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
         if (!chat) return;
+        let agent = '';
         if (from === 'cs') {
             const u = state.currentUser;
-            if (!u || u.role !== 'hr' || chat.assignedTo !== u.username || chat.status !== 'open') {
-                showToast(L('Only the assigned Customer Services agent can reply.', 'فقط موظف خدمة العملاء المعيّن يمكنه الرد.'), 'error');
+            if (!u || u.role !== 'hr' || chat.status !== 'open') {
+                showToast(L('Only Customer Services agents can reply to an open chat.', 'فقط موظفو خدمة العملاء يمكنهم الرد على محادثة مفتوحة.'), 'error');
                 return;
             }
+            agent = u.username;
+            if (!Array.isArray(chat.answeredBy)) chat.answeredBy = [];
+            if (!chat.answeredBy.includes(agent)) chat.answeredBy.push(agent);
         }
-        chat.messages.push({ from, text: String(text).slice(0, 500), at: new Date().toISOString() });
+        const msg = { from, text: String(text).slice(0, 500), at: new Date().toISOString() };
+        if (agent) msg.by = agent;      // who wrote this reply
+        chat.messages.push(msg);
         chat.lastActivity = new Date().toISOString();
         saveCsChats(chats);
         // Refresh just the chats card, not the whole dashboard — a full dashboard
@@ -9536,7 +9628,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
     // ================= CS CHATS PAGE: conversation list + chat window + history =================
     // Head admin: sees every chat (open + history) but is READ-ONLY (no reply, no close).
-    // Customer Services: sees only chats assigned to them and can reply / close them.
+    // Customer Services: sees every chat; any agent can open one, reply and close it.
     let csChatsTab = 'active';      // 'active' | 'history'
     let csSelectedChatId = null;
     let csWindowKey = '';           // which chat/state the window frame was last built for
@@ -9549,10 +9641,18 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         return !!state.currentUser && state.currentUser.role === 'hr';
     }
     function csVisibleChats() {
-        const u = state.currentUser;
-        if (!csIsStaff()) return [];
-        const all = loadCsChats();
-        return isTopAdmin(u.role) ? all : all.filter(c => c.assignedTo === u.username);
+        return csIsStaff() ? loadCsChats() : [];
+    }
+    // Agents who answered this chat (older chats fall back to their old fixed agent).
+    function csChatAgents(c) {
+        return Array.isArray(c.answeredBy) ? c.answeredBy : (c.assignedTo ? [c.assignedTo] : []);
+    }
+    function csAgentLabel(username) {
+        const u = username ? state.users.find(x => x.username === username) : null;
+        return u ? (u.name || u.username) : (username || L('Agent', 'موظف'));
+    }
+    function csAgentNames(c) {
+        return csChatAgents(c).map(csAgentLabel).join(', ');
     }
     // Unread = the customer spoke last and this viewer hasn't opened the chat since.
     function csIsUnread(c) {
@@ -9646,10 +9746,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function csListRow(c) {
         const msgs = c.messages || [];
         const last = msgs[msgs.length - 1];
-        const preview = last ? (last.from === 'cs' ? L('You: ', 'أنت: ') : '') + last.text : '';
+        const me = state.currentUser;
+        const preview = last ? (last.from === 'cs' ? (last.by && me && last.by === me.username ? L('You: ', 'أنت: ') : csAgentLabel(last.by) + ': ') : '') + last.text : '';
         const unread = c.status === 'open' && csIsUnread(c);
-        const isAdm = isTopAdmin(state.currentUser.role);
-        const agent = isAdm ? state.users.find(u => u.username === c.assignedTo) : null;
+        const names = csAgentNames(c);
         const rating = c.customerRating && typeof c.customerRating.rating === 'number' ? c.customerRating.rating : null;
         return `
     <button type="button" onclick="csSelectChat('${c.id}')" class="cs-row ${c.id === csSelectedChatId ? 'selected' : ''}">
@@ -9663,10 +9763,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 <span class="text-[11px] truncate ${unread ? 'text-slate-700 dark:text-slate-200 font-bold' : 'text-slate-400'}">${escapeHtml(preview)}</span>
                 ${unread ? '<span class="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0"></span>' : ''}
             </span>
-            ${isAdm || rating !== null ? `<span class="flex items-center gap-2 mt-1 text-[9px] font-bold">
-                ${isAdm ? `<span class="text-purple-600 dark:text-purple-400"><i class="fa-solid fa-headset me-1"></i>${escapeHtml(agent ? agent.name : c.assignedTo || '—')}</span>` : ''}
+            <span class="flex items-center gap-2 mt-1 text-[9px] font-bold">
+                ${names
+                    ? `<span class="text-purple-600 dark:text-purple-400 truncate"><i class="fa-solid fa-headset me-1"></i>${escapeHtml(names)}</span>`
+                    : (c.status === 'open' ? `<span class="text-amber-600 dark:text-amber-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting for an agent', 'بانتظار موظف')}</span>` : '')}
                 ${rating !== null ? `<span class="text-amber-500"><i class="fa-solid fa-star me-0.5"></i>${rating}</span>` : ''}
-            </span>` : ''}
+            </span>
         </span>
     </button>`;
     }
@@ -9675,7 +9777,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         return (chat.messages || []).map(m => `
         <div class="flex ${m.from === 'cs' ? 'justify-end' : 'justify-start'}">
             <div class="max-w-[80%] rounded-xl px-3 py-1.5 leading-relaxed text-xs ${m.from === 'cs' ? 'bg-sky-500 text-white' : 'bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700'}">
-                ${escapeHtml(m.text)}
+                ${m.from === 'cs' ? `<span class="block text-[9px] font-extrabold opacity-80 mb-0.5">${escapeHtml(csAgentLabel(m.by))}</span>` : ''}${escapeHtml(m.text)}
                 <span class="block text-[9px] opacity-70 mt-0.5">${escapeHtml(formatDateTime(m.at))}</span>
             </div>
         </div>`).join('');
@@ -9694,13 +9796,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             return;
         }
         const me = state.currentUser;
-        const writable = csCanReply() && chat.status === 'open' && chat.assignedTo === me.username;
+        const writable = csCanReply() && chat.status === 'open';
         const key = [chat.id, chat.status, writable].join('|');
         let fresh = false;
         if (key !== csWindowKey) {
             fresh = true;
             csWindowKey = key;
-            const agent = isTopAdmin(me.role) ? state.users.find(u => u.username === chat.assignedTo) : null;
             const open = chat.status === 'open';
             const footer = writable
                 ? `<form onsubmit="csReplySubmit(event, '${chat.id}')" class="shrink-0 flex gap-2 p-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
@@ -9722,13 +9823,24 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     </div>
                 </div>
                 <div class="flex items-center gap-2 text-[10px] font-extrabold uppercase shrink-0">
-                    ${isTopAdmin(me.role) ? `<span class="hidden sm:inline px-2.5 py-1 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400"><i class="fa-solid fa-headset me-1"></i>${escapeHtml(agent ? agent.name : chat.assignedTo || '—')}</span>` : ''}
+                    <span id="csAgentBadge" class="hidden"></span>
                     <span class="px-2.5 py-1 rounded-full ${open ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}">${open ? L('Open', 'مفتوحة') : L('Closed', 'مغلقة')}</span>
                     ${writable ? `<button type="button" onclick="closeCsChat('${chat.id}')" class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-500 hover:bg-emerald-200 hover:text-emerald-700 dark:bg-slate-800 dark:hover:bg-emerald-950 dark:hover:text-emerald-400 transition" title="${L('Close chat', 'إغلاق المحادثة')}"><i class="fa-solid fa-check"></i></button>` : ''}
                 </div>
             </div>
             <div id="csMsgs" class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-1.5"></div>
             ${footer}`;
+        }
+        // Who answered this chat: refreshed on every render without rebuilding the frame (so a reply being typed is kept).
+        const badge = pane.querySelector('#csAgentBadge');
+        if (badge) {
+            const names = csAgentNames(chat);
+            badge.className = names
+                ? 'hidden sm:inline-block max-w-[12rem] truncate px-2.5 py-1 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400'
+                : 'hidden sm:inline-block px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400';
+            badge.innerHTML = names
+                ? `<i class="fa-solid fa-headset me-1"></i>${escapeHtml(names)}`
+                : `<i class="fa-regular fa-clock me-1"></i>${L('Not answered yet', 'لم يتم الرد بعد')}`;
         }
         const box = pane.querySelector('#csMsgs');
         if (!box) return;
@@ -9755,13 +9867,14 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     }
 
     function closeCsChat(chatId) {
-        // Only the assigned Customer Services agent can close — the head admin is view-only.
+        // Any Customer Services agent can close a chat — the head admin is view-only.
         if (!csCanReply()) return;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
-        if (!chat || chat.assignedTo !== state.currentUser.username) return;
+        if (!chat || chat.status !== 'open') return;
         chat.status = 'closed';
         chat.closedAt = new Date().toISOString();
+        chat.closedBy = state.currentUser.username;
         saveCsChats(chats);
         showToast(L('Chat closed.', 'تم إغلاق المحادثة.'), 'success');
         renderAdminChats();
