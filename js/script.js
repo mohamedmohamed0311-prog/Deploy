@@ -2962,8 +2962,8 @@ function openDeleteUserModal(userId, username) {
         showToast('The head admin account cannot be deleted.', 'error');
         return;
     }
-    if (targetUser && targetUser.role === 'executive' && (!state.currentUser || state.currentUser.role !== 'head-admin')) {
-        showToast('Only the Admin can add or delete an Executive Director.', 'error');
+    if (targetUser && targetUser.role === 'executive' && (!state.currentUser || !isTopAdmin(state.currentUser.role))) {
+        showToast('Only the Admin or the Executive Director can add or delete an Executive Director.', 'error');
         return;
     }
     userToDeleteId = userId;
@@ -3029,7 +3029,7 @@ function confirmDeleteUser() {
         closeDeleteUserModal();
         return;
     }
-    if (targetUser.role === 'executive' && state.currentUser.role !== 'head-admin') {
+    if (targetUser.role === 'executive' && !isTopAdmin(state.currentUser.role)) {
         showToast('Only the Admin can add or delete an Executive Director.', 'error');
         closeDeleteUserModal();
         return;
@@ -3382,13 +3382,12 @@ function renderProducts() {
         return `
         <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm flex flex-col justify-between group">
             <div>
-                <div class="h-48 overflow-hidden bg-slate-100 relative">
+                <div class="h-48 overflow-hidden bg-slate-100">
                     <img src="${escapeHtml(p.image || PRODUCT_PLACEHOLDER_IMG)}" onerror="this.onerror=null;this.src=PRODUCT_PLACEHOLDER_IMG" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
-                    <span class="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">${escapeHtml(tr ? tr.category : p.category)}</span>
-                    ${p.outOfStock ? `<span class="absolute bottom-3 left-3 bg-red-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase"><i class="fa-solid fa-circle-xmark me-1"></i>${t('out_of_stock')}</span>` : ''}
-                    ${canEdit ? `<button type="button" onclick="copyProductLink('${p.id}')" class="absolute top-3 right-[5.25rem] w-8 h-8 rounded-full bg-white/90 text-emerald-600 hover:bg-emerald-500 hover:text-white flex items-center justify-center transition" title="${L('Copy direct link to this product', 'نسخ رابط مباشر لهذا المنتج')}"><i class="fa-solid fa-link text-xs"></i></button><button type="button" onclick="openEditProductModal('${p.id}')" class="absolute top-3 right-12 w-8 h-8 rounded-full bg-white/90 text-sky-600 hover:bg-sky-500 hover:text-white flex items-center justify-center transition" title="${L('Edit product', 'تعديل المنتج')}"><i class="fa-solid fa-pen text-xs"></i></button><button type="button" onclick="removeProduct('${p.id}')" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition" title="${L('Remove product', 'حذف المنتج')}"><i class="fa-solid fa-trash-can text-xs"></i></button>` : ''}
                 </div>
+                ${canEdit ? `<div class="flex items-center justify-end gap-2 px-4 pt-3"><button type="button" onclick="copyProductLink('${p.id}')" class="w-8 h-8 rounded-full bg-emerald-50 dark:bg-slate-800 text-emerald-600 hover:bg-emerald-500 hover:text-white flex items-center justify-center transition" title="${L('Copy direct link to this product', 'نسخ رابط مباشر لهذا المنتج')}"><i class="fa-solid fa-link text-xs"></i></button><button type="button" onclick="openEditProductModal('${p.id}')" class="w-8 h-8 rounded-full bg-sky-50 dark:bg-slate-800 text-sky-600 hover:bg-sky-500 hover:text-white flex items-center justify-center transition" title="${L('Edit product', 'تعديل المنتج')}"><i class="fa-solid fa-pen text-xs"></i></button><button type="button" onclick="removeProduct('${p.id}')" class="w-8 h-8 rounded-full bg-red-50 dark:bg-slate-800 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition" title="${L('Remove product', 'حذف المنتج')}"><i class="fa-solid fa-trash-can text-xs"></i></button></div>` : ''}
                 <div class="p-5 space-y-2">
+                    <span class="inline-block bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">${escapeHtml(tr ? tr.category : p.category)}</span>
                     <h3 class="font-bold text-base leading-snug">${escapeHtml(tr ? tr.name : p.name)}</h3>
                     <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">${escapeHtml(tr ? tr.specs : (p.specs || ''))}</p>
                 </div>
@@ -4330,13 +4329,15 @@ function renderWhoWeAreDetails() {
             </div>
         </div>`).join('');
     const execCards = executives.map(u => `
-        <div class="relative overflow-hidden rounded-3xl bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-900 p-6 sm:p-8 shadow-sm">
-            <span class="pointer-events-none absolute -top-16 -end-16 w-48 h-48 rounded-full bg-sky-100/70 dark:bg-sky-900/20"></span>
+        <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-sky-900 via-sky-800 to-slate-900 text-white border border-sky-700/60 p-6 sm:p-8 shadow-lg">
+            <span class="pointer-events-none absolute -top-16 -end-16 w-56 h-56 rounded-full bg-sky-400/10 ring-1 ring-white/10"></span>
+            <span class="pointer-events-none absolute -bottom-20 -start-10 w-48 h-48 rounded-full bg-cyan-400/10"></span>
             <div class="relative flex flex-col sm:flex-row items-center gap-5 text-center sm:text-start">
-                ${bigAvatar(u, 'w-24 h-24 rounded-3xl bg-sky-50 dark:bg-sky-950 ring-4 ring-sky-100 dark:ring-sky-900 shadow-md text-sky-500', 'text-4xl')}
+                ${bigAvatar(u, 'w-28 h-28 rounded-3xl bg-white/10 ring-4 ring-white/20 shadow-xl text-white/60', 'text-5xl')}
                 <div class="space-y-2 min-w-0">
-                    <span class="inline-flex items-center gap-1.5 bg-sky-500 text-white font-extrabold px-2.5 py-1 rounded-lg text-[10px] uppercase"><i class="fa-solid fa-star"></i>${escapeHtml(getRoleLabel('executive'))}</span>
-                    <span class="block text-lg sm:text-xl font-extrabold truncate" dir="auto">${escapeHtml(u.name || u.username)}</span>
+                    <span class="inline-flex items-center gap-1.5 bg-amber-400 text-slate-900 font-extrabold px-2.5 py-1 rounded-lg text-[10px] uppercase"><i class="fa-solid fa-crown"></i>${escapeHtml(getRoleLabel('executive'))}</span>
+                    <span class="block text-xl sm:text-2xl font-extrabold truncate" dir="auto">${escapeHtml(u.name || u.username)}</span>
+                    <p class="text-xs text-sky-200 font-bold">${escapeHtml(getRoleLabel('executive'))}</p>
                     <div class="flex justify-center sm:justify-start">${renderStaffRating(u.username)}</div>
                 </div>
             </div>
@@ -4525,6 +4526,8 @@ function getVideoEmbed(url) {
     if (m) return { kind: 'iframe', platform: 'drive', src: `https://drive.google.com/file/d/${m[1]}/preview` };
     if (/^https?:\/\/\S+\.(mp4|webm|ogg)(\?\S*)?$/i.test(u)) return { kind: 'file', platform: 'file', src: u };
     if (/^data:video\//i.test(u)) return { kind: 'file', platform: 'file', src: u };
+    m = u.match(/^idb:(\S+)$/);
+    if (m) return { kind: 'file', platform: 'idb', idbId: m[1], src: '' };
     return null;
 }
 
@@ -4582,11 +4585,11 @@ function renderAboutVideos() {
     const adminForm = canEdit ? `
         <form onsubmit="handleAddVideoSubmit(event)" class="grid grid-cols-1 md:grid-cols-5 gap-3 text-xs items-center">
             <input type="text" id="aboutVideoTitle" required maxlength="80" placeholder="${L('Video title', 'عنوان الفيديو')}" class="md:col-span-2 ${inputClass}">
-            <input type="file" id="aboutVideoFile" accept="video/*" onchange="previewAboutVideoFile(event)" class="md:col-span-2 ${IMAGE_PICK_INPUT_CLS}">
+            <input type="file" id="aboutVideoFile" accept="video/*,.mp4,.m4v,.webm,.mov,.mkv,.ogg" onchange="previewAboutVideoFile(event)" class="md:col-span-2 ${IMAGE_PICK_INPUT_CLS}">
             <button type="submit" class="bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-xl py-3 uppercase tracking-wider transition"><i class="fa-solid fa-plus me-1"></i>${L('Add', 'إضافة')}</button>
         </form>
         <p id="aboutVideoFileName" class="text-[11px] text-slate-500 font-bold"></p>
-        <p class="text-[11px] text-slate-400">${L('Only admins see this form. Pick a video file from your device (mp4/webm).', 'هذا النموذج يظهر للمسؤولين فقط. اختر ملف فيديو من جهازك (mp4/webm).')}</p>
+        <p class="text-[11px] text-slate-400">${L('Only admins see this form. Pick a video file from your device (mp4/webm/mov, up to 500 MB).', 'هذا النموذج يظهر للمسؤولين فقط. اختر ملف فيديو من جهازك (mp4/webm).')}</p>
     ` : '';
 
     const cards = videos.map(v => {
@@ -4594,6 +4597,8 @@ function renderAboutVideos() {
         let player;
         if (!embed) {
             player = `<div class="w-full h-full flex items-center justify-center text-xs text-slate-400 p-4 text-center">${L('This link can’t be embedded.', 'لا يمكن تضمين هذا الرابط.')}</div>`;
+        } else if (embed.platform === 'idb') {
+            player = `<video data-idb-id="${escapeHtml(embed.idbId)}" controls preload="metadata" playsinline class="w-full h-full"></video>`;
         } else if (embed.kind === 'file') {
             player = `<video src="${escapeHtml(embed.src)}" controls preload="metadata" class="w-full h-full"></video>`;
         } else if (embed.platform === 'youtube') {
@@ -4634,69 +4639,126 @@ function renderAboutVideos() {
             : `<div class="grid grid-cols-1 md:grid-cols-2 gap-5">${cards}</div>`}
         </div>
     `;
+    hydrateLocalVideos(box);
 
 }
 
-// Holds the data URL of the video file picked in the "Add Video" form —
-// videos are read from the device instead of pasted as a link.
-let pendingAboutVideoData = null;
+// ---- Local video files ----
+// The picked file is kept as a Blob in IndexedDB (no 5 MB localStorage limit). When the cloud is
+// connected it is uploaded to Supabase Storage instead, so every device can play it.
+const VIDEO_DB_NAME = 'ca_media';
+const VIDEO_STORE = 'videos';
+const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
+const VIDEO_EXT_RE = /\.(mp4|m4v|webm|ogg|ogv|mov|mkv)$/i;
+let pendingAboutVideoFile = null;
 
-function previewAboutVideoFile(event) {
-    const file = event.target.files && event.target.files[0];
-    event.target.value = '';
-    const nameBox = document.getElementById('aboutVideoFileName');
-    if (!file) return;
-    if (!file.type || !file.type.startsWith('video/')) {
-        showToast(L('Please choose a video file.', 'يرجى اختيار ملف فيديو.'), 'error');
-        return;
-    }
-    if (file.size > 15 * 1024 * 1024) {
-        showToast(L('That video is large and may not save (device storage is limited) — a shorter clip works best.', 'هذا الفيديو كبير وقد لا يُحفظ (مساحة التخزين محدودة) — الأفضل استخدام مقطع أقصر.'), 'error');
-        return;
-    }
-    readFileAsDataUrl(file).then(dataUrl => {
-        pendingAboutVideoData = dataUrl;
-        if (nameBox) nameBox.textContent = `${L('Selected', 'تم اختيار')}: ${file.name}`;
-    }).catch(() => {
-        showToast(L('Could not read that video file.', 'تعذر قراءة ملف الفيديو.'), 'error');
+function videoDbOpen() {
+    return new Promise((resolve, reject) => {
+        if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+        const req = indexedDB.open(VIDEO_DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(VIDEO_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+async function videoDbRun(mode, fn) {
+    const db = await videoDbOpen();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(VIDEO_STORE, mode);
+        const req = fn(tx.objectStore(VIDEO_STORE));
+        tx.oncomplete = () => { db.close(); resolve(req ? req.result : undefined); };
+        tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+    });
+}
+const videoDbPut = (id, blob) => videoDbRun('readwrite', st => st.put(blob, id));
+const videoDbGet = id => videoDbRun('readonly', st => st.get(id));
+const videoDbDelete = id => videoDbRun('readwrite', st => st.delete(id));
+
+// Points every locally stored <video data-idb-id> at its Blob.
+function hydrateLocalVideos(root) {
+    (root || document).querySelectorAll('video[data-idb-id]').forEach(el => {
+        const id = el.getAttribute('data-idb-id');
+        videoDbGet(id).then(blob => {
+            if (blob) { el.src = URL.createObjectURL(blob); return; }
+            const msg = L('This video is stored on another device.', 'هذا الفيديو محفوظ على جهاز آخر.');
+            el.outerHTML = `<div class="w-full h-full flex items-center justify-center text-xs text-slate-400 p-4 text-center">${msg}</div>`;
+        }).catch(() => { /* leave the empty player */ });
     });
 }
 
-function handleAddVideoSubmit(e) {
+function previewAboutVideoFile(event) {
+    const file = event.target.files && event.target.files[0];
+    const nameBox = document.getElementById('aboutVideoFileName');
+    if (!file) return;
+    const looksLikeVideo = (file.type && file.type.startsWith('video/')) || VIDEO_EXT_RE.test(file.name);
+    if (!looksLikeVideo) {
+        event.target.value = '';
+        showToast(L('Please choose a video file.', 'يرجى اختيار ملف فيديو.'), 'error');
+        return;
+    }
+    if (file.size > VIDEO_MAX_BYTES) {
+        event.target.value = '';
+        showToast(L('That video is too large (max 500 MB).', 'هذا الفيديو كبير جداً (الحد الأقصى 500 ميجابايت).'), 'error');
+        return;
+    }
+    pendingAboutVideoFile = file;
+    if (nameBox) nameBox.textContent = `${L('Selected', 'تم اختيار')}: ${file.name} (${(file.size / 1048576).toFixed(1)} MB)`;
+}
+
+async function handleAddVideoSubmit(e) {
     e.preventDefault();
     if (!canEditAbout()) {
         showToast(L('Only admins can edit this section.', 'هذا القسم للمسؤولين فقط.'), 'error');
         return;
     }
     const title = document.getElementById('aboutVideoTitle').value.trim();
-    const url = pendingAboutVideoData;
-    if (!title || !url) {
+    const file = pendingAboutVideoFile;
+    if (!title || !file) {
         showToast(L('Please add a title and choose a video file.', 'يرجى إضافة عنوان واختيار ملف فيديو.'), 'error');
         return;
     }
+    const btn = e.target.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); }
 
-    if (!getVideoEmbed(url)) {
-        showToast(L('That video file could not be used — try a different file.', 'تعذر استخدام ملف الفيديو هذا — جرّب ملفاً آخر.'), 'error');
-        return;
+    const id = createDateBasedId('VID');
+    let url = null;
+
+    // 1) Cloud upload (visible on every device)
+    try {
+        if (typeof supabaseClient !== 'undefined' && supabaseClient && cloud && cloud.ready && file.size <= 50 * 1024 * 1024) {
+            const ext = ((file.name.match(/\.(\w+)$/) || [])[1] || 'mp4').toLowerCase();
+            const path = `videos/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+            const { error } = await supabaseClient.storage.from(CLOUD_BUCKET).upload(path, file, { contentType: file.type || 'video/mp4', upsert: true });
+            if (!error) url = supabaseClient.storage.from(CLOUD_BUCKET).getPublicUrl(path).data.publicUrl;
+        }
+    } catch (err) { /* fall back to this device */ }
+
+    // 2) Local copy on this device
+    if (!url) {
+        try {
+            await videoDbPut(id, file);
+            url = 'idb:' + id;
+        } catch (err) {
+            showToast(L('Could not save the video on this device.', 'تعذر حفظ الفيديو على هذا الجهاز.'), 'error');
+            if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); }
+            return;
+        }
     }
 
     state.aboutVideos = loadAboutVideos();
-    state.aboutVideos.push({
-        id: createDateBasedId('VID'),
-        title,
-        url,
-        addedBy: state.currentUser.username,
-        addedAt: new Date().toISOString()
-    });
+    state.aboutVideos.push({ id, title, url, addedBy: state.currentUser.username, addedAt: new Date().toISOString() });
     try {
         saveState();
     } catch (err) {
         state.aboutVideos.pop();
         showToast(L('Storage is full — remove an old video first.', 'مساحة التخزين ممتلئة — احذف فيديو قديم أولاً.'), 'error');
+        if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); }
         return;
     }
-    pendingAboutVideoData = null;
-    showToast(L('Video added.', 'تمت إضافة الفيديو.'), 'success');
+    pendingAboutVideoFile = null;
+    showToast(url.startsWith('idb:')
+        ? L('Video added (saved on this device).', 'تمت إضافة الفيديو (محفوظ على هذا الجهاز).')
+        : L('Video added.', 'تمت إضافة الفيديو.'), 'success');
     renderAboutVideos();
 }
 
@@ -4706,6 +4768,8 @@ function removeAboutVideo(videoId) {
         return;
     }
     if (!confirm(L('Remove this video?', 'حذف هذا الفيديو؟'))) return;
+    const gone = loadAboutVideos().find(v => v.id === videoId);
+    if (gone && String(gone.url).startsWith('idb:')) videoDbDelete(gone.url.slice(4)).catch(() => {});
     state.aboutVideos = loadAboutVideos().filter(v => v.id !== videoId);
     saveState();
     showToast(L('Video removed.', 'تم حذف الفيديو.'), 'success');
@@ -5196,7 +5260,7 @@ function renderAdminDashboard() {
     if (!state.currentUser || !isStaffRole(state.currentUser.role)) return;
 
     const isHeadAdmin = isTopAdmin(state.currentUser.role);
-    const isRealHead = state.currentUser.role === 'head-admin';
+    const isRealHead = isTopAdmin(state.currentUser.role);
     const isHR = state.currentUser.role === 'hr';
     const isTechnician = state.currentUser.role === 'technician';
     if (isHeadAdmin && purgeOrphans()) saveState();
@@ -7558,7 +7622,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!box) return;
         if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { box.innerHTML = ''; return; }
 
-        const isRealHead = state.currentUser.role === 'head-admin';
+        const isRealHead = isTopAdmin(state.currentUser.role);
         const editing = editingStaffId ? state.users.find(u => u.id === editingStaffId) : null;
         const cats = getStaffCategories();
         const catOptions = Object.keys(cats)
@@ -7918,7 +7982,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function renderTeamCards() {
         const grid = document.getElementById('manageTeamGrid');
         if (!grid || !state.currentUser || !isTopAdmin(state.currentUser.role)) return;
-        const isRealHead = state.currentUser.role === 'head-admin';
+        const isRealHead = isTopAdmin(state.currentUser.role);
         const searchBox = document.getElementById('manageTeamSearch');
         const term = searchBox ? searchBox.value.trim().toLowerCase() : '';
         const staff = state.users
@@ -8252,8 +8316,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         let role = null;
         let position = null;
         if (category === 'executive') {
-            if (state.currentUser.role !== 'head-admin') {
-                showToast('Only the Admin can add or delete an Executive Director.', 'error');
+            if (!isTopAdmin(state.currentUser.role)) {
+                showToast('Only the Admin or the Executive Director can add or delete an Executive Director.', 'error');
                 return;
             }
             role = 'executive';
@@ -8287,7 +8351,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         // ---- Edit an existing employee ----
         if (editingStaffId) {
             if (!editingUser) { showToast('Employee not found.', 'error'); closeStaffAccountModal(); return; }
-            if (editingUser.role === 'head-admin' || (editingUser.role === 'executive' && state.currentUser.role !== 'head-admin')) {
+            if (editingUser.role === 'head-admin' || (editingUser.role === 'executive' && !isTopAdmin(state.currentUser.role))) {
                 showToast('Only the Admin can add or delete an Executive Director.', 'error');
                 return;
             }

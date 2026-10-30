@@ -436,3 +436,67 @@ footer::before { top: 0; }
 #adminTasksSection thead tr { letter-spacing: .04em; font-size: 10px; }
 #adminTasksSection tbody tr { transition: background-color .15s ease; }
 #adminTasksSection tbody tr:hover { background: rgba(14,165,233,.06); }
+
+/* ================= ADMIN DASHBOARD — polish ================= */
+#view-admin-dashboard, #view-customer-log { --dash-radius: 1.25rem; }
+
+/* Hero */
+#view-admin-dashboard > div:first-child {
+    background: radial-gradient(120% 140% at 0% 0%, #0369a1 0%, #0c4a6e 45%, #0f172a 100%) !important;
+    border: 0 !important;
+    box-shadow: 0 20px 40px -20px rgba(3, 105, 161, .65);
+}
+#view-admin-dashboard > div:first-child h1 { letter-spacing: -.02em; }
+
+/* Stat cards */
+#adminAnalyticsGrid .dash-card, #adminTopCountersGrid .dash-card {
+    background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+    padding: 1.5rem;
+}
+.dark #adminAnalyticsGrid .dash-card, .dark #adminTopCountersGrid .dash-card {
+    background: linear-gradient(180deg, #0f172a 0%, #0b1220 100%);
+}
+#adminAnalyticsGrid .dash-card h3, #adminTopCountersGrid .dash-card h3 {
+    font-size: 2rem; line-height: 1.1; letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+}
+.dash-card::after {                       /* soft accent glow in the corner */
+    content: ""; position: absolute; inset-block-start: -2.5rem; inset-inline-end: -2.5rem;
+    width: 7rem; height: 7rem; border-radius: 50%;
+    background: var(--dash-accent, #0ea5e9); opacity: .08; pointer-events: none;
+}
+.dash-icon { box-shadow: inset 0 0 0 1px rgba(14, 165, 233, .15); }
+
+/* Panels (task board, customers, orders, chats) */
+#view-admin-dashboard > div.bg-white, #view-admin-dashboard #adminTasksSection > div,
+#view-customer-log > div.bg-white, #view-customer-log #adminUsersSection, #view-customer-log #adminOrdersSection {
+    border-radius: var(--dash-radius);
+    border-color: #e2e8f0;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 10px 28px -16px rgba(15, 23, 42, .18);
+}
+.dark #view-admin-dashboard #adminTasksSection > div, .dark #view-customer-log #adminUsersSection,
+.dark #view-customer-log #adminOrdersSection { border-color: #1e293b; }
+
+/* Tables */
+#view-admin-dashboard table, #view-customer-log table { border-collapse: separate; border-spacing: 0; }
+#view-admin-dashboard thead tr, #view-customer-log thead tr {
+    background: #f1f5f9 !important; color: #64748b; font-size: 10px; letter-spacing: .06em;
+}
+.dark #view-admin-dashboard thead tr, .dark #view-customer-log thead tr { background: #172033 !important; color: #94a3b8; }
+#view-admin-dashboard tbody tr, #view-customer-log tbody tr { transition: background-color .15s ease; }
+#view-admin-dashboard tbody tr:nth-child(even), #view-customer-log #adminUsersTable tr:nth-child(even) { background: rgba(148, 163, 184, .06); }
+#view-admin-dashboard tbody tr:hover, #view-customer-log #adminUsersTable tr:hover { background: rgba(14, 165, 233, .08); }
+#view-admin-dashboard td, #view-customer-log #adminUsersTable td { vertical-align: middle; }
+
+/* Task counters / filters */
+.dash-counter { border-radius: 1rem; }
+.dash-counter.is-active { box-shadow: 0 10px 24px -14px rgba(14, 165, 233, .6); }
+
+/* Search & select fields */
+#view-admin-dashboard input[type="text"], #view-customer-log input[type="text"], #view-customer-log input[type="search"],
+#view-customer-log select { border-radius: .85rem; transition: box-shadow .15s ease, border-color .15s ease; }
+
+/* Slim scrollbars inside panels */
+#view-admin-dashboard .custom-scrollbar::-webkit-scrollbar, #view-customer-log .custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+#view-admin-dashboard .custom-scrollbar::-webkit-scrollbar-thumb, #view-customer-log .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, .35); border-radius: 999px;
+}
