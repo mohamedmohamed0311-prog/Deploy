@@ -684,8 +684,8 @@ const TASK_COUNTERS = [
     { key: 'unassigned', en: 'Not Assigned', ar: 'غير معيّن', color: 'text-yellow-500', icon: 'fa-user-clock', match: t => isTaskUnassigned(t) },
     { key: 'awaiting', en: 'Assigned but Not Accepted', ar: 'معيّنة – لم تُقبل بعد', color: 'text-orange-500', icon: 'fa-hourglass-half', match: t => !isTaskUnassigned(t) && t.status === 'Open' && !t.delay },
     { key: 'late', en: 'Late', ar: 'متأخر', color: 'text-red-500', icon: 'fa-triangle-exclamation', match: t => isTaskLate(t) },
-    { key: 'delayed', en: 'Delayed Fixes', ar: 'إصلاحات مؤجلة', color: 'text-fuchsia-500', icon: 'fa-calendar-xmark', match: t => getDelayState(t) === 'delayed' },
-    { key: 'returned', en: 'Returned Fixes', ar: 'إصلاحات عادت للجدولة', color: 'text-teal-500', icon: 'fa-calendar-check', match: t => getDelayState(t) === 'returned' },
+    // One counter for both: a fix on hold (delayed) and a fix whose delay date has come (returned).
+    { key: 'delayed', en: 'Delayed & Returned Fixes', ar: 'إصلاحات مؤجلة وعائدة', color: 'text-fuchsia-500', icon: 'fa-calendar-xmark', match: t => !!getDelayState(t) },
     { key: 'replace', en: 'Replace Piece', ar: 'استبدال قطعة', color: 'text-rose-500', icon: 'fa-gears', match: t => getTaskPhase(t) === 'replace' },
     { key: 'workshop', en: 'Fix in Workshop', ar: 'إصلاح في الورشة', color: 'text-violet-500', icon: 'fa-industry', match: t => getTaskPhase(t) === 'workshop' },
     { key: 'withdraw', en: 'Withdraw Get It', ar: 'سحب – استلام', color: 'text-amber-600', icon: 'fa-truck-ramp-box', match: t => getTaskPhase(t) === 'withdraw' },
@@ -721,9 +721,12 @@ function renderTaskCounters() {
         const active = activeTaskCounter === d.key;
         return `
         <button type="button" onclick="setTaskFilter('${d.key}')" aria-pressed="${active}"
-            class="text-start rounded-xl border px-5 py-4 transition hover:border-sky-400 ${active ? 'border-sky-500 ring-2 ring-sky-400/40 bg-sky-50 dark:bg-sky-950/30' : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50'}">
-            <span class="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase"><i class="fa-solid ${d.icon} ${d.color} text-base"></i>${L(d.en, d.ar)}</span>
-            <span class="block text-3xl font-extrabold mt-1 ${c[d.key] ? d.color : 'text-slate-300 dark:text-slate-600'}">${c[d.key]}</span>
+            class="dash-counter text-start rounded-2xl border px-4 py-4 ${active ? 'is-active border-sky-500 ring-2 ring-sky-400/40 bg-sky-50 dark:bg-sky-950/30' : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900'}">
+            <span class="flex items-start justify-between gap-2">
+                <span class="text-[11px] font-bold text-slate-400 uppercase leading-snug">${L(d.en, d.ar)}</span>
+                <i class="fa-solid ${d.icon} ${d.color} text-sm opacity-80"></i>
+            </span>
+            <span class="block text-3xl font-extrabold mt-2 ${c[d.key] ? d.color : 'text-slate-300 dark:text-slate-600'}">${c[d.key]}</span>
         </button>`;
     }).join('');
 }
@@ -2240,6 +2243,11 @@ Object.assign(AR_UI, {
 });
 
 const AR_PATTERNS = [
+    [/^Cloud save failed: (.+)$/, m => `فشل الحفظ السحابي: ${m[1]}`],
+    [/^Backup error: (.+)$/, m => `خطأ في النسخ الاحتياطي: ${m[1]}`],
+    [/^Task Assigned: (.+)$/, m => `تم تعيين المهمة: ${m[1]}`],
+    [/^(.+): task assigned to @(.+)\.$/, m => `${trCore(m[1]) || m[1]}: تم تعيين المهمة إلى @${m[2]}.`],
+    [/^(.+): task withdrawn from @(.+) and reassigned to @(.+)\.$/, m => `${trCore(m[1]) || m[1]}: تم سحب المهمة من @${m[2]} وإعادة تعيينها إلى @${m[3]}.`],
     [/^Welcome back, (.+)!$/, m => `مرحباً بعودتك، ${m[1]}!`],
     [/^Welcome back, (.+)$/, m => `مرحباً بعودتك، ${m[1]}`],
     [/^Welcome (.+)! Your account has been registered\.$/, m => `مرحباً ${m[1]}! تم تسجيل حسابك.`],
@@ -2327,6 +2335,7 @@ Object.assign(AR_UI, {
     'Employee': 'الموظف',
     'Category – Job': 'القسم – الوظيفة',
     'This Month': 'هذا الشهر',
+    'Eng. Ahmed': 'م. أحمد',
     'Customer Rating': 'تقييم العميل',
     'Your Rating': 'تقييمك',
     'Jobs': 'المهام',
@@ -2365,6 +2374,45 @@ AR_PATTERNS.push(
 
 Object.assign(AR_UI, {
     'Search by name, username or job...': 'ابحث بالاسم أو اسم المستخدم أو الوظيفة...'
+});
+
+// ----- extra coverage: chats, statuses, messages that had no Arabic yet -----
+Object.assign(AR_UI, {
+    'Approved': 'تمت الموافقة', 'Pending': 'قيد الانتظار', 'Cancelled': 'ملغي', 'Closed': 'مغلقة', 'Late': 'متأخر', 'Low': 'منخفضة',
+    'Customer Chats': 'محادثات العملاء',
+    'Current chats': 'المحادثات الحالية',
+    'Chat history': 'سجل المحادثات',
+    'New chats': 'محادثات جديدة',
+    'View only': 'عرض فقط',
+    'Conversations from the Contact Us bot. Any Customer Services agent can open a chat and answer it; the admin sees who answered.': 'محادثات من مساعد تواصل معنا. يمكن لأي موظف خدمة عملاء فتح المحادثة والرد عليها؛ ويرى المسؤول من قام بالرد.',
+    'Download Excel': 'تحميل إكسل',
+    'Download all orders as an Excel sheet': 'تحميل كل الطلبات كملف إكسل',
+    'Edit contact details': 'تعديل بيانات التواصل',
+    'Email': 'البريد الإلكتروني',
+    'Hotline': 'الخط الساخن',
+    'Menu': 'القائمة',
+    'Save': 'حفظ',
+    'Order & Request Details': 'تفاصيل الطلب',
+    'e.g., USR-20260911000006': 'مثال: USR-20260911000006',
+    'e.g., Warehouse': 'مثال: المخزن',
+    'e.g., Team Leader': 'مثال: قائد فريق',
+    'Back': 'رجوع',
+    'No image': 'لا توجد صورة',
+    'YouTube video': 'فيديو يوتيوب',
+    'Photo must be under 1 MB.': 'يجب أن تكون الصورة أقل من 1 ميجابايت.',
+    'WhatsApp number already taken.': 'رقم الواتساب مستخدم بالفعل.',
+    'Contact number already taken.': 'رقم التواصل مستخدم بالفعل.',
+    'Password must be at least 6 characters: letters, digits or _ only.': 'كلمة السر 6 أحرف على الأقل: حروف أو أرقام أو _ فقط.',
+    'Supabase SDK not connected.': 'لم يتم الاتصال بمكتبة Supabase.',
+    'Supabase connection error. Check console for details.': 'خطأ في الاتصال بـ Supabase. راجع وحدة التحكم للتفاصيل.',
+    'Delayed & Returned Fixes': 'إصلاحات مؤجلة وعائدة',
+    // chats (customer side + admin history)
+    'End chat': 'إنهاء المحادثة',
+    'Search chats by customer, phone, agent or message...': 'ابحث في المحادثات بالعميل أو الهاتف أو الموظف أو الرسالة...',
+    'All ratings': 'كل التقييمات', 'Unrated': 'بدون تقييم', 'All agents': 'كل الموظفين', 'Anyone': 'أي طرف',
+    'Closed by customer': 'أنهاها العميل', 'Closed by agent': 'أغلقها الموظف',
+    'Export CSV': 'تصدير CSV',
+    'Chat ended by the customer.': 'أنهى العميل المحادثة.'
 });
 
 const AR_ATTRS = ['placeholder', 'title', 'aria-label', 'alt'];
@@ -2476,7 +2524,7 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
-    if (viewId === 'arabi' && (!state.currentUser || (!isTopAdmin(state.currentUser.role) && state.currentUser.role !== 'hr'))) {
+    if (viewId === 'arabi' && !canUseArabi()) {
         showToast('Access restricted to administrators only.', 'error');
         try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
         navigateTo('home', true);
@@ -4215,6 +4263,19 @@ function placeOrder(title, price, type) {
 // ================= WHO ARE WE - TEAM PROFILES =================
 // Every staff account is shown as a full mini-profile: a big photo first,
 // then the name, job title and a short description with the account details.
+// Section heading used on the Who We Are page: icon tile + title + a fading line.
+function whoSectionTitle(icon, text, sub) {
+    return `
+    <div class="flex items-center gap-3">
+        <span class="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0"><i class="fa-solid ${icon}"></i></span>
+        <div class="min-w-0">
+            <h2 class="text-lg font-extrabold leading-tight">${text}</h2>
+            ${sub ? `<p class="text-[11px] text-slate-400">${sub}</p>` : ''}
+        </div>
+        <span class="flex-1 h-px bg-gradient-to-r from-sky-300/70 to-transparent dark:from-sky-700/60"></span>
+    </div>`;
+}
+
 function renderWhoWeAreDetails() {
     renderManagePanel();
     const headBox = document.getElementById('whoWeAreHead');
@@ -4227,6 +4288,26 @@ function renderWhoWeAreDetails() {
     const technicians = state.users.filter(u => u.role === 'technician');
     const hrTeam = state.users.filter(u => u.role === 'hr');
 
+    // Hero numbers
+    const stat = (icon, n, label) => `
+        <div class="flex items-center gap-3 rounded-2xl bg-white/15 border border-white/25 backdrop-blur px-4 py-3">
+            <i class="fa-solid ${icon} text-lg text-sky-100"></i>
+            <div><span class="block text-xl font-extrabold leading-none">${n}</span><span class="block text-[10px] font-bold uppercase tracking-wide text-sky-100 mt-1">${label}</span></div>
+        </div>`;
+    const statsBox = document.getElementById('whoStats');
+    if (statsBox) {
+        statsBox.innerHTML =
+            stat('fa-crown', heads.length + executives.length, L('Leadership', 'القيادة')) +
+            stat('fa-screwdriver-wrench', technicians.length, t('technicians_header', 'Technical Team')) +
+            stat('fa-headset', hrTeam.length, t('hr_header', 'Customer Service Team'));
+    }
+    const manageHead = document.getElementById('whoManageHeading');
+    if (manageHead) manageHead.innerHTML = whoSectionTitle('fa-sliders', L('Management Tools', 'أدوات الإدارة'), L('Team accounts and labor performance', 'حسابات الفريق وأداء العمال'));
+    const techCount = document.getElementById('whoTechCount');
+    if (techCount) techCount.textContent = technicians.length;
+    const hrCount = document.getElementById('whoHrCount');
+    if (hrCount) hrCount.textContent = hrTeam.length;
+
     const bigAvatar = (u, boxCls, iconCls) => `
         <div class="${boxCls} flex items-center justify-center shrink-0 overflow-hidden">
             ${u.photo
@@ -4234,68 +4315,70 @@ function renderWhoWeAreDetails() {
             : `<i class="fa-solid fa-user ${iconCls}"></i>`}
         </div>`;
 
-    // Head admin — full-width highlighted profile with a big photo and a description
-    const headHtml = heads.length === 0 ? '' : `
-        <div class="bg-gradient-to-br from-sky-900 to-slate-900 text-white rounded-3xl border border-sky-800 p-6 sm:p-8 shadow-sm">
-            ${heads.map(u => `
-            <div class="flex flex-col sm:flex-row items-center sm:items-start gap-6 text-center sm:text-start">
-                ${bigAvatar(u, 'w-28 h-28 rounded-3xl bg-white/10 border border-white/20 text-white/60', 'text-5xl')}
+    // ---- Leadership: Head Admin (featured) next to the Executive Director ----
+    const headCards = heads.map(u => `
+        <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-sky-900 via-sky-800 to-slate-900 text-white border border-sky-700/60 p-6 sm:p-8 shadow-lg">
+            <span class="pointer-events-none absolute -top-16 -end-16 w-56 h-56 rounded-full bg-sky-400/10 ring-1 ring-white/10"></span>
+            <span class="pointer-events-none absolute -bottom-20 -start-10 w-48 h-48 rounded-full bg-cyan-400/10"></span>
+            <div class="relative flex flex-col sm:flex-row items-center gap-5 text-center sm:text-start">
+                ${bigAvatar(u, 'w-28 h-28 rounded-3xl bg-white/10 ring-4 ring-white/20 shadow-xl text-white/60', 'text-5xl')}
                 <div class="space-y-2 min-w-0">
-                    <div class="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
-                        <span class="text-xl font-extrabold">${escapeHtml(u.name || u.username)}</span>
-                        <span class="bg-sky-500 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] uppercase">${t('head_badge', 'Head')}</span>
-                    </div>
+                    <span class="inline-flex items-center gap-1.5 bg-amber-400 text-slate-900 font-extrabold px-2.5 py-1 rounded-lg text-[10px] uppercase"><i class="fa-solid fa-crown"></i>${t('head_badge', 'Head')}</span>
+                    <span class="block text-xl sm:text-2xl font-extrabold truncate" dir="auto">${escapeHtml(u.name || u.username)}</span>
                     <p class="text-xs text-sky-200 font-bold">${getRoleLabel('head-admin')}</p>
-                    ${renderStaffRating(u.username)}
                 </div>
-            </div>`).join('')}
-        </div>
-    `;
-
-    // Executive Director — works alongside the head admin, shown right under the Admin card
-    const execHtml = executives.length === 0 ? '' : `
-        <div class="mt-4 bg-white dark:bg-slate-900 rounded-3xl border border-sky-200 dark:border-sky-900 p-5 sm:p-6 shadow-sm space-y-5">
-            ${executives.map(u => `
-            <div class="flex flex-col sm:flex-row items-center sm:items-start gap-5 text-center sm:text-start">
-                ${bigAvatar(u, 'w-24 h-24 rounded-3xl bg-sky-50 dark:bg-sky-950 text-sky-500', 'text-4xl')}
+            </div>
+        </div>`).join('');
+    const execCards = executives.map(u => `
+        <div class="relative overflow-hidden rounded-3xl bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-900 p-6 sm:p-8 shadow-sm">
+            <span class="pointer-events-none absolute -top-16 -end-16 w-48 h-48 rounded-full bg-sky-100/70 dark:bg-sky-900/20"></span>
+            <div class="relative flex flex-col sm:flex-row items-center gap-5 text-center sm:text-start">
+                ${bigAvatar(u, 'w-24 h-24 rounded-3xl bg-sky-50 dark:bg-sky-950 ring-4 ring-sky-100 dark:ring-sky-900 shadow-md text-sky-500', 'text-4xl')}
                 <div class="space-y-2 min-w-0">
-                    <div class="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
-                        <span class="text-lg font-extrabold">${escapeHtml(u.name || u.username)}</span>
-                        <span class="bg-sky-500 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] uppercase">${escapeHtml(getRoleLabel('executive'))}</span>
-                    </div>
-                    ${renderStaffRating(u.username)}
+                    <span class="inline-flex items-center gap-1.5 bg-sky-500 text-white font-extrabold px-2.5 py-1 rounded-lg text-[10px] uppercase"><i class="fa-solid fa-star"></i>${escapeHtml(getRoleLabel('executive'))}</span>
+                    <span class="block text-lg sm:text-xl font-extrabold truncate" dir="auto">${escapeHtml(u.name || u.username)}</span>
+                    <div class="flex justify-center sm:justify-start">${renderStaffRating(u.username)}</div>
                 </div>
-            </div>`).join('')}
-        </div>
-    `;
-    headBox.innerHTML = headHtml + execHtml;
+            </div>
+        </div>`).join('');
+    headBox.innerHTML = (heads.length || executives.length)
+        ? whoSectionTitle('fa-crown', L('Leadership', 'القيادة'), L('Management of Cooling Art', 'إدارة كولينج آرت')) +
+          `<div class="grid grid-cols-1 ${heads.length && executives.length ? 'lg:grid-cols-2' : ''} gap-5">${headCards}${execCards}</div>`
+        : '';
 
-    // Technicians & Customer Services — big photo first, then name / job / description
-    const renderMiniList = (users, roleLabel, ratingFn) => {
-        if (users.length === 0) {
-            return `<p class="text-xs text-slate-400 text-center p-6">No accounts registered yet.</p>`;
-        }
-        return `
-            <ul class="divide-y divide-slate-100 dark:divide-slate-800">
-                ${users.map(u => `
-                    <li class="p-5 flex items-start gap-4 hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        ${bigAvatar(u, 'w-20 h-20 rounded-2xl bg-sky-50 dark:bg-sky-950 text-sky-500', 'text-3xl')}
-                        <div class="min-w-0 space-y-1">
-                            <span class="text-sm font-bold block">${escapeHtml(u.name || u.username)}</span>
-                            <span class="text-[10px] text-sky-600 dark:text-sky-400 uppercase font-extrabold">${escapeHtml(getPositionLabel(u))}</span>
-                            ${ratingFn(u.username)}
-                        </div>
-                    </li>
-                `).join('')}
-            </ul>
-        `;
-    };
+    // ---- Team member cards: photo on a colour band, then name, job and rating ----
+    const memberCard = (u, ratingFn, band) => `
+        <div class="group rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden text-center transition hover:-translate-y-1 hover:shadow-lg hover:border-sky-300 dark:hover:border-sky-700">
+            <div class="h-14 ${band}"></div>
+            <div class="px-3 pb-4 -mt-8">
+                ${bigAvatar(u, 'w-16 h-16 mx-auto rounded-2xl bg-sky-50 dark:bg-sky-950 text-sky-500 ring-4 ring-white dark:ring-slate-900 shadow-md', 'text-2xl')}
+                <span class="block mt-2 text-sm font-extrabold truncate" dir="auto">${escapeHtml(u.name || u.username)}</span>
+                <span class="inline-block mt-1 max-w-full truncate text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400">${escapeHtml(getPositionLabel(u))}</span>
+                <div class="flex justify-center mt-1.5">${ratingFn(u.username)}</div>
+            </div>
+        </div>`;
+    const groupLabel = (icon, text, n) => `
+        <p class="col-span-full flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+            <i class="fa-solid ${icon} text-sky-500"></i>${text}<span class="px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">${n}</span><span class="flex-1 h-px bg-slate-100 dark:bg-slate-800"></span>
+        </p>`;
+    const emptyState = () => `
+        <div class="text-center py-8 text-slate-400">
+            <i class="fa-regular fa-user text-3xl mb-2"></i>
+            <p class="text-xs font-bold">No accounts registered yet.</p>
+        </div>`;
+    const grid = inner => `<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">${inner}</div>`;
 
     // Technicians are rated per finished job (renderStaffRating); Customer
     // Services are rated per finished chat (renderCsRating) — see the star
     // prompt shown to the customer once a CS conversation ends.
-    techList.innerHTML = renderMiniList(technicians, getRoleLabel('technician'), renderStaffRating);
-    hrList.innerHTML = renderMiniList(hrTeam, getRoleLabel('hr'), renderCsRating);
+    const techBand = 'bg-gradient-to-br from-sky-500 via-sky-400 to-cyan-300 dark:from-sky-800 dark:via-sky-700 dark:to-cyan-700';
+    const hrBand = 'bg-gradient-to-br from-purple-500 via-fuchsia-400 to-pink-300 dark:from-purple-800 dark:via-fuchsia-700 dark:to-pink-700';
+    const mainTechs = technicians.filter(u => !isAssistantUser(u));
+    const assistants = technicians.filter(u => isAssistantUser(u));
+    techList.innerHTML = technicians.length === 0 ? emptyState() : grid(
+        (mainTechs.length ? groupLabel('fa-screwdriver-wrench', L('Technicians', 'الفنيون'), mainTechs.length) + mainTechs.map(u => memberCard(u, renderStaffRating, techBand)).join('') : '') +
+        (assistants.length ? groupLabel('fa-user-gear', L('Assistants', 'المساعدون'), assistants.length) + assistants.map(u => memberCard(u, renderStaffRating, techBand)).join('') : ''));
+    hrList.innerHTML = hrTeam.length === 0 ? emptyState() : grid(hrTeam.map(u => memberCard(u, renderCsRating, hrBand)).join(''));
 }
 
 // Average star rating a Customer Services agent has received from customers
@@ -5128,19 +5211,27 @@ function renderAdminDashboard() {
         const totalRev = Math.max(0, getAllRevenue() - state.revenueResetBaseline);
 
         grid.innerHTML = `
-            <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+            <div class="dash-card dash-accent-sky p-6 space-y-3">
                 <div class="flex items-start justify-between gap-3">
-                    <span class="text-xs font-bold text-slate-400 uppercase">Total Revenue</span>
+                    <div class="flex items-center gap-3">
+                        <span class="dash-icon bg-sky-100 dark:bg-sky-950 text-sky-500"><i class="fa-solid fa-sack-dollar"></i></span>
+                        <span class="text-xs font-bold text-slate-400 uppercase tracking-wide">Total Revenue</span>
+                    </div>
                     <button onclick="confirmResetTotalRevenue()" class="text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition">Reset</button>
                 </div>
-                <h3 class="text-2xl font-extrabold text-sky-600 dark:text-sky-400 mt-1">${totalRev.toLocaleString()} EGP</h3>
-                <p class="text-[10px] text-slate-400">${L('Includes Arabi customers', 'يشمل عملاء عربي')}: ${getArabiCollectedAmount().toLocaleString()} EGP</p>
-                <p class="text-[10px] text-slate-400">${L('Includes imported customers', 'يشمل العملاء المستوردين')}: ${getSheetCollectedAmount().toLocaleString()} EGP</p>
+                <h3 class="text-3xl font-extrabold text-sky-600 dark:text-sky-400">${totalRev.toLocaleString()} <span class="text-sm font-bold text-slate-400">EGP</span></h3>
+                <div class="flex flex-wrap gap-2 pt-1">
+                    <span class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">${L('Arabi customers', 'عملاء عربي')}: ${getArabiCollectedAmount().toLocaleString()} EGP</span>
+                    <span class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">${L('Imported customers', 'العملاء المستوردين')}: ${getSheetCollectedAmount().toLocaleString()} EGP</span>
+                </div>
                 ${state.revenueResetBaseline ? '<p class="text-[10px] text-slate-400">Revenue is currently counted from the last reset.</p>' : ''}
             </div>
-            <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
-                <span class="text-xs font-bold text-slate-400 uppercase">${t('customers', 'Customers')}</span>
-                <h3 class="text-2xl font-extrabold mt-1">${state.users.filter(u => u.role === 'customer').length}</h3>
+            <div class="dash-card dash-accent-emerald p-6 flex items-center gap-4">
+                <span class="dash-icon dash-icon-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-500"><i class="fa-solid fa-users"></i></span>
+                <div>
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wide">${t('customers', 'Customers')}</span>
+                    <h3 class="text-3xl font-extrabold mt-0.5">${state.users.filter(u => u.role === 'customer').length}</h3>
+                </div>
             </div>
         `;
     } else {
@@ -5159,15 +5250,15 @@ function renderAdminDashboard() {
                 o.customerFeedback && typeof o.customerFeedback.rating === 'number' && o.customerFeedback.rating <= 2
             ).length;
             topCounters.innerHTML = `
-                <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center gap-4">
-                    <div class="w-12 h-12 rounded-2xl bg-sky-100 dark:bg-sky-950 text-sky-500 flex items-center justify-center text-xl shrink-0"><i class="fa-solid fa-list-check"></i></div>
+                <div class="dash-card dash-accent-sky p-6 flex items-center gap-4">
+                    <div class="dash-icon dash-icon-lg bg-sky-100 dark:bg-sky-950 text-sky-500"><i class="fa-solid fa-list-check"></i></div>
                     <div>
                         <span class="text-xs font-bold text-slate-400 uppercase">${t('total_tasks')}</span>
                         <h3 class="text-2xl font-extrabold mt-0.5">${totalTasksCount}</h3>
                     </div>
                 </div>
-                <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center gap-4">
-                    <div class="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950 text-red-500 flex items-center justify-center text-xl shrink-0"><i class="fa-solid fa-star-half-stroke"></i></div>
+                <div class="dash-card dash-accent-red p-6 flex items-center gap-4">
+                    <div class="dash-icon dash-icon-lg bg-red-100 dark:bg-red-950 text-red-500"><i class="fa-solid fa-star-half-stroke"></i></div>
                     <div>
                         <span class="text-xs font-bold text-slate-400 uppercase">${t('negative_ratings')}</span>
                         <h3 class="text-2xl font-extrabold text-red-500 mt-0.5">${negativeRatingsCount}</h3>
@@ -5383,6 +5474,13 @@ function folderOrigins(f) {
     };
 }
 
+// Customer Services never sees folders that exist only because of the Arabi sheet.
+function folderVisibleToViewer(f) {
+    if (canUseArabi()) return true;
+    const o = folderOrigins(f);
+    return !(o.arabi && !o.ours);
+}
+
 // Copies Arabi customers (from the Arabi extraction tasks) and registered customers into the folders.
 // Safe to run again and again: only missing folders / history lines are added.
 function syncCustomerLogSources() {
@@ -5570,6 +5668,11 @@ function loadImportLedger() {
 }
 function saveImportLedger(items) {
     localStorage.setItem(IMPORT_LEDGER_KEY, JSON.stringify(items));
+}
+
+// Arabi Extraction (page, Excel import, delete) is for the admin only - Customer Services has no access.
+function canUseArabi() {
+    return !!state.currentUser && isTopAdmin(state.currentUser.role);
 }
 
 function canImportCustomers() {
@@ -5852,7 +5955,7 @@ function buildIntakeFolderHtml(folder) {
             ${folder.phone ? `<span dir="ltr" class="text-xs text-slate-500 font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(folder.phone)}</span>` : ''}
             ${profile ? chip('@' + escapeHtml(profile.username), 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400') : ''}
             ${origins.ours ? chip(L('Ours', 'عملاؤنا'), 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400') : ''}
-            ${origins.arabi ? chip(L('Arabi', 'عربي'), 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400') : ''}
+            ${origins.arabi && canUseArabi() ? chip(L('Arabi', 'عربي'), 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400') : ''}
             <span class="ms-auto inline-flex items-center gap-2">
                 ${chip(`${issues} ${issues === 1 ? L('issue', 'عطل') : L('issues', 'أعطال')}`, 'bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400')}
                 ${openTasks ? chip(`${openTasks} ${L('open', 'مفتوحة')}`, 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400') : ''}
@@ -5910,12 +6013,14 @@ function renderCustomerFolders() {
     const lastActivity = f => Math.max(new Date(f.createdAt || 0).getTime(), ...(f.history || []).map(h => new Date(h.at || 0).getTime()));
     const tabsBox = document.getElementById('folderSourceTabs');
     if (tabsBox) {
-        const countOf = k => state.customerFolders.filter(f => k === 'all' || folderOrigins(f)[k]).length;
-        tabsBox.innerHTML = [['all', L('All', 'الكل')], ['ours', L('Our customers', 'عملاؤنا')], ['arabi', L('Arabi', 'عربي')]]
+        const countOf = k => state.customerFolders.filter(f => folderVisibleToViewer(f) && (k === 'all' || folderOrigins(f)[k])).length;
+        tabsBox.innerHTML = [['all', L('All', 'الكل')], ['ours', L('Our customers', 'عملاؤنا')], ...(canUseArabi() ? [['arabi', L('Arabi', 'عربي')]] : [])]
             .map(([k, label]) => `<button type="button" onclick="setFolderSource('${k}')" class="cs-tab ${folderSourceFilter === k ? 'active' : ''}">${label}<span class="cs-tab-count">${countOf(k)}</span></button>`).join('');
     }
 
+    if (folderSourceFilter === 'arabi' && !canUseArabi()) folderSourceFilter = 'all';
     const folders = state.customerFolders
+        .filter(folderVisibleToViewer)
         .filter(f => folderSourceFilter === 'all' || folderOrigins(f)[folderSourceFilter])
         .filter(f => {
             if (!term) return true;
@@ -6013,7 +6118,7 @@ function handleArabiFile(input) {
     const file = input.files && input.files[0];
     input.value = '';
     if (!file) return;
-    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    if (!canUseArabi()) return;
     if (typeof XLSX === 'undefined') {
         showToast(L('Excel reader could not load. Check your internet connection and refresh.', 'تعذر تحميل قارئ الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
         return;
@@ -6119,14 +6224,14 @@ function getArabiTasks() {
 }
 
 function deleteArabiRow(id) {
-    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    if (!canUseArabi()) return;
     state.tasks = state.tasks.filter(t => t.id !== id && t.parentTaskId !== id);
     saveState();
     renderArabiPage();
 }
 
 function clearArabiRows() {
-    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    if (!canUseArabi()) return;
     if (!confirm(L('Remove ALL Arabi rows and their tasks?', 'حذف كل صفوف عربي ومهامها؟'))) return;
     state.tasks = state.tasks.filter(t => t.source !== 'arabi');
     saveState();
@@ -8740,7 +8845,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (dashNav) dashNav.classList.toggle('hidden', !isTechnician);
         if (customerLogNav) customerLogNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (chatsNav) chatsNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
-        if (arabiNav) arabiNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
+        if (arabiNav) arabiNav.classList.toggle('hidden', !isTopAdmin(role));
         if (mapNav) mapNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (typeof updateChatsBadge === 'function') updateChatsBadge();
 
@@ -9129,6 +9234,43 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     let botChatId = null;
     let botMatchedUserId = null;
     let botRatingThen = null;    // optional callback to run once the customer rates (or skips) a CS chat
+    let botRatingChatId = null;  // the chat the rating prompt on screen is about
+
+    // ---- A customer's chat stays open until it is explicitly ended (by the customer or by an agent) ----
+    function botSamePhone(a, b) {
+        const x = intakePhoneDigits(a), y = intakePhoneDigits(b);
+        return x.length >= 7 && x === y;
+    }
+    function csFindOpenChatFor(userId) {
+        if (!userId) return null;
+        return loadCsChats()
+            .filter(c => c.status === 'open' && c.customerUserId === userId)
+            .sort((a, b) => String(b.lastActivity || '').localeCompare(String(a.lastActivity || '')))[0] || null;
+    }
+    // A chat the team closed while the customer was away and that was never rated or skipped (last 7 days).
+    function csFindUnratedClosedChatFor(userId) {
+        if (!userId) return null;
+        const since = Date.now() - 7 * 24 * 3600 * 1000;
+        return loadCsChats()
+            .filter(c => c.status === 'closed' && c.customerUserId === userId && !c.customerRating && !c.ratingSkipped
+                && new Date(c.closedAt || 0).getTime() > since)
+            .sort((a, b) => String(b.closedAt || '').localeCompare(String(a.closedAt || '')))[0] || null;
+    }
+    function botResumeChat(chat) {
+        const box = document.getElementById('chatBotMessages');
+        if (box) box.innerHTML = '';
+        botHideMenu();
+        botChatId = chat.id;
+        botName = chat.customerName || botName;
+        botPhone = chat.customerPhone || botPhone;
+        botMatchedUserId = chat.customerUserId || botMatchedUserId;
+        botStep = 'in_chat';
+        renderBotMessages();
+    }
+    function botSyncHeader() {
+        const end = document.getElementById('botEndBtn');
+        if (end) end.classList.toggle('hidden', !(botStep === 'in_chat' && botChatId));
+    }
 
     // Looks up the typed name against our registered accounts (case-insensitive,
     // matches full name, username, or first name so "ahmed" / "Ahmed" / "Ahmed Hassan"
@@ -9149,14 +9291,20 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function botStartNewChat() {
         botHideMenu();
         if (botStep === 'rate_cs') {
-            // Abandoning an in-progress rating prompt — just move on to a fresh chat.
+            // Leaving the rating prompt: count it as skipped so it is not asked again.
+            csMarkRatingSkipped(botRatingChatId);
             botRatingThen = null;
             botChatId = null;
             startBotConversation();
             return;
         }
         if (botStep === 'in_chat' && botChatId) {
-            // Give them a chance to rate the conversation they're leaving before resetting.
+            const cur = loadCsChats().find(c => c.id === botChatId);
+            if (cur && cur.status === 'open') {
+                // An open chat is never ended by accident: it stays open until the customer taps End chat.
+                botAddMessage('bot', L('Your chat is still open. Tap the stop icon at the top (End chat) when you are finished.', 'محادثتك ما زالت مفتوحة. اضغط على أيقونة الإيقاف بالأعلى (إنهاء المحادثة) عندما تنتهي.'));
+                return;
+            }
             const chatId = botChatId;
             botChatId = null;
             botAskCsRating(chatId, () => startBotConversation());
@@ -9164,6 +9312,34 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
         botChatId = null;
         startBotConversation();
+    }
+
+    // The customer ends the conversation on purpose: it moves to history, then they can rate it.
+    function botEndChat() {
+        if (botStep !== 'in_chat' || !botChatId) return;
+        if (!confirm(L('End this chat? You will not be able to send more messages in it.', 'إنهاء هذه المحادثة؟ لن تتمكن من إرسال رسائل أخرى فيها.'))) return;
+        const chats = loadCsChats();
+        const chat = chats.find(c => c.id === botChatId);
+        const chatId = botChatId;
+        if (chat && chat.status === 'open') {
+            const now = new Date().toISOString();
+            chat.status = 'closed';
+            chat.closedAt = now;
+            chat.closedBy = 'customer';
+            chat.messages.push({ from: 'system', text: 'Chat ended by the customer.', at: now });
+            chat.lastActivity = now;
+            saveCsChats(chats);
+            if (getCurrentViewId() === 'chats') renderAdminChats(); else updateChatsBadge();
+        }
+        botAddMessage('bot', L('You ended this conversation. It is saved in our chat history.', 'لقد أنهيت هذه المحادثة. تم حفظها في سجل المحادثات لدينا.'));
+        botAskCsRating(chatId);
+    }
+
+    function csMarkRatingSkipped(chatId) {
+        if (!chatId) return;
+        const chats = loadCsChats();
+        const chat = chats.find(c => c.id === chatId);
+        if (chat && !chat.customerRating && !chat.ratingSkipped) { chat.ratingSkipped = true; saveCsChats(chats); }
     }
 
     // Opens the sign-up form so an unregistered visitor can create an account.
@@ -9175,41 +9351,66 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         openAuthModal();
     }
 
-    // Invites the customer to rate the CS agent they just talked to. `andThen`
-    // (optional) runs once they've rated or skipped — used when they manually
-    // start a new chat mid-conversation instead of the agent closing it.
+    // Invites the customer to rate the conversation (stars + optional comment). `andThen`
+    // (optional) runs once they've rated or skipped.
     function botAskCsRating(chatId, andThen) {
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
-        if (chat && chat.customerRating) {
-            // Already rated (e.g. re-triggered by a poll) — skip straight past the prompt.
-            (andThen || finishCsRating)();
+        if (chat && (chat.customerRating || chat.ratingSkipped)) {
+            // Already rated / skipped (e.g. re-triggered by a poll) — move straight on.
+            botRatingChatId = chatId;
+            botStep = 'rate_cs';
+            botRatingThen = andThen || null;
+            proceedAfterCsRating();
             return;
         }
         botStep = 'rate_cs';
+        botRatingChatId = chatId;
         botRatingThen = andThen || null;
         botHideMenu();
         const stars = [1, 2, 3, 4, 5].map(n => `
-        <button type="button" onclick="submitCsRating('${chatId}', ${n})" class="text-2xl px-1 text-amber-400 hover:scale-110 transition" aria-label="${n}">
+        <button type="button" data-star="${n}" onclick="csPickStar(${n})" class="text-2xl px-1 text-slate-300 hover:scale-110 transition" aria-label="${n}">
             <i class="fa-solid fa-star"></i>
         </button>`).join('');
-        botAddMessage('bot', `${L('Before you go — how was your experience with our Customer Service team?', 'قبل أن تغادر — كيف كانت تجربتك مع فريق خدمة العملاء؟')}<div id="csRatingWidget" class="flex gap-1 mt-2">${stars}</div>`);
+        botAddMessage('bot', `${L('How was your experience with our Customer Service team?', 'كيف كانت تجربتك مع فريق خدمة العملاء؟')}
+        <div id="csRatingWidget" data-rating="0">
+            <div class="flex gap-1 mt-2">${stars}</div>
+            <input id="csRatingComment" type="text" maxlength="200" autocomplete="off" placeholder="${L('Add a comment (optional)', 'أضف تعليقاً (اختياري)')}" class="mt-2 w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <button type="button" onclick="submitCsRating('${chatId}')" class="mt-2 w-full bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-lg py-1.5 text-xs transition">${L('Send rating', 'إرسال التقييم')}</button>
+        </div>`);
         botShowMenu([
             { icon: 'fa-forward', label: L('Skip', 'تخطي'), action: 'skipCsRating()' }
         ]);
     }
 
-    // Saves the star rating against the chat (so it can be attributed to the
-    // assigned CS agent) and shows a quick thank-you in place of the stars.
-    function submitCsRating(chatId, rating) {
+    function csPickStar(n) {
+        const widget = document.getElementById('csRatingWidget');
+        if (!widget) return;
+        widget.dataset.rating = String(n);
+        widget.querySelectorAll('[data-star]').forEach(b => {
+            const on = Number(b.dataset.star) <= n;
+            b.classList.toggle('text-amber-400', on);
+            b.classList.toggle('text-slate-300', !on);
+        });
+    }
+
+    // Saves the stars (and comment) against the chat so they show in the admin's history
+    // and count toward the agents who answered.
+    function submitCsRating(chatId) {
         if (botStep !== 'rate_cs') return;
+        const widget = document.getElementById('csRatingWidget');
+        const rating = widget ? Number(widget.dataset.rating) : 0;
+        if (!rating) {
+            showToast(L('Tap a star first.', 'اضغط على نجمة أولاً.'), 'error');
+            return;
+        }
+        const comment = (document.getElementById('csRatingComment')?.value || '').trim().slice(0, 200);
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
         if (chat) {
-            chat.customerRating = { rating, submittedAt: new Date().toISOString() };
+            chat.customerRating = { rating, comment, submittedAt: new Date().toISOString() };
             saveCsChats(chats);
         }
-        const widget = document.getElementById('csRatingWidget');
         if (widget) {
             widget.outerHTML = `<p class="text-xs text-amber-400 mt-2">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} <span class="text-slate-400">${L('Thanks for rating us!', 'شكراً لتقييمك!')}</span></p>`;
         }
@@ -9218,6 +9419,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
     function skipCsRating() {
         if (botStep !== 'rate_cs') return;
+        csMarkRatingSkipped(botRatingChatId);
         proceedAfterCsRating();
     }
 
@@ -9267,6 +9469,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 </div>
             </div>
             <div class="flex items-center gap-3 shrink-0">
+                <button type="button" id="botEndBtn" onclick="botEndChat()" title="${L('End chat', 'إنهاء المحادثة')}" class="hidden text-white/80 hover:text-white"><i class="fa-solid fa-circle-stop"></i></button>
                 <button type="button" onclick="botStartNewChat()" title="${L('Start new chat', 'محادثة جديدة')}" class="text-white/80 hover:text-white"><i class="fa-solid fa-rotate-right"></i></button>
                 <button type="button" onclick="toggleContactBot()" class="text-white/80 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -9316,6 +9519,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
         box.appendChild(row);
         box.scrollTop = box.scrollHeight;
+        botSyncHeader();
     }
 
     function botShowMenu(buttons) {
@@ -9331,6 +9535,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function botHideMenu() {
         const m = document.getElementById('chatBotMenu');
         if (m) m.classList.add('hidden');
+        botSyncHeader();
     }
 
     function startBotConversation() {
@@ -9349,8 +9554,13 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             botName = state.currentUser.name || state.currentUser.username;
             botMatchedUserId = state.currentUser.id;
             botPhone = state.currentUser.phone || '';
+            // A chat that is still open is picked up exactly where it was left.
+            const openChat = csFindOpenChatFor(botMatchedUserId);
+            if (openChat) { botResumeChat(openChat); return; }
             botStep = 'menu';
             botAddMessage('bot', `<strong>${L('Hello!', 'مرحباً!')} ${escapeHtml(botName)} 👋</strong><br>${L('Welcome back to Cooling Art. What can I help you with?', 'أهلاً بعودتك إلى كولينج آرت. كيف يمكنني مساعدتك؟')}`);
+            const unrated = csFindUnratedClosedChatFor(botMatchedUserId);
+            if (unrated) { botAskCsRating(unrated.id, () => showBotMainMenu()); return; }
             showBotMainMenu();
             return;
         }
@@ -9481,6 +9691,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         botMatchedUserId = matched.id;
         botName = matched.name;
         botPhone = phoneVal;
+        // Their chat is still open: continue it (only when the typed phone is the one on the chat or the account).
+        const openChat = csFindOpenChatFor(matched.id);
+        if (openChat && [openChat.customerPhone, matched.phone, matched.contactPhone, matched.whatsapp].some(x => botSamePhone(phoneVal, x))) {
+            botResumeChat(openChat);
+            return;
+        }
         botStep = 'menu';
         botAddMessage('bot', `${L('Nice to meet you', 'سعيد بمعرفتك')} <strong>${escapeHtml(botName)}</strong>! ${L('What do you need help with?', 'بم يمكنني مساعدتك؟')}`);
         showBotMainMenu();
@@ -9553,15 +9769,17 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         // already escape internally, so pass those through as-is.
         (chat.messages || []).forEach(m => {
             if (m.from === 'cs') botAddMessage('bot', escapeHtml(m.text));
+            else if (m.from === 'system') box.insertAdjacentHTML('beforeend', `<p class="text-center text-[10px] text-slate-400 font-bold">${L('Chat ended by the customer.', 'أنهى العميل المحادثة.')}</p>`);
             else botAddMessage('user', m.text);
         });
 
         // The agent closed the chat from their side — let the customer know, stop
         // them from typing into a dead conversation, and invite them to rate it.
         if (chat.status === 'closed' && botStep === 'in_chat') {
-            botAddMessage('bot', L('This conversation has been closed by our team. Thanks for reaching out!', 'تم إغلاق هذه المحادثة من قبل فريقنا. شكراً لتواصلك معنا!'));
+            if (chat.closedBy !== 'customer') botAddMessage('bot', L('This conversation has been closed by our team. Thanks for reaching out!', 'تم إغلاق هذه المحادثة من قبل فريقنا. شكراً لتواصلك معنا!'));
             botAskCsRating(chat.id);
         }
+        botSyncHeader();
     }
 
     // ================= CUSTOMER SERVICE CHATS (no assignment: any agent can answer) =================
@@ -9604,6 +9822,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
         if (!chat) return;
+        if (from === 'customer' && chat.status !== 'open') {
+            if (botChatId === chatId) renderBotMessages();
+            return;
+        }
         let agent = '';
         if (from === 'cs') {
             const u = state.currentUser;
@@ -9630,6 +9852,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     // Head admin: sees every chat (open + history) but is READ-ONLY (no reply, no close).
     // Customer Services: sees every chat; any agent can open one, reply and close it.
     let csChatsTab = 'active';      // 'active' | 'history'
+    let csFilters = { q: '', rating: 'all', agent: 'all', closer: 'all', from: '', to: '' };
     let csSelectedChatId = null;
     let csWindowKey = '';           // which chat/state the window frame was last built for
 
@@ -9683,6 +9906,151 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         badge.classList.toggle('hidden', n === 0);
     }
 
+    // ---- history details: duration, who closed it, rating ----
+    function csDurationMs(c) {
+        const a = new Date(c.createdAt || 0).getTime();
+        const b = new Date(c.closedAt || c.lastActivity || c.createdAt || 0).getTime();
+        return Math.max(0, b - a);
+    }
+    function csFormatDuration(ms) {
+        const m = Math.round(ms / 60000);
+        if (m < 1) return L('< 1 min', 'أقل من دقيقة');
+        if (m < 60) return L(`${m} min`, `${m} د`);
+        const h = Math.floor(m / 60), r = m % 60;
+        return r ? L(`${h} h ${r} min`, `${h} س ${r} د`) : L(`${h} h`, `${h} س`);
+    }
+    function csClosedByLabel(c) {
+        if (c.status === 'open') return '';
+        if (c.closedBy === 'customer') return L('Closed by customer', 'أنهاها العميل');
+        return c.closedBy ? `${L('Closed by', 'أغلقها')} ${csAgentLabel(c.closedBy)}` : L('Closed', 'مغلقة');
+    }
+    function csRatingValue(c) {
+        return c.customerRating && typeof c.customerRating.rating === 'number' ? c.customerRating.rating : null;
+    }
+
+    // ---- search + filters (the bar is built once so typing is never interrupted by the live refresh) ----
+    function csChatMatches(c) {
+        const f = csFilters;
+        if (f.q) {
+            const term = normalizeIntakeText(f.q);
+            const digits = toAsciiDigits(f.q).replace(/\D/g, '');
+            const text = normalizeIntakeText([c.customerName, c.topic, csAgentNames(c), ...(c.messages || []).map(m => m.text)].join(' '));
+            if (!(text.includes(term) || (digits.length > 2 && toAsciiDigits(c.customerPhone || '').replace(/\D/g, '').includes(digits)))) return false;
+        }
+        if (csChatsTab !== 'history') return true;
+        const r = csRatingValue(c);
+        if (f.rating === 'unrated' && r !== null) return false;
+        if (/^[1-5]$/.test(f.rating) && r !== Number(f.rating)) return false;
+        if (f.agent !== 'all' && !csChatAgents(c).includes(f.agent)) return false;
+        if (f.closer === 'customer' && c.closedBy !== 'customer') return false;
+        if (f.closer === 'agent' && (!c.closedBy || c.closedBy === 'customer')) return false;
+        const day = getLocalDateString(new Date(c.closedAt || c.createdAt || 0));
+        if (f.from && day < f.from) return false;
+        if (f.to && day > f.to) return false;
+        return true;
+    }
+    function csApplyFilters(chats) { return chats.filter(csChatMatches); }
+
+    function csFilterChange() {
+        const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+        csFilters = {
+            q: val('csSearch').trim(), rating: val('csFRating') || 'all', agent: val('csFAgent') || 'all',
+            closer: val('csFCloser') || 'all', from: val('csFFrom'), to: val('csFTo')
+        };
+
+        renderAdminChats();
+    }
+    function csClearFilters() {
+        csFilters = { q: '', rating: 'all', agent: 'all', closer: 'all', from: '', to: '' };
+        const bar = document.getElementById('csFilterBar');
+        if (bar) bar.dataset.built = '';
+        renderAdminChats();
+    }
+
+    function csSyncFilterBar(history, shown) {
+        const bar = document.getElementById('csFilterBar');
+        if (!bar) return;
+        const isHist = csChatsTab === 'history';
+        const cls = 'w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-sky-500';
+        if (bar.dataset.built !== state.currentLang) {
+            bar.dataset.built = state.currentLang;
+            bar.innerHTML = `
+            <input id="csSearch" type="search" value="${escapeHtml(csFilters.q)}" oninput="csFilterChange()" autocomplete="off"
+                placeholder="${L('Search chats by customer, phone, agent or message...', 'ابحث في المحادثات بالعميل أو الهاتف أو الموظف أو الرسالة...')}" class="${cls}">
+            <div id="csHistFilters" class="grid grid-cols-2 gap-2 ${isHist ? '' : 'hidden'}">
+                <select id="csFRating" onchange="csFilterChange()" class="${cls}">
+                    <option value="all">${L('All ratings', 'كل التقييمات')}</option>
+                    ${[5, 4, 3, 2, 1].map(n => `<option value="${n}">${'★'.repeat(n)}</option>`).join('')}
+                    <option value="unrated">${L('Unrated', 'بدون تقييم')}</option>
+                </select>
+                <select id="csFCloser" onchange="csFilterChange()" class="${cls}">
+                    <option value="all">${L('Anyone', 'أي طرف')}</option>
+                    <option value="customer">${L('Closed by customer', 'أنهاها العميل')}</option>
+                    <option value="agent">${L('Closed by agent', 'أغلقها الموظف')}</option>
+                </select>
+                <select id="csFAgent" onchange="csFilterChange()" class="${cls} col-span-2"></select>
+                <input id="csFFrom" type="date" value="${csFilters.from}" onchange="csFilterChange()" class="${cls}" title="${L('From', 'من')}">
+                <input id="csFTo" type="date" value="${csFilters.to}" onchange="csFilterChange()" class="${cls}" title="${L('To', 'إلى')}">
+            </div>
+            <div id="csHistBar" class="flex items-center justify-between gap-2 ${isHist ? '' : 'hidden'}">
+                <p id="csHistStats" class="text-[10px] font-bold text-slate-400 min-w-0"></p>
+                <span class="flex items-center gap-1 shrink-0">
+                    <button type="button" onclick="csClearFilters()" class="text-[10px] font-extrabold px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 transition">${L('Clear', 'مسح')}</button>
+                    <button type="button" onclick="csExportHistory()" class="text-[10px] font-extrabold px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400 hover:bg-emerald-200 transition"><i class="fa-solid fa-file-csv me-1"></i>${L('Export CSV', 'تصدير CSV')}</button>
+                </span>
+            </div>`;
+            const sel = bar.querySelector('#csFRating'); if (sel) sel.value = csFilters.rating;
+            const cl = bar.querySelector('#csFCloser'); if (cl) cl.value = csFilters.closer;
+            bar.dataset.agents = '';
+        }
+        bar.classList.remove('hidden');
+        const hf = bar.querySelector('#csHistFilters'), hb = bar.querySelector('#csHistBar');
+        if (hf) hf.classList.toggle('hidden', !isHist);
+        if (hb) hb.classList.toggle('hidden', !isHist);
+        if (!isHist) return;
+
+        // agent list = everybody who ever answered a chat in the history
+        const agents = Array.from(new Set(history.flatMap(csChatAgents))).sort();
+        const sig = agents.join('|');
+        const agentSel = bar.querySelector('#csFAgent');
+        if (agentSel && bar.dataset.agents !== sig) {
+            bar.dataset.agents = sig;
+            agentSel.innerHTML = `<option value="all">${L('All agents', 'كل الموظفين')}</option>` +
+                agents.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(csAgentLabel(a))}</option>`).join('');
+            agentSel.value = agents.includes(csFilters.agent) ? csFilters.agent : 'all';
+        }
+        const rated = shown.map(csRatingValue).filter(r => r !== null);
+        const avg = rated.length ? (rated.reduce((a, b) => a + b, 0) / rated.length).toFixed(1) : '—';
+        const dur = shown.length ? csFormatDuration(shown.reduce((a, c) => a + csDurationMs(c), 0) / shown.length) : '—';
+        const stats = bar.querySelector('#csHistStats');
+        if (stats) stats.textContent = `${shown.length} ${L('chats', 'محادثة')} · ★ ${avg} (${rated.length}) · ${L('avg', 'متوسط')} ${dur}`;
+    }
+
+    function csCsvCell(v) {
+        const t = String(v === null || v === undefined ? '' : v).replace(/"/g, '""');
+        return /^[=+\-@]/.test(t) ? `"'${t}"` : `"${t}"`;   // keeps Excel from running text as a formula
+    }
+    function csExportHistory() {
+        const rows = csApplyFilters(csVisibleChats().filter(c => c.status !== 'open'))
+            .sort((a, b) => String(b.closedAt || b.createdAt || '').localeCompare(String(a.closedAt || a.createdAt || '')));
+        if (!rows.length) { showToast(L('No chats to export.', 'لا توجد محادثات للتصدير.'), 'error'); return; }
+        const head = ['Chat ID', 'Customer', 'Phone', 'Started', 'Closed', 'Duration (min)', 'Closed by', 'Answered by', 'Messages', 'Rating', 'Comment', 'Transcript'];
+        const lines = [head.map(csCsvCell).join(',')];
+        rows.forEach(c => lines.push([
+            c.id, c.customerName, c.customerPhone, formatDateTime(c.createdAt), formatDateTime(c.closedAt),
+            Math.round(csDurationMs(c) / 60000), c.closedBy === 'customer' ? 'Customer' : csAgentLabel(c.closedBy),
+            csAgentNames(c), (c.messages || []).filter(m => m.from !== 'system').length,
+            csRatingValue(c) ?? '', (c.customerRating && c.customerRating.comment) || '',
+            (c.messages || []).map(m => `[${formatDateTime(m.at)}] ${m.from === 'cs' ? csAgentLabel(m.by) : m.from === 'system' ? 'System' : 'Customer'}: ${m.text}`).join('\n')
+        ].map(csCsvCell).join(',')));
+        const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `chat-history-${getLocalDateString()}.csv`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+
     function csSetTab(tab) {
         csChatsTab = tab === 'history' ? 'history' : 'active';
         csSelectedChatId = null;
@@ -9719,7 +10087,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const active = mine.filter(c => c.status === 'open');
         const history = mine.filter(c => c.status !== 'open');
         const byRecent = (a, b) => String(b.lastActivity || b.createdAt || '').localeCompare(String(a.lastActivity || a.createdAt || ''));
-        const shown = (csChatsTab === 'history' ? history : active).slice().sort(byRecent);
+        const shown = csApplyFilters(csChatsTab === 'history' ? history : active).sort(byRecent);
+        csSyncFilterBar(history, shown);
         if (csSelectedChatId && !shown.some(c => c.id === csSelectedChatId)) { csSelectedChatId = null; csWindowKey = ''; }
 
         const countEl = document.getElementById('adminChatsCount');
@@ -9736,9 +10105,11 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (list) {
             list.innerHTML = shown.length
                 ? shown.map(csListRow).join('')
-                : `<p class="text-xs text-slate-400 text-center py-10 px-4 font-bold">${csChatsTab === 'history'
-                    ? L('No chat history yet.', 'لا يوجد سجل محادثات بعد.')
-                    : L('No customer chats waiting for a response.', 'لا توجد محادثات عملاء بانتظار رد.')}</p>`;
+                : `<p class="text-xs text-slate-400 text-center py-10 px-4 font-bold">${(csChatsTab === 'history' ? history : active).length
+                    ? L('No chats match your search or filters.', 'لا توجد محادثات تطابق البحث أو الفلاتر.')
+                    : csChatsTab === 'history'
+                        ? L('No chat history yet.', 'لا يوجد سجل محادثات بعد.')
+                        : L('No customer chats waiting for a response.', 'لا توجد محادثات عملاء بانتظار رد.')}</p>`;
         }
         csRenderWindow(shown.find(c => c.id === csSelectedChatId) || null);
     }
@@ -9769,12 +10140,19 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     : (c.status === 'open' ? `<span class="text-amber-600 dark:text-amber-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting for an agent', 'بانتظار موظف')}</span>` : '')}
                 ${rating !== null ? `<span class="text-amber-500"><i class="fa-solid fa-star me-0.5"></i>${rating}</span>` : ''}
             </span>
+            ${c.status !== 'open' ? `<span class="flex items-center flex-wrap gap-x-2 mt-0.5 text-[9px] font-bold text-slate-400">
+                <span>${escapeHtml(csClosedByLabel(c))}</span>
+                <span><i class="fa-regular fa-clock me-0.5"></i>${escapeHtml(csFormatDuration(csDurationMs(c)))}</span>
+                <span><i class="fa-regular fa-message me-0.5"></i>${(c.messages || []).filter(m => m.from !== 'system').length}</span>
+                ${rating === null ? `<span class="text-slate-300 dark:text-slate-600">${L('Unrated', 'بدون تقييم')}</span>` : ''}
+            </span>` : ''}
         </span>
     </button>`;
     }
 
     function csMessagesHtml(chat) {
-        return (chat.messages || []).map(m => `
+        return (chat.messages || []).map(m => m.from === 'system' ? `
+        <p class="text-center text-[10px] font-bold text-slate-400 py-1">${L('Chat ended by the customer.', 'أنهى العميل المحادثة.')} · ${escapeHtml(formatDateTime(m.at))}</p>` : `
         <div class="flex ${m.from === 'cs' ? 'justify-end' : 'justify-start'}">
             <div class="max-w-[80%] rounded-xl px-3 py-1.5 leading-relaxed text-xs ${m.from === 'cs' ? 'bg-sky-500 text-white' : 'bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700'}">
                 ${m.from === 'cs' ? `<span class="block text-[9px] font-extrabold opacity-80 mb-0.5">${escapeHtml(csAgentLabel(m.by))}</span>` : ''}${escapeHtml(m.text)}
@@ -9828,6 +10206,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     ${writable ? `<button type="button" onclick="closeCsChat('${chat.id}')" class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-500 hover:bg-emerald-200 hover:text-emerald-700 dark:bg-slate-800 dark:hover:bg-emerald-950 dark:hover:text-emerald-400 transition" title="${L('Close chat', 'إغلاق المحادثة')}"><i class="fa-solid fa-check"></i></button>` : ''}
                 </div>
             </div>
+            <div id="csInfoBar" class="hidden shrink-0 px-3 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 text-[10px] font-bold text-slate-500 dark:text-slate-400"></div>
             <div id="csMsgs" class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-1.5"></div>
             ${footer}`;
         }
@@ -9842,9 +10221,25 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 ? `<i class="fa-solid fa-headset me-1"></i>${escapeHtml(names)}`
                 : `<i class="fa-regular fa-clock me-1"></i>${L('Not answered yet', 'لم يتم الرد بعد')}`;
         }
+        // Closed chats: summary line (who closed, how long, rating + comment). Refreshed every render, since the rating can arrive later.
+        const info = pane.querySelector('#csInfoBar');
+        if (info) {
+            if (chat.status === 'open') { info.classList.add('hidden'); info.innerHTML = ''; }
+            else {
+                const r = csRatingValue(chat);
+                const cm = chat.customerRating && chat.customerRating.comment;
+                info.classList.remove('hidden');
+                info.innerHTML = `<span class="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                    <span>${escapeHtml(csClosedByLabel(chat))}</span>
+                    <span><i class="fa-regular fa-clock me-1"></i>${escapeHtml(csFormatDuration(csDurationMs(chat)))}</span>
+                    <span><i class="fa-regular fa-message me-1"></i>${(chat.messages || []).filter(m => m.from !== 'system').length}</span>
+                    <span class="${r !== null ? 'text-amber-500' : ''}">${r !== null ? '★'.repeat(r) + '☆'.repeat(5 - r) : L('Not rated', 'لم يتم التقييم')}</span>
+                </span>${cm ? `<span class="block mt-1 font-normal text-slate-600 dark:text-slate-300">“${escapeHtml(cm)}”</span>` : ''}`;
+            }
+        }
         const box = pane.querySelector('#csMsgs');
         if (!box) return;
-        const sig = (chat.messages || []).length + ':' + chat.lastActivity;
+        const sig = (chat.messages || []).length + ':' + chat.lastActivity + ':' + (chat.customerRating ? chat.customerRating.rating : '');
         if (fresh || box.dataset.sig !== sig) {
             const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
             box.innerHTML = csMessagesHtml(chat);
@@ -9880,6 +10275,11 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         renderAdminChats();
     }
 
+    window.csFilterChange = csFilterChange;
+    window.csClearFilters = csClearFilters;
+    window.csExportHistory = csExportHistory;
+    window.botEndChat = botEndChat;
+    window.csPickStar = csPickStar;
     window.csSetTab = csSetTab;
     window.csSelectChat = csSelectChat;
     window.csBackToList = csBackToList;
