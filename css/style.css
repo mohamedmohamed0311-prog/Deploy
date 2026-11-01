@@ -500,3 +500,53 @@ footer::before { top: 0; }
 #view-admin-dashboard .custom-scrollbar::-webkit-scrollbar-thumb, #view-customer-log .custom-scrollbar::-webkit-scrollbar-thumb {
     background: rgba(100, 116, 139, .35); border-radius: 999px;
 }
+
+/* ================= ADMIN DASHBOARD HIERARCHY ================= */
+/* hero numbers (today at a glance) */
+.dash-hero-chip {
+    display: flex; align-items: center; gap: .75rem; padding: .8rem 1rem; border-radius: 1rem;
+    background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .20); backdrop-filter: blur(6px);
+    color: #e0f2fe; transition: transform .18s ease, background .18s ease;
+}
+.dash-hero-chip:hover { transform: translateY(-2px); background: rgba(255, 255, 255, .18); }
+.dash-hero-chip > i { font-size: 1.15rem; opacity: .9; }
+.dash-hero-chip.is-alert { background: rgba(239, 68, 68, .28); border-color: rgba(252, 165, 165, .55); color: #fff; }
+
+/* the two tiers of task counters */
+.dash-tier-label {
+    display: flex; align-items: center; gap: .5rem; font-size: 10px; font-weight: 800; letter-spacing: .08em;
+    text-transform: uppercase; color: #94a3b8;
+}
+.dash-tier-label::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(148, 163, 184, .35), transparent); }
+.dash-tier-label i { color: #0ea5e9; }
+
+.dash-counter { position: relative; overflow: hidden; }
+.dash-counter::before {            /* coloured edge: the colour says which kind of counter it is */
+    content: ""; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px;
+    background: var(--tone, #94a3b8);
+}
+.dash-counter[data-tone="amber"] { --tone: #f59e0b; }
+.dash-counter[data-tone="orange"] { --tone: #f97316; }
+.dash-counter[data-tone="red"] { --tone: #ef4444; }
+.dash-counter[data-tone="fuchsia"] { --tone: #d946ef; }
+.dash-counter[data-tone="rose"] { --tone: #f43f5e; }
+.dash-counter[data-tone="violet"] { --tone: #8b5cf6; }
+.dash-counter[data-tone="emerald"] { --tone: #10b981; }
+.dash-counter[data-tone="cyan"] { --tone: #06b6d4; }
+.dash-counter[data-tone="sky"] { --tone: #0ea5e9; }
+.dash-counter.is-big { padding-top: 1.1rem; padding-bottom: 1.1rem; }
+.dash-counter.is-alert { background-image: linear-gradient(135deg, rgba(239, 68, 68, .10), transparent 60%); animation: dashAlert 2.4s ease-in-out infinite; }
+@keyframes dashAlert {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, .14); }
+}
+@media (prefers-reduced-motion: reduce) { .dash-counter.is-alert { animation: none; } }
+
+/* task board card + tables */
+#adminTasksSection > div:not(#dashHeadTasks) { border-color: rgba(14, 165, 233, .18); }
+#adminTasksSection thead tr { background: linear-gradient(90deg, rgba(14, 165, 233, .08), transparent); }
+#adminTasksSection tbody tr:nth-child(even) { background: rgba(148, 163, 184, .05); }
+@media (max-width: 640px) {
+    .dash-hero-chip { padding: .65rem .8rem; }
+    .dash-counter.is-big { padding-top: .9rem; padding-bottom: .9rem; }
+}

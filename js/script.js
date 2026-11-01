@@ -136,6 +136,23 @@ function cloudMergeById(remote, local, deletedSet, key) {
     }
     const localIds = new Set(local.map(i => i.id));
     const extra = remote.filter(i => !localIds.has(i.id) && !(deletedSet && deletedSet.has(i.id)));
+    // Tasks: a stale copy (flag `true` or no photo) must never wipe a repair photo link that is already in the cloud.
+    if (key === 'ca_tasks') {
+        const remoteById = new Map(remote.map(i => [i.id, i]));
+        local.forEach(l => {
+            const r = remoteById.get(l.id);
+            if (!r || !r.repairPhotos) return;
+            const merged = Object.assign({}, l.repairPhotos);
+            Object.keys(r.repairPhotos).forEach(slot => {
+                const rv = r.repairPhotos[slot], lv = merged[slot];
+                const rIsUrl = typeof rv === 'string' && rv !== '';
+                const lIsUrl = typeof lv === 'string' && lv !== '';
+                if (rIsUrl && !lIsUrl) merged[slot] = rv;
+                else if (rv && !lv) merged[slot] = rv;
+            });
+            l.repairPhotos = merged;
+        });
+    }
     return local.concat(extra);
 }
 
@@ -148,11 +165,11 @@ function cloudStripSecrets(key, value) {
 }
 
 // Moves big base64 images/videos into Supabase Storage and swaps them for a public URL.
-async function cloudExternalizeMedia(value) {
+async function cloudExternalizeMedia(value, minLength = CLOUD_MEDIA_LIMIT) {
     let changed = false;
     async function walk(node) {
         if (typeof node === 'string') {
-            if (node.startsWith('data:') && node.length > CLOUD_MEDIA_LIMIT) {
+            if (node.startsWith('data:') && node.length > minLength) {
                 try {
                     const blob = await (await fetch(node)).blob();
                     const ext = (blob.type.split('/')[1] || 'bin').split(';')[0].replace('quicktime', 'mov');
@@ -178,6 +195,38 @@ async function cloudExternalizeMedia(value) {
     }
     const out = await walk(value);
     return { value: out, changed };
+}
+
+// The browser keeps only ~5 MB per site. Photos saved as base64 text (products, profiles, gallery...)
+// eat that quickly, and then ANY save fails -- even a tiny one like adding a video.
+function describeStorageUsage() {
+    const rows = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        rows.push([k, (localStorage.getItem(k) || '').length * 2]);
+    }
+    rows.sort((a, b) => b[1] - a[1]);
+    const total = rows.reduce((n, r) => n + r[1], 0);
+    return { total, top: rows.slice(0, 3).map(r => `${r[0]} ${(r[1] / 1048576).toFixed(1)} MB`).join(', ') };
+}
+
+// Moves every embedded image/video (anything over ~20 KB) into cloud storage and keeps only its link.
+async function freeBrowserStorage() {
+    if (typeof supabaseClient === 'undefined' || !supabaseClient) return false;
+    let freed = false;
+    for (const key of CLOUD_SYNC_KEYS) {
+        const raw = localStorage.getItem(key);
+        if (!raw || raw.length < 40000) continue;
+        const local = cloudParse(raw);
+        if (local === null) continue;
+        const media = await cloudExternalizeMedia(local, 20 * 1024);
+        if (media.changed) {
+            cloudWriteLocal(key, media.value);
+            freed = true;
+        }
+    }
+    if (freed) { cloudApplyToState(); cloudRerender(); }
+    return freed;
 }
 
 async function cloudPush(key) {
@@ -564,13 +613,33 @@ async function hashPassword(rawPassword) {
     return sha256Hex(PASSWORD_PEPPER + rawPassword);
 }
 
+// Every ID / serial in the system (customers, orders, repair requests, tasks, chats...) starts with "AC".
+// The `prefix` argument is kept so older calls still work, but it no longer shows up in the ID.
 function createDateBasedId(prefix) {
     const now = new Date();
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
-    const randomDigits = Array.from({ length: 6 }, () => Math.floor(Math.random() * 10)).join('');
-    return `${prefix}-${year}${month}${day}-${randomDigits}`;
+    let id;
+    let tries = 0;
+    do {
+        const randomDigits = Array.from({ length: 6 }, () => Math.floor(Math.random() * 10)).join('');
+        id = `AC-${year}${month}${day}-${randomDigits}`;
+    } while (idAlreadyUsed(id) && ++tries < 50);
+    return id;
+}
+
+function idAlreadyUsed(id) {
+    try {
+        return [state.users, state.orders, state.tasks, state.customerFolders, state.customJobs, state.aboutVideos]
+            .some(list => Array.isArray(list) && list.some(item => item && item.id === id));
+    } catch (e) { return false; }   // state is not ready yet
+}
+
+// Older records keep the ID they were saved with (changing it would break their links), but they are
+// SHOWN with the AC prefix too, so the whole system reads the same.
+function acId(id) {
+    return String(id === undefined || id === null ? '' : id).replace(/^(REP|ORD|TSK|USR|CF|CHAT|INS|JOB|IMG|VID|TEST|H)-(?=\d)/, 'AC-');
 }
 
 // ---------- Small shared helpers ----------
@@ -715,20 +784,33 @@ function setTaskFilter(key) {
     renderAdminDashboard();
 }
 
+// What needs a decision right now comes first; the job pipeline (where each job is) sits underneath.
+const TASK_COUNTER_TIERS = [
+    { key: 'attention', en: 'Needs attention', ar: 'يحتاج انتباه', icon: 'fa-bell', keys: ['unassigned', 'awaiting', 'late', 'delayed'], cols: 'grid-cols-2 lg:grid-cols-4' },
+    { key: 'pipeline', en: 'Job pipeline', ar: 'مسار الأعمال', icon: 'fa-diagram-project', keys: ['replace', 'workshop', 'withdraw', 'getBack', 'units'], cols: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5' }
+];
+const TASK_COUNTER_TONES = { unassigned: 'amber', awaiting: 'orange', late: 'red', delayed: 'fuchsia', replace: 'rose', workshop: 'violet', withdraw: 'amber', getBack: 'emerald', units: 'cyan' };
+
 function renderTaskCounters() {
     const c = getTaskCounts();
-    return TASK_COUNTERS.map(d => {
+    const card = (d, big) => {
         const active = activeTaskCounter === d.key;
+        const n = c[d.key];
         return `
-        <button type="button" onclick="setTaskFilter('${d.key}')" aria-pressed="${active}"
-            class="dash-counter text-start rounded-2xl border px-4 py-4 ${active ? 'is-active border-sky-500 ring-2 ring-sky-400/40 bg-sky-50 dark:bg-sky-950/30' : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900'}">
+        <button type="button" onclick="setTaskFilter('${d.key}')" aria-pressed="${active}" data-tone="${TASK_COUNTER_TONES[d.key] || 'sky'}"
+            class="dash-counter ${big ? 'is-big' : ''} ${d.key === 'late' && n ? 'is-alert' : ''} text-start rounded-2xl border ps-5 pe-4 py-4 ${active ? 'is-active border-sky-500 ring-2 ring-sky-400/40 bg-sky-50 dark:bg-sky-950/30' : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900'}">
             <span class="flex items-start justify-between gap-2">
                 <span class="text-[11px] font-bold text-slate-400 uppercase leading-snug">${L(d.en, d.ar)}</span>
                 <i class="fa-solid ${d.icon} ${d.color} text-sm opacity-80"></i>
             </span>
-            <span class="block text-3xl font-extrabold mt-2 ${c[d.key] ? d.color : 'text-slate-300 dark:text-slate-600'}">${c[d.key]}</span>
+            <span class="block ${big ? 'text-4xl' : 'text-3xl'} font-extrabold mt-2 ${n ? d.color : 'text-slate-300 dark:text-slate-600'}">${n}</span>
         </button>`;
-    }).join('');
+    };
+    return TASK_COUNTER_TIERS.map(tier => `
+        <div class="space-y-2">
+            <p class="dash-tier-label"><i class="fa-solid ${tier.icon}"></i>${L(tier.en, tier.ar)}</p>
+            <div class="grid ${tier.cols} gap-3">${tier.keys.map(k => card(TASK_COUNTERS.find(d => d.key === k), tier.key === 'attention')).join('')}</div>
+        </div>`).join('');
 }
 
 // What the customer/order should show for a task in a given status.
@@ -1299,7 +1381,7 @@ let state = {
 
 // Ensure users have unique IDs
 state.users.forEach((u, idx) => {
-    if (!u.id) u.id = `USR-20260911` + String(idx + 1).padStart(6, '0');
+    if (!u.id) u.id = `AC-20260911` + String(idx + 1).padStart(6, '0');
 });
 if (state.currentUser && !state.currentUser.id) {
     const matched = state.users.find(u => u.username && u.username.toLowerCase() === state.currentUser.username.toLowerCase());
@@ -1353,7 +1435,20 @@ if (!state.services.some(s => s.id === 's5')) {
 
 let userToDeleteId = null;
 
+// If the browser's ~5 MB is full, a save throws. Besides reporting it, start moving big images to the
+// cloud in the background and save again, so the site heals itself instead of silently losing changes.
 function saveState() {
+    try {
+        saveStateCore();
+    } catch (err) {
+        if (typeof freeBrowserStorage === 'function') {
+            freeBrowserStorage().then(freed => { if (freed) { try { saveStateCore(); } catch (e) { /* still full */ } } }).catch(() => { });
+        }
+        throw err;
+    }
+}
+
+function saveStateCore() {
     localStorage.setItem('ca_users', JSON.stringify(state.users));
     localStorage.setItem('ca_products', JSON.stringify(state.products));
     localStorage.setItem('ca_services', JSON.stringify(state.services));
@@ -4749,11 +4844,18 @@ async function handleAddVideoSubmit(e) {
 
     state.aboutVideos = loadAboutVideos();
     state.aboutVideos.push({ id, title, url, addedBy: state.currentUser.username, addedAt: new Date().toISOString() });
-    try {
-        saveState();
-    } catch (err) {
+    let saved = false;
+    try { saveState(); saved = true; } catch (err) { /* browser storage is full */ }
+    if (!saved) {
+        // Not the video's fault (it is only a link): other photos fill the browser. Move them to the cloud and retry.
+        showToast(L('Browser storage is full -- moving images to the cloud...', 'ذاكرة المتصفح ممتلئة -- جارٍ نقل الصور إلى السحابة...'), 'info', 5000);
+        try { await freeBrowserStorage(); saveState(); saved = true; } catch (err) { /* still full */ }
+    }
+    if (!saved) {
         state.aboutVideos.pop();
-        showToast(L('Storage is full — remove an old video first.', 'مساحة التخزين ممتلئة — احذف فيديو قديم أولاً.'), 'error');
+        const u = describeStorageUsage();
+        showToast(L(`Browser storage is full (${(u.total / 1048576).toFixed(1)} MB used: ${u.top}). The video itself is not the problem -- large images are. Check the cloud connection and try again.`,
+            `ذاكرة المتصفح ممتلئة (${(u.total / 1048576).toFixed(1)} ميجابايت: ${u.top}). المشكلة ليست في الفيديو بل في الصور الكبيرة. تأكد من اتصال السحابة وحاول مرة أخرى.`), 'error', 10000);
         if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); }
         return;
     }
@@ -4892,7 +4994,7 @@ function renderCustomerDashboard() {
             ordersTable.innerHTML = myOrders.map(o => `
                 <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                     <td class="p-4 text-slate-400 font-mono">${o.date}</td>
-                    <td class="p-4 font-bold text-sky-500">${o.id}</td>
+                    <td class="p-4 font-bold text-sky-500">${acId(o.id)}</td>
                     <td class="p-4 font-semibold">${o.itemTitle}</td>
                     <td class="p-4 font-extrabold">${getOrderRevenue(o).toLocaleString()} EGP</td>
                     <td class="p-4">${getStatusBadge(o.status)}${renderCustomerStageLine(o)}</td>
@@ -5215,7 +5317,7 @@ function buildCustomerFolderHtml(key, list, isHeadAdmin) {
                     <i class="fa-solid fa-chevron-down text-xs transition-transform ${expandedOrderRows.has(o.id) ? 'rotate-180' : ''}"></i>
                 </button>
                 <span class="text-slate-400 font-mono text-xs">${escapeHtml(o.date || '')}</span>
-                <span class="font-bold text-sky-500 text-xs">${escapeHtml(o.id)}</span>
+                <span class="font-bold text-sky-500 text-xs">${escapeHtml(acId(o.id))}</span>
                 <span class="min-w-0 flex-1 basis-48 font-bold text-xs text-slate-800 dark:text-slate-100">${escapeHtml(o.itemTitle)}</span>
                 <span class="whitespace-nowrap">
                     ${getStatusBadge(o.status)}
@@ -5254,6 +5356,37 @@ function buildCustomerFolderHtml(key, list, isHeadAdmin) {
         </div>`;
 }
 
+// Hero numbers + the section headings that give the dashboard its hierarchy
+// (Today at a glance -> Business overview -> Task board).
+function renderDashboardChrome(canManageTasks, isTechnician, isHeadAdmin) {
+    const mine = canManageTasks ? state.tasks : state.tasks.filter(t => state.currentUser && isTaskAssignedTo(t, state.currentUser.username));
+    const today = getLocalDateString();
+    const open = mine.filter(t => t.status !== 'Done');
+    const stat = (icon, n, label, tone) => `
+        <div class="dash-hero-chip ${tone ? 'is-' + tone : ''}">
+            <i class="fa-solid ${icon}"></i>
+            <div><span class="block text-xl font-extrabold leading-none">${n}</span><span class="block text-[10px] font-bold uppercase tracking-wide opacity-80 mt-1">${label}</span></div>
+        </div>`;
+    const hero = document.getElementById('adminHeroStats');
+    if (hero) {
+        hero.innerHTML =
+            stat('fa-list-check', open.length, L('Open tasks', 'مهام مفتوحة')) +
+            stat('fa-triangle-exclamation', open.filter(isTaskLate).length, L('Late', 'متأخرة'), open.some(isTaskLate) ? 'alert' : '') +
+            stat('fa-user-clock', open.filter(isTaskUnassigned).length, L('Not assigned', 'غير معينة')) +
+            stat('fa-circle-check', mine.filter(t => t.status === 'Done' && (t.completedDate || '') === today).length, L('Done today', 'منجزة اليوم'));
+    }
+    const dateEl = document.getElementById('adminHeroDate');
+    if (dateEl) dateEl.textContent = new Date().toLocaleDateString(state.currentLang === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    const head = (id, icon, en, ar, subEn, subAr) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = whoSectionTitle(icon, L(en, ar), L(subEn, subAr));
+    };
+    head('dashHeadOverview', 'fa-chart-line', 'Business overview', 'نظرة عامة على العمل', 'Revenue, customers and service quality', 'الإيرادات والعملاء وجودة الخدمة');
+    head('dashHeadTasks', 'fa-list-check', 'Task board', 'لوحة المهام', 'What needs action now, and where every job stands', 'ما يحتاج إجراءً الآن وأين وصلت كل مهمة');
+    const ov = document.getElementById('dashOverviewSection');
+    if (ov) ov.classList.toggle('hidden', !(isHeadAdmin || canManageTasks));
+}
+
 function renderAdminDashboard() {
     state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
@@ -5268,6 +5401,7 @@ function renderAdminDashboard() {
     if (isHeadAdmin && purgeOrphans()) saveState();
     const canManageTasks = isHeadAdmin || isHR;
     const technicianUsers = state.users.filter(user => user.role === 'technician');
+    renderDashboardChrome(canManageTasks, isTechnician, isHeadAdmin);
 
     // ---- Analytics Grid: full business stats for head admin, task stats for
     // technicians, hidden entirely for Customer Services (they only need tasks + customers) ----
@@ -5277,7 +5411,7 @@ function renderAdminDashboard() {
         const totalRev = Math.max(0, getAllRevenue() - state.revenueResetBaseline);
 
         grid.innerHTML = `
-            <div class="dash-card dash-accent-sky p-6 space-y-3">
+            <div class="dash-card dash-accent-sky p-6 space-y-3 xl:col-span-2">
                 <div class="flex items-start justify-between gap-3">
                     <div class="flex items-center gap-3">
                         <span class="dash-icon bg-sky-100 dark:bg-sky-950 text-sky-500"><i class="fa-solid fa-sack-dollar"></i></span>
@@ -5355,7 +5489,7 @@ function renderAdminDashboard() {
         const userSearchTerm = userSearchInput ? userSearchInput.value.trim().toLowerCase() : '';
         const customerUsers = state.users.filter(u => !isStaffRole(u.role));
         const filteredUsers = !userSearchTerm ? customerUsers : customerUsers.filter(u => {
-            return [u.id, u.username, u.name, u.whatsapp, u.contactPhone]
+            return [u.id, acId(u.id), u.username, u.name, u.whatsapp, u.contactPhone]
                 .filter(Boolean)
                 .some(field => String(field).toLowerCase().includes(userSearchTerm));
         });
@@ -5368,7 +5502,7 @@ function renderAdminDashboard() {
                 const canDelete = isHeadAdmin;
                 return `
                     <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        <td class="px-3 py-1.5 font-mono text-slate-400 text-[10px]">${u.id}</td>
+                        <td class="px-3 py-1.5 font-mono text-slate-400 text-[10px]">${acId(u.id)}</td>
                         <td class="px-3 py-1.5 font-bold text-sky-500">@${u.username}</td>
                         <td class="px-3 py-1.5 font-semibold">${u.name || 'N/A'}</td>
                         <td class="px-3 py-1.5 text-slate-500 font-mono">${u.whatsapp || 'N/A'}</td>
@@ -5535,16 +5669,14 @@ function folderIdForKey(key) {
 function folderOrigins(f) {
     const tags = Array.isArray(f.tags) ? f.tags : [];
     return {
-        ours: tags.includes('ours') || f.source === 'excel' || f.source === 'account',
+        ours: tags.includes('ours') || f.source === 'excel' || f.source === 'account' || tags.includes('arabi') || f.source === 'arabi',
         arabi: tags.includes('arabi') || f.source === 'arabi'
     };
 }
 
 // Customer Services never sees folders that exist only because of the Arabi sheet.
 function folderVisibleToViewer(f) {
-    if (canUseArabi()) return true;
-    const o = folderOrigins(f);
-    return !(o.arabi && !o.ours);
+    return true; // Arabi customers are our customers too: same history for everyone
 }
 
 // Copies Arabi customers (from the Arabi extraction tasks) and registered customers into the folders.
@@ -6788,7 +6920,7 @@ function openOrderDetailsModal(orderId) {
     const body = document.getElementById('orderDetailsBody');
 
     if (subtitle) {
-        subtitle.textContent = `${order.id} · ${order.date || ''}`;
+        subtitle.textContent = `${acId(order.id)} · ${order.date || ''}`;
     }
 
     const customerUser = state.users.find(u => u.username.toLowerCase() === (order.username || '').toLowerCase());
@@ -6822,7 +6954,7 @@ function openOrderDetailsModal(orderId) {
                 <div class="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-2">
                     <span class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L('Customer Information', 'معلومات العميل')}</span>
                     <h4 class="font-extrabold text-sm text-slate-800 dark:text-slate-100">${escapeHtml(customerUser ? customerUser.name : order.username)}</h4>
-                    <p class="text-xs text-slate-500 font-mono">@${escapeHtml(order.username)} ${customerUser ? `(ID: ${customerUser.id})` : ''}</p>
+                    <p class="text-xs text-slate-500 font-mono">@${escapeHtml(order.username)} ${customerUser ? `(ID: ${acId(customerUser.id)})` : ''}</p>
                     <div class="pt-1 flex flex-wrap items-center gap-2">
                         ${phone ? `<span class="text-xs font-semibold text-slate-600 dark:text-slate-300"><i class="fa-solid fa-phone me-1 text-sky-500"></i>${phone}</span>` : ''}
                         ${whatsappBtn}
@@ -6951,6 +7083,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     let repairPhotoDbPromise = null;
     const repairPhotoCache = {};
     const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    // Shown instead of a blank white box when the photo is not available yet (still on the technician's phone) or fails to load.
+    const PHOTO_PENDING_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140"><rect width="200" height="140" fill="#1e293b"/><g fill="none" stroke="#64748b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><rect x="62" y="44" width="76" height="52" rx="8"/><circle cx="100" cy="70" r="14"/></g><text x="100" y="122" font-size="11" text-anchor="middle" fill="#94a3b8" font-family="sans-serif">Waiting for upload...</text></svg>');
 
     function repairPhotoDbKey(taskId, slot) { return `${taskId}::${slot}`; }
     function repairPhotoImgId(taskId, slot) { return `rp-img-${taskId}-${slot}`; }
@@ -6992,6 +7126,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     // placeholder), and if it wasn't cached, loads it from IndexedDB in the
     // background and patches this exact <img> (by id) once the bytes arrive.
     function repairPhotoImgHtml(taskId, slot, cls, rawValue) {
+        if (typeof rawValue === 'string' && /^https?:\/\//i.test(rawValue)) {
+            // Uploaded to cloud storage: every device (admin dashboard included) can show it.
+            return `<img id="${repairPhotoImgId(taskId, slot)}" src="${escapeHtml(rawValue)}" class="${cls}" alt="" loading="lazy" onerror="this.onerror=null;this.src=PHOTO_PENDING_IMG">`;
+        }
         if (typeof rawValue === 'string' && rawValue.startsWith('data:')) {
             // Old format from before repair photos moved to IndexedDB — the
             // task already holds the actual data URL, so just show it.
@@ -7002,13 +7140,13 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const id = repairPhotoImgId(taskId, slot);
         if (!cached) {
             loadRepairPhotoFromDb(taskId, slot).then(dataUrl => {
-                if (!dataUrl) return;
-                repairPhotoCache[repairPhotoDbKey(taskId, slot)] = dataUrl;
                 const img = document.getElementById(id);
+                if (!dataUrl) { if (img) img.src = PHOTO_PENDING_IMG; return; }
+                repairPhotoCache[repairPhotoDbKey(taskId, slot)] = dataUrl;
                 if (img) img.src = dataUrl;
-            }).catch(() => { });
+            }).catch(() => { const img = document.getElementById(id); if (img) img.src = PHOTO_PENDING_IMG; });
         }
-        return `<img id="${id}" src="${cached || TRANSPARENT_PIXEL}" class="${cls}" alt="">`;
+        return `<img id="${id}" src="${cached || PHOTO_PENDING_IMG}" class="${cls}" alt="">`;
     }
 
     // Small pill/icon shown on a task once it has at least one repair photo —
@@ -7054,7 +7192,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!task) return;
         const photos = task.repairPhotos || {};
         const titleEl = document.getElementById('photoViewerTitle');
-        if (titleEl) titleEl.textContent = `${task.id} — ${task.title}`;
+        if (titleEl) titleEl.textContent = `${acId(task.id)} — ${task.title}`;
         const body = document.getElementById('photoViewerBody');
         if (body) {
             body.innerHTML = `
@@ -7117,11 +7255,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 <div class="space-y-1.5 p-2 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm">
                     <span class="block font-bold text-slate-600 dark:text-slate-300 truncate">${escapeHtml(L(lbl[0], lbl[1]))}</span>
                     ${photos[key] ? repairPhotoImgHtml(task.id, key, 'w-full h-16 object-cover rounded-lg border border-emerald-300 dark:border-emerald-700 mb-1 bg-slate-100 dark:bg-slate-800', photos[key]) : ''}
-                    <div class="flex flex-col sm:flex-row gap-1.5 pt-1">
-                        <label class="flex-1 cursor-pointer inline-flex items-center justify-center gap-1.5 bg-sky-500 hover:bg-sky-600 text-white font-extrabold py-2 px-2.5 rounded-xl text-xs transition shadow-sm hover:scale-[1.02] active:scale-[0.98]">
-                            <i class="fa-solid fa-folder-open text-xs"></i> ${L('Upload Photo', 'رفع صورة')}
-                            <input type="file" accept="image/*" id="rp-up-${task.id}-${key}" onchange="previewRepairPhoto('${task.id}', '${key}', this)" class="hidden">
-                        </label>
+                    <div class="flex flex-col gap-1.5 pt-1">
                         <label class="flex-1 cursor-pointer inline-flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-2 px-2.5 rounded-xl text-xs transition shadow-sm hover:scale-[1.02] active:scale-[0.98]">
                             <i class="fa-solid fa-camera text-xs"></i> ${L('Take Photo', 'التقاط صورة')}
                             <input type="file" accept="image/*" capture="environment" id="rp-cam-${task.id}-${key}" onchange="previewRepairPhoto('${task.id}', '${key}', this)" class="hidden">
@@ -7144,6 +7278,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             const current = getCurrentViewId();
             if (current === 'tech-home') renderTechHome();
             else renderAdminDashboard();
+            // The photo must leave this phone, otherwise the admin's dashboard only sees an empty (white) box.
+            uploadRepairPhotoToCloud(taskId, key, dataUrl);
             saveRepairPhotoToDb(taskId, key, dataUrl).catch(() => {
                 showToast(L('Photo shown for this session, but could not be stored permanently on this device.', 'تم عرض الصورة لهذه الجلسة، لكن تعذر تخزينها بشكل دائم على هذا الجهاز.'), 'error');
             });
@@ -7151,6 +7287,73 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             showToast(L('Please choose an image file.', 'يرجى اختيار ملف صورة.'), 'error');
         });
     }
+
+    // Uploads one repair photo to cloud storage and swaps the task's `true` flag for its public link.
+    async function uploadRepairPhotoToCloud(taskId, slot, dataUrl) {
+        if (typeof supabaseClient === 'undefined' || !supabaseClient) return false;
+        try {
+            const blob = await (await fetch(dataUrl)).blob();
+            const path = `repair/${taskId}-${slot}-${Date.now()}.jpg`;
+            const { error } = await supabaseClient.storage.from(CLOUD_BUCKET).upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
+            if (error) throw error;
+            const url = supabaseClient.storage.from(CLOUD_BUCKET).getPublicUrl(path).data.publicUrl;
+            const task = state.tasks.find(t => t.id === taskId);
+            if (!task) return false;
+            task.repairPhotos = Object.assign({}, task.repairPhotos, { [slot]: url });
+            repairPhotoCache[repairPhotoDbKey(taskId, slot)] = url;
+            saveState();
+            const current = getCurrentViewId();
+            if (current === 'tech-home') renderTechHome(); else if (current === 'admin-dashboard' || current === 'dashboard') renderAdminDashboard();
+            return true;
+        } catch (err) {
+            console.warn('[Repair photo] cloud upload failed:', err && err.message);
+            if (!repairPhotoWarned) { repairPhotoWarned = true; showToast(L('Photo storage upload failed (' + ((err && err.message) || 'unknown') + '). Saving a compact copy instead.', 'فشل رفع الصورة للتخزين. سيتم حفظ نسخة مضغوطة بدلاً من ذلك.'), 'error', 6000); }
+            try {
+                const small = await shrinkDataUrl(dataUrl, 640, 0.6);
+                const task = state.tasks.find(t => t.id === taskId);
+                if (!task) return false;
+                task.repairPhotos = Object.assign({}, task.repairPhotos, { [slot]: small });
+                saveState();
+                const current = getCurrentViewId();
+                if (current === 'tech-home') renderTechHome(); else if (current === 'admin-dashboard' || current === 'dashboard') renderAdminDashboard();
+                return true;
+            } catch (e2) { return false; }
+        }
+    }
+    let repairPhotoWarned = false;
+    function shrinkDataUrl(dataUrl, maxDim, quality) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                let w = img.width, h = img.height;
+                if (w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+                const c = document.createElement('canvas'); c.width = w; c.height = h;
+                c.getContext('2d').drawImage(img, 0, 0, w, h);
+                resolve(c.toDataURL('image/jpeg', quality));
+            };
+            img.onerror = reject;
+            img.src = dataUrl;
+        });
+    }
+
+    // Photos taken before this fix (or while offline) only exist on the technician's phone. Whenever
+    // that phone is open, push them to the cloud so the admin can finally see them.
+    let repairPhotoSyncBusy = false;
+    async function syncPendingRepairPhotos() {
+        if (repairPhotoSyncBusy || typeof supabaseClient === 'undefined' || !supabaseClient || !state.currentUser) return;
+        repairPhotoSyncBusy = true;
+        try {
+            for (const task of state.tasks) {
+                for (const [slot] of REPAIR_PHOTO_SLOTS) {
+                    if ((task.repairPhotos || {})[slot] !== true) continue;
+                    const dataUrl = await loadRepairPhotoFromDb(task.id, slot).catch(() => null);
+                    if (dataUrl) await uploadRepairPhotoToCloud(task.id, slot, dataUrl);
+                }
+            }
+        } finally { repairPhotoSyncBusy = false; }
+    }
+    setTimeout(syncPendingRepairPhotos, 6000);
+    setInterval(syncPendingRepairPhotos, 30000);
 
     // Collects the 4 repair photos already picked on the task (via
     // previewRepairPhoto) and reports which ones, if any, are still missing.
@@ -7178,7 +7381,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
 
         // A delayed fix is hidden from the worker (as if finished) until its delay date arrives.
-        const myTasks = state.tasks.filter(t => isTaskAssignedTo(t, state.currentUser.username) && getDelayState(t) !== 'delayed');
+        const allMine = state.tasks.filter(t => isTaskAssignedTo(t, state.currentUser.username) && getDelayState(t) !== 'delayed');
+        // The technician's dashboard is about TODAY: what is due or was assigned today, plus anything already started.
+        const myTasks = allMine.filter(isTaskForToday);
+        const olderOpen = allMine.filter(t => t.status === 'Open' && !isTaskForToday(t)).length;
         const openCount = myTasks.filter(t => t.status === 'Open').length;
         const progressCount = myTasks.filter(t => t.status === 'In Progress').length;
         const activeTasks = myTasks.filter(t => t.status === 'Open' || t.status === 'In Progress');
@@ -7230,7 +7436,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                         <i class="fa-solid fa-mug-hot"></i>
                     </div>
                     <h3 class="font-bold text-sm text-slate-600 dark:text-slate-300">Nothing on your plate</h3>
-                    <p class="text-xs text-slate-400 mt-1">You have no open or in-progress tasks right now.</p>
+                    <p class="text-xs text-slate-400 mt-1">${L('You have no tasks for today.', 'ليس لديك مهام لليوم.')}</p>
                 </div>
             `;
             } else {
@@ -7247,6 +7453,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     lane(L('Needs Your Action', 'بحاجة لإجراء منك'), 'fa-hourglass-half', 'text-amber-500', openSorted) +
                     lane(L('In Progress', 'قيد التنفيذ'), 'fa-screwdriver-wrench', 'text-sky-500', progressSorted);
             }
+        }
+        if (grid && olderOpen > 0) {
+            grid.insertAdjacentHTML('beforeend', `<p class="text-center text-[11px] font-bold text-slate-400 py-2"><i class="fa-regular fa-calendar me-1"></i>${L(`${olderOpen} earlier open task(s) are not shown here. Ask the admin to re-assign them for today.`, `${olderOpen} مهمة مفتوحة سابقة غير معروضة هنا. اطلب من المسؤول إعادة تعيينها لليوم.`)}</p>`);
         }
         checkTechNotifications();
         renderLocationShareControl();
@@ -7346,7 +7555,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 border-l-4 border-l-emerald-500 p-5 space-y-3 shadow-sm">
             <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
-                    <span class="text-[10px] font-mono text-slate-400">${task.id}</span>
+                    <span class="text-[10px] font-mono text-slate-400">${acId(task.id)}</span>
                     <h3 class="font-bold text-sm mt-0.5">${escapeHtml(task.title)}</h3>
                 </div>
                 <span class="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full shrink-0 ${badgeStyle}">${task.priority}</span>
@@ -7520,6 +7729,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         };
         const cardBorder = priorityCardStyle[task.priority] || priorityCardStyle.Normal;
         const badgeStyle = priorityBadgeStyle[task.priority] || priorityBadgeStyle.Normal;
+        const busyTask = state.currentUser && state.currentUser.role === 'technician' ? getTechBusyTask(state.currentUser.username, task.id) : null;
         const isDone = task.status === 'Done';
         const isRepair = task.orderType === 'Tech Fix Service';
 
@@ -7545,7 +7755,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 border-l-4 ${cardBorder} p-5 space-y-3 shadow-sm ${isDone ? 'opacity-70' : ''}">
             <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
-                    <span class="text-[10px] font-mono text-slate-400">${task.id}</span>
+                    <span class="text-[10px] font-mono text-slate-400">${acId(task.id)}</span>
                     ${!isDone ? `<span class="text-[10px] text-slate-400"> · <i class="fa-regular fa-clock"></i> ${formatElapsed(getTaskWaitingSince(task))}</span>` : ''}
                     <h3 class="font-bold text-sm mt-0.5 ${isDone ? 'line-through text-slate-400' : ''}">${escapeHtml(task.title)}</h3>
                     ${phase !== 'unit' ? `<span class="inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 uppercase">${escapeHtml(getPhaseLabel(phase))}</span>` : ''}
@@ -7567,10 +7777,13 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                             class="text-xs font-extrabold bg-slate-100 hover:bg-red-100 text-slate-600 hover:text-red-600 dark:bg-slate-800 dark:hover:bg-red-950 dark:text-slate-300 rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2 min-h-[42px]">
                             Decline
                         </button>
-                        <button onclick="updateTaskStatus('${task.id}', 'In Progress')"
+                        ${busyTask ? `<button type="button" disabled title="${escapeHtml(L('Finish your current task first', 'أنهِ مهمتك الحالية أولاً'))}"
+                            class="text-xs font-extrabold bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500 rounded-xl px-4 py-2.5 inline-flex items-center justify-center gap-2 min-h-[42px] cursor-not-allowed">
+                            <i class="fa-solid fa-lock"></i> ${L('Finish current task first', 'أنهِ المهمة الحالية أولاً')}
+                        </button>` : `<button onclick="updateTaskStatus('${task.id}', 'In Progress')" title="${escapeHtml(L('Location must be on to accept', 'يجب تشغيل الموقع للقبول'))}"
                             class="text-xs font-extrabold bg-sky-500 hover:bg-sky-600 text-white rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2 min-h-[42px]">
-                            Accept Task
-                        </button>
+                            <i class="fa-solid fa-location-dot"></i> ${L('Accept Task', 'قبول المهمة')}
+                        </button>`}
                     </div>
                 ` : task.status === 'In Progress' ? `
                     <div class="flex items-center justify-end gap-2.5 flex-wrap">
@@ -8565,7 +8778,47 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
     // Moves a task between Open -> In Progress -> Done. Going one step back
     // (In Progress -> Open, Done -> In Progress) is the "undo" for a wrong tap.
-    function updateTaskStatus(taskId, newStatus, amountReceived, paymentMethod) {
+    // ---- Technician rules: today's tasks only, location on to accept, one task at a time ----
+    // A task belongs on today's list when it is due today (or overdue), was assigned today, has already
+    // been started, or is a delayed fix whose day has come.
+    function isTaskForToday(task) {
+        if (task.status === 'In Progress') return true;
+        if (getDelayState(task) === 'returned') return true;
+        const today = getLocalDateString();
+        if (task.dueDate) return task.dueDate <= today;
+        const since = getTaskWaitingSince(task) || new Date(task.assignedAt || task.createdAt || task.createdDate || 0);
+        return !isNaN(since.getTime()) && getLocalDateString(since) === today;
+    }
+
+    // The task this technician has already accepted and not finished (if any).
+    function getTechBusyTask(username, exceptId) {
+        return state.tasks.find(t => t.status === 'In Progress' && t.id !== exceptId && isTaskAssignedTo(t, username)) || null;
+    }
+
+    // Resolves with the technician's current position, or null (after telling them why) when location is off.
+    let techAcceptBusy = false;
+    function requestAcceptLocation() {
+        return new Promise(resolve => {
+            if (!navigator.geolocation || !window.isSecureContext) {
+                showToast(L('Location is not available on this device or browser, so the task cannot be accepted.', 'الموقع غير متاح على هذا الجهاز أو المتصفح، لذلك لا يمكن قبول المهمة.'), 'error', 7000);
+                resolve(null);
+                return;
+            }
+            showToast(L('Checking your location...', 'جارٍ التحقق من موقعك...'), 'info', 2500);
+            navigator.geolocation.getCurrentPosition(
+                pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0), at: new Date().toISOString() }),
+                err => {
+                    const blocked = err && err.code === 1;
+                    showToast(blocked
+                        ? L('Location is turned off for this site. Turn it on in your phone/browser settings, then accept the task again.', 'الموقع مغلق لهذا الموقع. شغّله من إعدادات الهاتف أو المتصفح ثم اقبل المهمة مرة أخرى.')
+                        : L('Could not get your location. Turn on GPS / location and try again.', 'تعذر تحديد موقعك. شغّل خدمة الموقع (GPS) وحاول مرة أخرى.'), 'error', 8000);
+                    resolve(null);
+                },
+                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+        });
+    }
+
+    function updateTaskStatus(taskId, newStatus, amountReceived, paymentMethod, acceptPos) {
         state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
         state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
 
@@ -8584,6 +8837,28 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!(allowedMoves[previousStatus] || []).includes(newStatus)) {
             showToast(`Task ${taskId} can't move from ${previousStatus} to ${newStatus}.`, 'error');
             return;
+        }
+
+        // Technicians: one task at a time, and the phone's location must be on to accept.
+        if (newStatus === 'In Progress' && state.currentUser && state.currentUser.role === 'technician') {
+            const busy = getTechBusyTask(state.currentUser.username, task.id);
+            if (busy) {
+                showToast(L(`You already have a task in progress (${acId(busy.id)}). Finish it before accepting another.`, `لديك مهمة قيد التنفيذ بالفعل (${acId(busy.id)}). أنهِها قبل قبول مهمة أخرى.`), 'error', 6000);
+                return;
+            }
+            if (previousStatus === 'Open' && isLocationSharingPaused(state.currentUser.username)) {
+                showToast(L('Location sharing is paused. Turn location on first, then accept the task.', 'مشاركة الموقع متوقفة. شغّل الموقع أولاً ثم اقبل المهمة.'), 'error', 6000);
+                return;
+            }
+            if (previousStatus === 'Open' && !acceptPos) {
+                if (techAcceptBusy) return;
+                techAcceptBusy = true;
+                requestAcceptLocation().then(pos => {
+                    techAcceptBusy = false;
+                    if (pos) updateTaskStatus(taskId, newStatus, amountReceived, paymentMethod, pos);
+                }).catch(() => { techAcceptBusy = false; });
+                return;
+            }
         }
 
         const linkedOrder = task.orderId ? state.orders.find(o => o.id === task.orderId) : null;
@@ -8607,6 +8882,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             // it by how long it had been waiting before that.
             task.acceptedAt = new Date().toISOString();
             task.acceptedBy = state.currentUser ? state.currentUser.username : null;
+            if (acceptPos) task.acceptedLocation = acceptPos;   // where the technician was when accepting
         }
         if (newStatus === 'Open') task.acceptedBy = null;
         if (newStatus === 'Done') {
@@ -8632,6 +8908,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
 
         saveState();
+        if (acceptPos && state.currentUser) {
+            // Accepting means location is on: make sure the live map is sharing it too.
+            if (isLocationSharingPaused(state.currentUser.username)) setLocationSharingPaused(false); else startLocationSharing();
+        }
         const isUndo = (previousStatus === 'In Progress' && newStatus === 'Open') || (previousStatus === 'Done' && newStatus === 'In Progress');
         const isAccept = previousStatus === 'Open' && newStatus === 'In Progress';
         if (isAccept && state.currentUser && state.currentUser.role === 'technician') {
@@ -9154,7 +9434,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (o.status && !statuses.includes(o.status)) statuses.unshift(o.status);
         openDynamicModal(`
         <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
-            <h3 class="font-bold text-lg">${t('edit_order')} — ${escapeHtml(o.id)}</h3>
+            <h3 class="font-bold text-lg">${t('edit_order')} — ${escapeHtml(acId(o.id))}</h3>
             <button onclick="closeDynamicModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
         </div>
         <div class="space-y-3 text-xs">

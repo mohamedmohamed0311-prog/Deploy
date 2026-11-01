@@ -581,23 +581,27 @@
                         <span class="inline-flex items-center gap-1.5 bg-sky-500/90 text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wide"><i class="fa-solid fa-sliders"></i> Master Controls</span>
                         <h1 class="text-2xl sm:text-3xl font-extrabold mt-2">Cooling Art Admin Dashboard</h1>
                         <p class="text-xs sm:text-sm text-sky-200/80 mt-1">Manage customer orders and technical repair requests</p>
+                        <p id="adminHeroDate" class="text-[11px] font-bold text-sky-300/80 mt-1.5"></p>
                     </div>
                     <div class="flex items-center gap-2 rounded-2xl bg-white/10 border border-white/20 backdrop-blur px-4 py-2.5 text-xs font-bold text-sky-100">
                         <i class="fa-solid fa-snowflake"></i><span>Cooling Art</span>
                     </div>
                 </div>
+                <div id="adminHeroStats" class="relative mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
             </div>
 
-            <!-- Analytics Cards -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="adminAnalyticsGrid">
-                <!-- Injected via JS -->
+            <!-- Business overview: revenue (wide) + customers + total tasks + negative ratings, one row of KPIs -->
+            <div id="dashOverviewSection" class="space-y-4">
+                <div id="dashHeadOverview"></div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div class="contents" id="adminAnalyticsGrid"><!-- Injected via JS --></div>
+                    <div class="hidden contents" id="adminTopCountersGrid"></div>
+                </div>
             </div>
-
-            <!-- Standalone top counters: Total Tasks & Negative Ratings -->
-            <div class="hidden grid grid-cols-1 sm:grid-cols-2 gap-4" id="adminTopCountersGrid"></div>
 
 
             <div id="adminTasksSection" class="space-y-4">
+                <div id="dashHeadTasks"></div>
                 <div
                     class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
                     <div class="p-5 border-b border-slate-100 dark:border-slate-800">
@@ -607,7 +611,7 @@
                             team</p>
                     </div>
                     <div id="adminTaskCounters"
-                        class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 p-4 border-b border-slate-100 dark:border-slate-800">
+                        class="hidden space-y-5 p-4 border-b border-slate-100 dark:border-slate-800">
                     </div>
                     <div id="adminTaskFilterPanel"
                         class="hidden border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/20">
