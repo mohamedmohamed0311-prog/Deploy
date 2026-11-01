@@ -145,9 +145,17 @@ function cloudMergeById(remote, local, deletedSet, key) {
             const merged = Object.assign({}, l.repairPhotos);
             Object.keys(r.repairPhotos).forEach(slot => {
                 const rv = r.repairPhotos[slot], lv = merged[slot];
-                const rIsUrl = typeof rv === 'string' && rv !== '';
-                const lIsUrl = typeof lv === 'string' && lv !== '';
-                if (rIsUrl && !lIsUrl) merged[slot] = rv;
+                // Different devices may still have `true` placeholders or old inline previews.
+                // Preserve the real cloud photo over those stale copies, and prefer a newer
+                // uploaded replacement when both devices have a photo URL.
+                const rCloud = typeof rv === 'string' && /^https:\/\//i.test(rv);
+                const lCloud = typeof lv === 'string' && /^https:\/\//i.test(lv);
+                if (rCloud && lCloud) {
+                    const timestamp = v => Number((v.match(/-(\d{13})(?:\.|-|$)/) || [])[1] || 0);
+                    if (timestamp(rv) > timestamp(lv)) merged[slot] = rv;
+                } else if (rCloud && !lCloud) merged[slot] = rv;
+                else if (!lCloud && typeof rv === 'string' && rv.startsWith('data:image/') &&
+                         (lv === true || !lv)) merged[slot] = rv;
                 else if (rv && !lv) merged[slot] = rv;
             });
             l.repairPhotos = merged;
@@ -1540,46 +1548,114 @@ function buildOrderRecords() {
     });
 }
 
-// Downloads EVERY order (not just the filtered list on screen) as an Excel sheet.
-function downloadOrdersExcel() {
-    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+// One documented, language-independent column order for download AND re-import.
+// Do not localize these titles: the next spreadsheet must have exactly the same headers.
+const SYSTEM_EXCEL_HEADERS = [
+    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Product Type',
+    'Customer Complain', 'Date', 'Office Notes', 'Call Center Notes',
+    'Services Type', 'Has Issue', 'SAP Number', 'Reporting Entity', 'Technician Assigned'
+];
+const SYSTEM_EXCEL_WIDTHS = [22, 25, 17, 38, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
+
+function systemOrderExcelRow(o) {
+    const task = getLinkedTaskForOrder(o.id);
+    const user = state.users.find(u => u.username && u.username.toLowerCase() === String(o.username || '').toLowerCase());
+    const isArabi = o.source === 'arabi';
+    const techName = task && task.assignedTo
+        ? ((state.users.find(u => u.username === task.assignedTo) || {}).name || task.assignedTo)
+        : ((task && task.importedTechnicianAssigned) || o.assignedTech || '');
+    return [
+        isArabi ? (o.arabiOrderId || o.id) : o.id,
+        isArabi ? o.customerName : ((user && user.name) || o.customerName || o.username || ''),
+        isArabi ? (o.buildingNumber || '') : (o.buildingNumber || ''),
+        isArabi ? (o.arabiAddress || o.customerAddress || '') : (o.customerAddress || ''),
+        isArabi ? (o.productType || '') : (o.productType || (o.type === 'Product' ? o.itemTitle : '')),
+        isArabi ? (o.customerComplain || o.itemTitle || '') : (o.customerComplain || o.notes || (o.type === 'Tech Fix Service' ? o.itemTitle : '')),
+        isArabi ? (o.arabiDate || o.date || '') : (o.date || ''),
+        o.officeNotes || '',
+        isArabi ? (o.callCenterNotes || '') : (o.callCenterNotes || o.notes || ''),
+        isArabi ? (o.arabiServiceType || 'Tech Fix Service') : (o.servicesType || o.type || ''),
+        isArabi ? (o.hasIssue || '') : (o.hasIssue || (o.customerFeedback && o.customerFeedback.status === 'Done - Issue Remains' ? 'Yes' : '')),
+        o.sapNumber || '',
+        o.reportingEntity || '',
+        techName
+    ].map(v => v === null || v === undefined ? '' : String(v));
+}
+
+function makeSystemOrdersWorkbook(orders, filename) {
     if (typeof XLSX === 'undefined') {
         showToast(L('Excel library could not load. Check your internet connection and refresh.', 'تعذر تحميل مكتبة الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
         return;
     }
+    const rows = orders.map(systemOrderExcelRow);
+    const ws = XLSX.utils.aoa_to_sheet([SYSTEM_EXCEL_HEADERS].concat(rows));
+    ws['!cols'] = SYSTEM_EXCEL_WIDTHS.map(wch => ({ wch }));
+    ws['!autofilter'] = { ref: `A1:N${rows.length + 1}` };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Orders & Repairs');
+    XLSX.writeFile(wb, filename);
+    showToast(L(`Downloaded ${rows.length} rows.`, `تم تحميل ${rows.length} صف.`), 'success');
+}
+
+// Arabi tasks are projections, NOT extra paid orders: never add them to state.orders/revenue.
+function makeArabiOrder(task) {
+    const current = getArabiCurrentTask(task);
+    return {
+        id: task.id, arabiOrderId: task.arabiOrderId || '', source: 'arabi',
+        username: 'arabi:' + normalizeIntakeText(task.customerName || '') + '|' + normalizeIntakeText(task.address || ''),
+        customerName: task.customerName || '', customerContactPhone: task.phone || '',
+        itemTitle: task.fix || task.title || '', customerComplain: task.fix || '',
+        type: 'Tech Fix Service', amount: 0, gateway: '',
+        status: current.status === 'Done' ? 'Delivered' : current.status === 'In Progress' ? 'In Progress' : 'Pending',
+        date: task.arabiDate || task.createdDate || '', createdAt: task.createdAt || '',
+        buildingNumber: task.buildingNumber || '',
+        arabiAddress: task.arabiAddress !== undefined ? task.arabiAddress : task.address || '',
+        customerAddress: task.address || '', productType: task.productType || '',
+        officeNotes: task.officeNotes || '', callCenterNotes: task.callCenterNotes || task.notes || '',
+        arabiServiceType: task.arabiServiceType || '', hasIssue: task.hasIssue || '',
+        sapNumber: task.sapNumber || '', reportingEntity: task.reportingEntity || '',
+        notes: task.notes || '',
+        assignedTech: current.assignedTo || task.importedTechnicianAssigned || ''
+    };
+}
+function getArabiCurrentTask(root) {
+    // A job can be handed off to another technician; show the current/latest assignment.
+    const chain = state.tasks.filter(t => t.id === root.id ||
+        (t.source === 'arabi' && t.parentTaskId && getArabiRootTaskId(t) === root.id));
+    return chain.find(t => t.status !== 'Done') || chain.sort((a,b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0] || root;
+}
+function getArabiRootTaskId(task) {
+    let cur = task;
+    for (let i = 0; i < 12 && cur.parentTaskId; i++) {
+        const parent = state.tasks.find(t => t.id === cur.parentTaskId);
+        if (!parent) break;
+        cur = parent;
+    }
+    return cur.id;
+}
+function getAllGlobalOrders() {
+    const staffNames = new Set(state.users.filter(u => isStaffRole(u.role)).map(u => String(u.username || '').toLowerCase()));
+    const regular = state.orders.filter(o => !staffNames.has(String(o.username || '').toLowerCase()));
+    return regular.concat(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(makeArabiOrder));
+}
+function downloadOrdersExcel() {
+    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
     state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
-    if (!state.orders.length) {
-        showToast(L('No orders to download.', 'لا توجد طلبات للتحميل.'), 'info');
-        return;
-    }
-    const byId = new Map(state.orders.map(o => [o.id, o]));
-    const head = [
-        L('Order Ref', 'رقم الطلب'), L('Date', 'التاريخ'), L('Type', 'النوع'), L('Status', 'الحالة'),
-        L('Customer', 'العميل'), L('Username', 'اسم المستخدم'), L('Phone', 'الهاتف'), L('Item / Service', 'المنتج / الخدمة'),
-        L('Amount', 'المبلغ'), L('Payment', 'وسيلة الدفع'), L('Transaction Ref', 'مرجع العملية'),
-        L('Area', 'المنطقة'), L('Address', 'العنوان'), L('Technician', 'الفني'), L('Assistant', 'المساعد'),
-        L('Notes', 'ملاحظات'), L('Rating', 'التقييم'), L('Feedback', 'رأي العميل')
-    ];
-    const rows = buildOrderRecords().map(r => {
-        const o = byId.get(r.id) || {};
-        const task = state.tasks.find(t => t.orderId === r.id);
-        return [
-            r.order_ref, r.date, r.type, r.status,
-            r.customer_name, r.username, r.customer_phone, r.item_title,
-            r.amount, r.gateway, o.transactionRef || '',
-            r.location, r.customer_address, r.assigned_tech || '', (task && task.assistantTo) || '',
-            r.notes, r.rating === null || r.rating === undefined ? '' : r.rating, r.feedback || ''
-        ];
-    });
-    const ws = XLSX.utils.aoa_to_sheet([head].concat(rows));
-    ws['!cols'] = [18, 12, 14, 12, 22, 16, 16, 30, 10, 14, 18, 18, 30, 16, 16, 30, 8, 30].map(w => ({ wch: w }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Orders');
-    XLSX.writeFile(wb, `orders-${getLocalDateString()}.xlsx`);
-    showToast(L(`Downloaded ${rows.length} orders.`, `تم تحميل ${rows.length} طلب.`), 'success');
+    makeSystemOrdersWorkbook(getAllGlobalOrders(), `orders-and-repairs-${getLocalDateString()}.xlsx`);
+}
+function downloadArabiExcel() {
+    if (!canUseArabi()) return;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    makeSystemOrdersWorkbook(getArabiTasks().map(makeArabiOrder), `arabi-requests-${getLocalDateString()}.xlsx`);
+}
+function downloadSystemExcelTemplate() {
+    if (!canUseArabi()) return;
+    makeSystemOrdersWorkbook([], 'orders-and-repairs-template.xlsx');
 }
 window.downloadOrdersExcel = downloadOrdersExcel;
+window.downloadArabiExcel = downloadArabiExcel;
+window.downloadSystemExcelTemplate = downloadSystemExcelTemplate;
 
 
 // ================= INTERNATIONALIZATION (i18n) DICTIONARY =================
@@ -1682,7 +1758,8 @@ const TRANSLATIONS = {
         registered_customers_title: "Registered Customers",
         search_users_placeholder: "Search by name, username, phone...",
         global_orders_title: "Global System Orders & Repair Requests",
-        global_orders_subtitle: "Manage and filter customer purchases and repair bookings",
+        filter_by_customer: "Filter by Customer:",
+        global_orders_subtitle: "Manage Cooling Art and Arabi purchases and repair requests",
         filter_by_user: "Filter by User:",
         all_users: "All Users",
         task_board_title: "Task Board",
@@ -1912,6 +1989,7 @@ const TRANSLATIONS = {
         registered_customers_title: "العملاء المسجلون",
         search_users_placeholder: "البحث بالاسم، اسم المستخدم، الهاتف...",
         global_orders_title: "جميع الطلبات وبلاغات الصيانة",
+        filter_by_customer: "تصفية حسب العميل:",
         global_orders_subtitle: "إدارة وتصفية مشتريات العملاء وحجوزات الصيانة",
         filter_by_user: "تصفية حسب العميل:",
         all_users: "جميع العملاء",
@@ -4271,7 +4349,10 @@ function createTaskFromOrder(order) {
 // Looks up the task auto-created for a given order, if any, so the Orders
 // table can show whether a technician has been assigned yet.
 function getLinkedTaskForOrder(orderId) {
-    return state.tasks.find(t => t.orderId === orderId);
+    const orderTask = state.tasks.find(t => t.orderId === orderId);
+    if (orderTask) return orderTask;
+    const arabiRoot = state.tasks.find(t => t.source === 'arabi' && !t.parentTaskId && t.id === orderId);
+    return arabiRoot ? getArabiCurrentTask(arabiRoot) : undefined;
 }
 
 function renderOrderTaskBadge(orderId) {
@@ -5254,7 +5335,8 @@ function toggleOrderHistory(orderId) {
 
 // Full details of one order: timeline on one side, info on the other
 function buildOrderHistoryHtml(order) {
-    const task = state.tasks.find(t => t.orderId === order.id);
+    const task = getLinkedTaskForOrder(order.id);
+    if (order.source === 'arabi') return buildArabiHistoryHtml(order, task);
     const tech = task && task.assignedTo ? state.users.find(u => u.username === task.assignedTo) : null;
 
     const events = [];
@@ -5300,15 +5382,58 @@ function buildOrderHistoryHtml(order) {
         </div>`;
 }
 
+// Arabi requests use the same folder/timeline controls without inventing a customer account.
+function buildArabiHistoryHtml(order, task) {
+    const d = (label, value) => `<div class="min-w-0"><span class="block text-[10px] uppercase font-bold text-slate-400">${escapeHtml(label)}</span><span class="text-xs font-semibold break-words">${escapeHtml(value || '—')}</span></div>`;
+    const current = task && getArabiCurrentTask(task);
+    const assigned = current && current.assignedTo ? ((state.users.find(u => u.username === current.assignedTo) || {}).name || current.assignedTo) : (task && task.importedTechnicianAssigned) || '';
+    return `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40">
+        ${d(L('Order ID','رقم الطلب'), order.arabiOrderId || order.id)}
+        ${d(L('Customer name','اسم العميل'), order.customerName)}
+        ${d(L('Building number','رقم العقار'), order.buildingNumber)}
+        ${d(L('Address','العنوان'), order.arabiAddress || order.customerAddress)}
+        ${d(L('Product type','نوع المنتج'), order.productType)}
+        ${d(L('Customer complain','شكوى العميل'), order.customerComplain)}
+        ${d(L('Date','التاريخ'), order.arabiDate || order.date)}
+        ${d(L('Office notes','ملاحظات المكتب'), order.officeNotes)}
+        ${d(L('Call center notes','ملاحظات الكول سنتر'), order.callCenterNotes)}
+        ${d(L('Services type','نوع الخدمة'), order.arabiServiceType)}
+        ${d(L('Has issue','هل توجد مشكلة'), order.hasIssue)}
+        ${d('SAP Number', order.sapNumber)}
+        ${d(L('Reporting entity','الجهة المبلغة'), order.reportingEntity)}
+        ${d(L('Technician assigned','الفني المكلف'), assigned)}
+        <div class="sm:col-span-2 lg:col-span-3 flex gap-3 items-center flex-wrap">
+            ${current ? renderTaskStatusBadge(current.status) : ''}
+            ${current && current.status === 'Done' ? renderRepairPhotosIcon(current, true) : ''}
+            ${current && current.completedAt ? `<span class="text-[11px] text-slate-400">${escapeHtml(formatDateTime(current.completedAt))}</span>` : ''}
+        </div>
+    </div>`;
+}
+
 // One customer folder: header (name / phone / count) + orders inside when opened
 function buildCustomerFolderHtml(key, list, isHeadAdmin) {
-    const cust = state.users.find(u => u.username.toLowerCase() === key);
+    const cust = state.users.find(u => u.username && u.username.toLowerCase() === key);
     const first = list[0];
     const name = (cust && cust.name) || first.customerName || first.username;
     const phone = (cust && (cust.contactPhone || cust.whatsapp)) || first.customerContactPhone || first.customerWhatsApp || '';
     const open = expandedOrderFolders.has(key);
 
-    const orderCards = list.map(o => `
+    const orderCards = list.map(o => o.source === 'arabi' ? `
+        <div class="rounded-xl bg-white dark:bg-slate-900 border border-purple-200 dark:border-purple-900/50">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+                <button type="button" onclick="toggleOrderHistory('${o.id}')" class="w-7 h-7 shrink-0 rounded-lg text-slate-400 hover:text-sky-500" title="${L('Show details','عرض التفاصيل')}">
+                    <i class="fa-solid fa-chevron-down text-xs ${expandedOrderRows.has(o.id) ? 'rotate-180' : ''}"></i>
+                </button>
+                <span class="text-[10px] px-2 py-1 bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 rounded-full font-extrabold">${L('ARABI Customer','عميل عربي')}</span>
+                <span class="font-mono text-xs text-slate-400">${escapeHtml(o.date)}</span>
+                <span class="font-bold text-sky-500 text-xs">${escapeHtml(o.arabiOrderId || acId(o.id))}</span>
+                <span class="min-w-0 flex-1 basis-48 font-bold text-xs text-slate-800 dark:text-slate-100">${escapeHtml(o.itemTitle)}</span>
+                ${renderOrderTaskBadge(o.id)}
+                <button type="button" onclick="openArabiRequestDetailsModal('${o.id}')" class="inline-flex items-center gap-1 px-3 py-1.5 bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-lg text-[11px]"><i class="fa-solid fa-eye"></i> ${L('Details','التفاصيل')}</button>
+                ${isHeadAdmin ? `<button type="button" onclick="deleteArabiRow('${o.id}')" class="px-2 py-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 rounded-lg" title="${L('Delete row','حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+            </div>
+            ${expandedOrderRows.has(o.id) ? `<div class="p-4 border-t border-slate-200 dark:border-slate-700">${buildOrderHistoryHtml(o)}</div>` : ''}
+        </div>` : `
         <div class="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
                 <button type="button" onclick="toggleOrderHistory('${o.id}')"
@@ -5345,7 +5470,7 @@ function buildCustomerFolderHtml(key, list, isHeadAdmin) {
                 class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 cursor-pointer hover:bg-sky-50 dark:hover:bg-slate-800 transition select-none">
                 <i class="fa-solid ${open ? 'fa-folder-open' : 'fa-folder'} text-amber-400 text-lg"></i>
                 <span class="font-extrabold text-sm text-slate-800 dark:text-slate-100">${escapeHtml(name)}</span>
-                <span class="text-xs text-sky-500 font-bold">@${escapeHtml(first.username)}</span>
+                ${first.source === 'arabi' ? `<span class="text-[10px] text-purple-600 font-extrabold">${L('ARABI Customer','عميل عربي')}</span>` : `<span class="text-xs text-sky-500 font-bold">@${escapeHtml(first.username)}</span>`}
                 ${phone ? `<span class="text-xs text-slate-500 font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(phone)}</span>` : ''}
                 <span class="ms-auto inline-flex items-center gap-3">
                     <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">${list.length} ${list.length === 1 ? L('order', 'طلب') : L('orders', 'طلبات')}</span>
@@ -5527,12 +5652,13 @@ function renderAdminDashboard() {
     if (ordersSection) ordersSection.classList.toggle('hidden', !canSeeOrders);
     const backupBtn = document.getElementById('adminBackupBtn');
     if (backupBtn) backupBtn.classList.toggle('hidden', !isHeadAdmin);
+    const importBtn = document.getElementById('adminImportOrderExcelBtn');
+    if (importBtn) importBtn.classList.toggle('hidden', !isHeadAdmin);
 
     if (canSeeOrders) {
         // Only customers ever place orders — staff accounts (admin/Customer Services/
         // technician) shouldn't show up here at all, even under "All Users".
-        const staffUsernames = new Set(state.users.filter(u => isStaffRole(u.role)).map(u => u.username.toLowerCase()));
-        const customerOrders = state.orders.filter(o => !staffUsernames.has(String(o.username || '').toLowerCase()));
+        const customerOrders = getAllGlobalOrders();
 
         // Populates and preserves the User Filter Dropdown Selection
         const filterSelect = document.getElementById('adminOrderUserFilter');
@@ -5541,7 +5667,7 @@ function renderAdminDashboard() {
         if (filterSelect) {
             const userList = state.users.filter(u => !isStaffRole(u.role)).map(u => u.username);
 
-            let optionsHtml = `<option value="all">All Users</option>`;
+            let optionsHtml = `<option value="all" ${selectedUser === 'all' ? 'selected' : ''}>${L('All Customers','كل العملاء')}</option><option value="arabi" ${selectedUser === 'arabi' ? 'selected' : ''}>${L('Arabi Customers','عملاء عربي')}</option>`;
             userList.forEach(uname => {
                 const uObj = state.users.find(u => u.username.toLowerCase() === uname.toLowerCase());
                 const label = uObj && uObj.name ? `@${uname} (${uObj.name})` : `@${uname}`;
@@ -5554,7 +5680,8 @@ function renderAdminDashboard() {
         const currentFilter = filterSelect ? filterSelect.value : 'all';
         const byUser = currentFilter === 'all'
             ? customerOrders
-            : customerOrders.filter(o => o.username.toLowerCase() === currentFilter.toLowerCase());
+            : currentFilter === 'arabi' ? customerOrders.filter(o => o.source === 'arabi')
+            : customerOrders.filter(o => o.source !== 'arabi' && String(o.username || '').toLowerCase() === currentFilter.toLowerCase());
 
         // Search by customer name, username, phone / WhatsApp number or order ref
         const orderSearchInput = document.getElementById('adminOrderSearch');
@@ -5562,7 +5689,7 @@ function renderAdminDashboard() {
         const orderSearchDigits = orderSearchTerm.replace(/\D/g, '');
         const filteredOrders = !orderSearchTerm ? byUser : byUser.filter(o => {
             const cust = state.users.find(u => u.username.toLowerCase() === String(o.username || '').toLowerCase());
-            const texts = [o.id, o.username, o.customerName, cust && cust.name, cust && cust.username];
+            const texts = [o.id, o.arabiOrderId, o.username, o.customerName, o.customerAddress, o.sapNumber, o.customerComplain, cust && cust.name, cust && cust.username];
             const phones = [o.customerWhatsApp, o.customerContactPhone, cust && cust.whatsapp, cust && cust.contactPhone];
             if (texts.filter(Boolean).some(t => String(t).toLowerCase().includes(orderSearchTerm))) return true;
             return phones.filter(Boolean).some(p => {
@@ -5573,7 +5700,7 @@ function renderAdminDashboard() {
         });
 
         // Customer folders (grouped by customer, newest activity first)
-        if (orderSearchInput) orderSearchInput.placeholder = L('Search by name or phone...', 'ابحث بالاسم أو رقم الهاتف...');
+        if (orderSearchInput) orderSearchInput.placeholder = L('Search by name, order ID, SAP or phone...', 'ابحث بالاسم أو رقم الطلب أو SAP أو الهاتف...');
         const foldersBox = document.getElementById('adminOrdersFolders');
         const orderTime = o => new Date(o.createdAt || o.date || 0).getTime();
         const groups = new Map();
@@ -5803,6 +5930,20 @@ const INTAKE_HEADERS = [
 
 // Sheet (array of rows) -> [{ name, phone, address, issue, notes }]
 function parseIntakeRows(matrix) {
+    // The common 14-column template is accepted by both Customer Log and Arabi.
+    // Old Customer Log (6 columns) and old Arabi (4 columns) are still supported.
+    const header = ((matrix && matrix[0]) || []).map(v => String(v || '').trim().toLowerCase());
+    if (header.includes('order id') && header.includes('customer complain')) {
+        return parseArabiRows(matrix).map(r => ({
+            orderId: r.orderId, name: r.name, phone: r.phone,
+            building: r.building, rawAddress: r.address,
+            address: [r.building, r.address].filter(Boolean).join(' '),
+            issue: r.fix, notes: r.callCenterNotes, productType: r.productType,
+            date: r.date, officeNotes: r.officeNotes, servicesType: r.servicesType,
+            hasIssue: r.hasIssue, sapNumber: r.sapNumber,
+            reportingEntity: r.reportingEntity, assigned: r.assigned
+        }));
+    }
     const rows = matrix
         .map(r => r.map(c => String(c === null || c === undefined ? '' : c).trim()))
         .filter(r => r.some(Boolean));
@@ -5844,7 +5985,8 @@ function parseIntakeRows(matrix) {
 
 // Same customer + same issue = same row, however it is typed (spaces, Arabic spellings, 0 in front of the number)
 function intakeRowKey(r) {
-    return [r.name, intakePhoneDigits(r.phone), r.address, r.issue].map(normalizeIntakeText).join('|');
+    return r.orderId ? 'id:' + normalizeIntakeText(r.orderId)
+        : [r.name, intakePhoneDigits(r.phone), r.address, r.issue].map(normalizeIntakeText).join('|');
 }
 
 // Same phone (or, without a phone, same name + address) = same customer = same folder
@@ -5938,6 +6080,8 @@ function importCustomerRows(rows, fileName) {
     ledger.forEach(i => { if (i.id.startsWith('intake:')) knownRows.add(i.id.slice(7)); });
     const newLedger = [];
     const usedIds = new Set(state.tasks.map(t => t.id));
+    const knownOrderIds = new Set(state.orders.map(o => normalizeIntakeText(o.id)));
+    state.tasks.filter(t => t.source === 'arabi' && t.arabiOrderId).forEach(t => knownOrderIds.add(normalizeIntakeText(t.arabiOrderId)));
     const now = new Date();
     const result = { file: fileName, added: 0, repeated: 0, invalid: 0, newCustomers: 0 };
     const newTasks = [];
@@ -5945,7 +6089,7 @@ function importCustomerRows(rows, fileName) {
     rows.forEach(r => {
         if (!r.issue || !(r.name || r.phone)) { result.invalid++; return; }
         const rowKey = intakeRowKey(r);
-        if (knownRows.has(rowKey)) { result.repeated++; return; }   // already imported before
+        if (knownRows.has(rowKey) || (r.orderId && knownOrderIds.has(normalizeIntakeText(r.orderId)))) { result.repeated++; return; } // already imported before
         knownRows.add(rowKey);
         newLedger.push({ id: 'intake:' + rowKey });
 
@@ -5987,7 +6131,13 @@ function importCustomerRows(rows, fileName) {
             phone: r.phone,
             address: r.address,
             fix: r.issue,
-            notes: r.notes
+            notes: r.notes,
+            importedOrderId: r.orderId || '', buildingNumber: r.building || '',
+            rawAddress: r.rawAddress || '', productType: r.productType || '',
+            officeNotes: r.officeNotes || '', callCenterNotes: r.notes || '',
+            sheetDate: r.date || '', servicesType: r.servicesType || '',
+            hasIssue: r.hasIssue || '', sapNumber: r.sapNumber || '',
+            reportingEntity: r.reportingEntity || '', importedTechnicianAssigned: r.assigned || ''
         });
         folder.history = folder.history || [];
         folder.history.push({ id: `${createDateBasedId('H')}-${result.added}`, type: 'issue', at: now.toISOString(), issue: r.issue, notes: r.notes, address: r.address, rowKey, taskId: id, file: fileName });
@@ -6003,18 +6153,8 @@ function importCustomerRows(rows, fileName) {
 }
 
 function downloadCustomerSheetTemplate() {
-    if (typeof XLSX === 'undefined') {
-        showToast(L('Excel reader could not load. Check your internet connection and refresh.', 'تعذر تحميل قارئ الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
-        return;
-    }
-    const ws = XLSX.utils.aoa_to_sheet([
-        ['Customer Name', 'Building Number', 'Address', 'Issue', 'Call Center Notes', 'Bridge Number'],
-        ['أحمد حسن', '12', 'شارع التحرير، الدقي', 'التكييف لا يبرد', 'العميل متاح بعد الساعة 5', '01012345678']
-    ]);
-    ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 30 }, { wch: 28 }, { wch: 30 }, { wch: 16 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Customers');
-    XLSX.writeFile(wb, 'customer-sheet-template.xlsx');
+    if (!canImportCustomers()) return;
+    makeSystemOrdersWorkbook([], 'customer-sheet-template.xlsx');
 }
 
 // ---- Customer folders ----
@@ -6237,60 +6377,77 @@ function renderCustomerFolders() {
 // ================= ARABI EXTRACTION (Excel sheet -> table + tasks) =================
 // Each row of the sheet becomes one task (source 'arabi'). Because they are normal tasks they
 // are assigned, accepted and finished like any other, and they feed every dashboard counter.
+// Exact exported headers and common old/Arabic aliases. 14-column sheets may also
+// have no header; 4-column historical Arabi files still work as before.
 const ARABI_HEADERS = {
-    phone: /phone|mobile|tel|bridge|بريدج|البريدج|whats|هاتف|موبايل|تليفون|محمول|جوال|رقم\s*(ال)?(هاتف|موبايل|تليفون|محمول|جوال|تواصل|بريدج)/i,
-    address: /address|location|area|عنوان|العنوان|منطقة|موقع/i,
-    fix: /fix|repair|problem|issue|fault|service|عطل|العطل|صيانة|الصيانة|مشكلة|خدمة/i,
-    name: /name|customer|client|اسم|الاسم|عميل|العميل/i
+    orderId: /^(order\s*(id|ref|number|no\.?|#)|رقم\s*(ال)?(طلب|اوردر)|كود\s*الطلب)$/i,
+    name: /^(customer\s*name|client\s*name|name|اسم\s*(ال)?عميل|الاسم|اسم)$/i,
+    building: /^(building\s*(number|no\.?|#)?|bldg|رقم\s*(العقار|العمارة|المبنى)|العمارة|المبنى)$/i,
+    address: /^(address|location|street|العنوان|عنوان|المنطقة)$/i,
+    productType: /^(product\s*type|product|نوع\s*(ال)?منتج|نوع\s*الجهاز)$/i,
+    fix: /^(customer\s*complain(t)?|customer\s*issue|complain(t)?|fix|repair|problem|issue|fault|service|شكوى\s*(ال)?عميل|الشكوى|العطل|عطل|المشكلة|مشكلة|الصيانة)$/i,
+    date: /^(date|request\s*date|created\s*(at|date)|التاريخ|تاريخ\s*الطلب)$/i,
+    officeNotes: /^(office\s*notes?|ملاحظات\s*المكتب|ملاحظات\s*الإدارة)$/i,
+    callCenterNotes: /^(call\s*center\s*notes?|notes?|ملاحظات\s*(ال)?كول\s*سنتر|ملاحظات\s*خدمة\s*العملاء|ملاحظات)$/i,
+    servicesType: /^(services?\s*type|service\s*category|نوع\s*الخدمة)$/i,
+    hasIssue: /^(has\s*issue|issue\s*remains|هل\s*(توجد|يوجد)\s*مشكلة|يوجد\s*عطل)$/i,
+    sapNumber: /^(sap\s*(number|no\.?|#|id)?|رقم\s*sap|رقم\s*ساب)$/i,
+    reportingEntity: /^(reporting\s*entity|reporting\s*party|الجهة\s*المبلغة|جهة\s*الإبلاغ)$/i,
+    assigned: /^(technician\s*assigned|assigned\s*technician|technician|الفني\s*المكلف|الفني\s*المعين|الفني)$/i,
+    phone: /^(phone|mobile|tel|bridge|بريدج|whats(app)?|هاتف|موبايل|تليفون|رقم\s*(الهاتف|الموبايل))$/i
 };
-
+const ARABI_SCHEMA_ORDER = [
+    'orderId', 'name', 'building', 'address', 'productType', 'fix', 'date',
+    'officeNotes', 'callCenterNotes', 'servicesType', 'hasIssue', 'sapNumber', 'reportingEntity', 'assigned'
+];
 function cleanArabiPhone(value) {
     const raw = String(value || '').trim();
-    const digits = raw.replace(/\D/g, '');
-    // Excel drops the leading 0 of Egyptian mobile numbers (1065876092 -> 01065876092)
+    const digits = toAsciiDigits(raw).replace(/\D/g, '');
     if (digits.length === 10 && digits[0] === '1') return '0' + digits;
     return raw;
 }
-
-// Turns the sheet (array of rows) into [{name, phone, address, fix}]
 function parseArabiRows(matrix) {
     const rows = matrix
         .map(r => r.map(c => String(c === null || c === undefined ? '' : c).trim()))
         .filter(r => r.some(Boolean));
     if (!rows.length) return [];
 
-    // Header row? Match column titles (English or Arabic); otherwise use the column order.
     const map = {};
     rows[0].forEach((cell, i) => {
-        if (/building|bldg|عمار|مبنى|بناي/i.test(cell)) return; // building number is not a phone
-        for (const key of ['phone', 'address', 'fix', 'name']) {
-            if (map[key] === undefined && ARABI_HEADERS[key].test(cell)) { map[key] = i; break; }
+        const header = cell.replace(/\s+/g, ' ').trim();
+        for (const [key, rx] of Object.entries(ARABI_HEADERS)) {
+            if (map[key] === undefined && rx.test(header)) { map[key] = i; break; }
         }
     });
+    const recognizedHeader = Object.keys(map).length >= 2 &&
+        (map.name !== undefined || map.orderId !== undefined || map.fix !== undefined);
     let body = rows;
-    if (Object.keys(map).length >= 2) {
+    if (recognizedHeader) {
         body = rows.slice(1);
-    } else if ((rows[0].length || 0) >= 4) {
-        map.name = 0; map.phone = 1; map.address = 2; map.fix = 3;
     } else {
-        map.name = 0; map.address = 1; map.fix = 2;
+        Object.keys(map).forEach(k => delete map[k]);
+        const order = rows[0].length >= 14 ? ARABI_SCHEMA_ORDER :
+            rows[0].length >= 4 ? ['name', 'phone', 'address', 'fix'] : ['name', 'address', 'fix'];
+        order.forEach((key, i) => { map[key] = i; });
     }
-
     const pick = (r, key) => (map[key] === undefined ? '' : (r[map[key]] || ''));
     return body.map(r => ({
-        name: pick(r, 'name'),
-        phone: cleanArabiPhone(pick(r, 'phone')),
-        address: pick(r, 'address'),
-        fix: pick(r, 'fix')
+        orderId: pick(r, 'orderId'), name: pick(r, 'name'), phone: cleanArabiPhone(pick(r, 'phone')),
+        building: pick(r, 'building'), address: pick(r, 'address'), productType: pick(r, 'productType'),
+        fix: pick(r, 'fix'), date: pick(r, 'date'), officeNotes: pick(r, 'officeNotes'),
+        callCenterNotes: pick(r, 'callCenterNotes'), servicesType: pick(r, 'servicesType'),
+        hasIssue: pick(r, 'hasIssue'), sapNumber: pick(r, 'sapNumber'),
+        reportingEntity: pick(r, 'reportingEntity'), assigned: pick(r, 'assigned')
     }));
 }
 
-// Same customer + address + issue = same row. The phone is NOT part of the key, so a row never
-// turns into a "new" one just because its phone was read differently.
+// Stable Order ID is authoritative: two requests with same name/address/complaint
+// but DIFFERENT IDs are separate jobs. Old 4-column sheets keep content dedupe.
 function arabiKey(r) {
-    return [r.name, r.address, r.fix].map(normalizeIntakeText).join('|');
+    if (String(r.orderId || '').trim()) return 'id:' + normalizeIntakeText(r.orderId);
+    return 'legacy:' + [r.name, r.address, r.fix].map(normalizeIntakeText).join('|');
 }
-const arabiTaskKey = t => arabiKey({ name: t.customerName, address: t.address, fix: t.fix });
+const arabiTaskKey = t => arabiKey({ orderId: t.arabiOrderId, name: t.customerName, address: t.arabiAddress !== undefined ? t.arabiAddress : t.address, fix: t.fix });
 
 // Removes copies of the same row that are still untouched (open + unassigned); keeps the one that has a phone.
 function dedupeArabiTasks() {
@@ -6312,106 +6469,89 @@ function dedupeArabiTasks() {
     return true;
 }
 
-function handleArabiFile(input) {
+async function handleArabiFile(input) {
     const file = input.files && input.files[0];
     input.value = '';
-    if (!file) return;
-    if (!canUseArabi()) return;
+    if (!file || !canUseArabi()) return;
     if (typeof XLSX === 'undefined') {
         showToast(L('Excel reader could not load. Check your internet connection and refresh.', 'تعذر تحميل قارئ الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
         return;
     }
+    let parsed;
+    try { parsed = parseArabiRows(await readSheetMatrix(file)); }
+    catch (err) {
+        showToast(L('That file is not a valid Excel/CSV sheet.', 'هذا الملف ليس ملف إكسل أو CSV صالحاً.'), 'error');
+        return;
+    }
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    const existing = new Set(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(arabiTaskKey));
+    const existingOrders = new Set(state.orders.map(o => normalizeIntakeText(o.id || '')));
+    // Re-uploaded exports of legacy Arabi jobs contain their generated task ID.
+    // Match it too: do not treat an already exported legacy request as a new job.
+    state.tasks.filter(t => t.source === 'arabi').forEach(t => existingOrders.add(normalizeIntakeText(t.id || '')));
+    const ledger = loadImportLedger();
+    const ledgerSeen = new Set(ledger.filter(i => i.id.startsWith('arabi:')).map(i => i.id.slice(6)));
+    const newLedger = [];
+    const folders = loadCustomerFolders();
+    folders.forEach(f => (f.history || []).forEach(h => {
+        if (h.file === 'Arabi Sheet') existing.add(arabiKey({ name: f.name, address: h.address, fix: h.issue }));
+    }));
+    const usedIds = new Set(state.tasks.map(t => t.id));
+    const batch = Date.now();
+    const now = new Date();
+    let added = 0, duplicates = 0, invalid = 0;
+    const created = [];
 
-    const reader = new FileReader();
-    reader.onerror = () => showToast(L('Could not read that file.', 'تعذر قراءة الملف.'), 'error');
-    reader.onload = e => {
-        let parsed;
-        try {
-            const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-            const ws = wb.Sheets[wb.SheetNames[0]];
-            parsed = parseArabiRows(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false }));
-        } catch (err) {
-            showToast(L('That file is not a valid Excel sheet.', 'هذا الملف ليس ملف إكسل صالحاً.'), 'error');
-            return;
+    parsed.forEach((r, i) => {
+        if (!r.fix || !(r.name || r.address)) { invalid++; return; }
+        const key = arabiKey(r);
+        // The combined Excel export also includes regular customer orders. Never
+        // re-create those as Arabi jobs when that file is uploaded.
+        if (existing.has(key) || ledgerSeen.has(key) || (r.orderId && existingOrders.has(normalizeIntakeText(r.orderId)))) {
+            duplicates++;
+            return; // Re-upload NEVER overwrites or resets an existing task.
         }
-
-        // Already known = an Arabi row now, or one already filed in a customer folder (rows survive a reset there).
-        state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;   // work on the latest data
-        const existing = new Set(state.tasks.filter(t => t.source === 'arabi' && !t.parentTaskId).map(arabiTaskKey));
-        const ledger = loadImportLedger();
-        const ledgerSeen = new Set(ledger.filter(i => i.id.startsWith('arabi:')).map(i => i.id.slice(6)));
-        const newLedger = [];
-        const folders = loadCustomerFolders();
-        folders.forEach(f => (f.history || []).forEach(h => {
-            if (h.file === 'Arabi Sheet') existing.add(arabiKey({ name: f.name, address: h.address, fix: h.issue }));
-        }));
-        let healed = false;
-        const usedIds = new Set(state.tasks.map(t => t.id));
-        const batch = Date.now();
-        const now = new Date();
-        let added = 0, duplicates = 0, invalid = 0;
-        const created = [];
-
-        parsed.forEach((r, i) => {
-            if (!r.fix || !(r.name || r.address)) { invalid++; return; }
-            const key = arabiKey(r);
-            if (existing.has(key) || ledgerSeen.has(key)) {
-                duplicates++;
-                // Same row again: only fill in a phone that was missing / read wrongly before.
-                if (intakePhoneDigits(r.phone).length >= 7) {
-                    state.tasks.forEach(t => { if (t.source === 'arabi' && arabiTaskKey(t) === key && intakePhoneDigits(t.phone).length < 7) { t.phone = r.phone; healed = true; } });
-                    folders.forEach(f => {
-                        if (normalizeIntakeText(f.name) === normalizeIntakeText(r.name) && normalizeIntakeText(f.address) === normalizeIntakeText(r.address) && intakePhoneDigits(f.phone).length < 7) {
-                            f.phone = r.phone; f.key = intakeFolderKey(f); healed = true;
-                        }
-                    });
-                }
-                return;
-            }
-            existing.add(key);
-            newLedger.push({ id: 'arabi:' + key });
-            let id = createDateBasedId('TSK');
-            while (usedIds.has(id)) id = createDateBasedId('TSK');
-            usedIds.add(id);
-            created.push({
-                id,
-                title: r.fix,
-                description: `Customer ${r.name || 'N/A'} — Address: ${r.address || 'N/A'}.`,
-                assignedTo: '',
-                createdBy: 'Arabi Sheet',
-                createdDate: getLocalDateString(now),
-                createdAt: now.toISOString(),
-                unassignedSince: now.toISOString(),
-                dueDate: '',
-                priority: 'Normal',
-                status: 'Open',
-                orderId: '',
-                orderType: 'Tech Fix Service',
-                phase: 'repair',
-                source: 'arabi',
-                customerName: r.name,
-                phone: r.phone,
-                address: r.address,
-                fix: r.fix,
-                arabiBatch: batch,
-                arabiRow: i + 1
-            });
-            added++;
+        existing.add(key);
+        newLedger.push({ id: 'arabi:' + key });
+        let id = createDateBasedId('TSK');
+        while (usedIds.has(id)) id = createDateBasedId('TSK');
+        usedIds.add(id);
+        const assignedUser = state.users.find(u => u.role === 'technician' &&
+            (normalizeIntakeText(u.username) === normalizeIntakeText(r.assigned) ||
+                normalizeIntakeText(u.name) === normalizeIntakeText(r.assigned)));
+        const joinedAddress = [r.building, r.address].filter(Boolean).join(' ').trim();
+        created.push({
+            id, title: r.fix, description: `Customer ${r.name || 'N/A'} — Address: ${joinedAddress || 'N/A'}.`,
+            assignedTo: assignedUser ? assignedUser.username : '',
+            importedTechnicianAssigned: r.assigned || '',
+            createdBy: 'Arabi Sheet', createdDate: getLocalDateString(now), createdAt: now.toISOString(),
+            unassignedSince: now.toISOString(), dueDate: '', priority: 'Normal', status: 'Open',
+            orderId: '', orderType: 'Tech Fix Service', phase: 'repair', source: 'arabi',
+            customerName: r.name, phone: r.phone, address: joinedAddress, fix: r.fix,
+            notes: r.callCenterNotes || '',
+            arabiOrderId: r.orderId, arabiAddress: r.address, buildingNumber: r.building,
+            productType: r.productType, arabiDate: r.date, officeNotes: r.officeNotes,
+            callCenterNotes: r.callCenterNotes, arabiServiceType: r.servicesType,
+            hasIssue: r.hasIssue, sapNumber: r.sapNumber, reportingEntity: r.reportingEntity,
+            arabiBatch: batch, arabiRow: i + 1
         });
+        added++;
+    });
 
-        if (added) state.tasks = created.concat(state.tasks);
-        if (added) saveImportLedger(ledger.concat(newLedger));
-        if (healed) state.customerFolders = folders;
-        if (added || healed) saveState();
-        if (added) syncCustomerLogSources();
-        arabiLastResult = { file: file.name, added, duplicates, invalid };
-        renderArabiPage();
-        showToast(added
-            ? L(`${added} Arabi row(s) extracted.`, `تم استخراج ${added} صف من عربي.`)
-            : L('No new rows were found in that file.', 'لم يتم العثور على صفوف جديدة في الملف.'),
-            added ? 'success' : 'error');
-    };
-    reader.readAsArrayBuffer(file);
+    if (added) {
+        state.tasks = created.concat(state.tasks);
+        saveState();
+        saveImportLedger(ledger.concat(newLedger));
+        syncCustomerLogSources();
+    }
+    arabiLastResult = { file: file.name, added, duplicates, invalid };
+    renderArabiPage();
+    if (getCurrentViewId() === 'admin-dashboard') renderAdminDashboard();
+    showToast(added
+        ? L(`${added} new Arabi request(s) imported; ${duplicates} existing row(s) skipped.`, `تم استيراد ${added} طلب جديد من عربي وتخطي ${duplicates} صف مكرر.`)
+        : L('No new rows were found in that file.', 'لم يتم العثور على صفوف جديدة في الملف.'),
+        added ? 'success' : 'info');
 }
 
 let arabiLastResult = null;
@@ -6426,6 +6566,7 @@ function deleteArabiRow(id) {
     state.tasks = state.tasks.filter(t => t.id !== id && t.parentTaskId !== id);
     saveState();
     renderArabiPage();
+    if (getCurrentViewId() === 'admin-dashboard') renderAdminDashboard();
 }
 
 function clearArabiRows() {
@@ -6453,34 +6594,29 @@ function renderArabiPage() {
             ${res.invalid ? ` · ${L('rows skipped (missing fix / name)', 'صفوف متخطاة (بدون عطل / اسم)')} <span class="text-red-500">${res.invalid}</span>` : ''}
         </p>` : '';
 
-    const body = rows.length ? rows.map((t, i) => {
-        const tech = t.assignedTo ? state.users.find(u => u.username === t.assignedTo) : null;
-        return `
-        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-            <td class="p-4 text-slate-400 font-mono">${i + 1}</td>
-            <td class="p-4 font-bold">${escapeHtml(t.customerName || '')}</td>
-            <td class="p-4 text-slate-500 font-mono">${escapeHtml(t.phone || '')}</td>
-            <td class="p-4 text-slate-600 dark:text-slate-300">${escapeHtml(t.address || '')}</td>
-            <td class="p-4 font-semibold">${escapeHtml(t.fix || t.title || '')}</td>
-            <td class="p-4 text-slate-500">${tech ? escapeHtml(tech.name || tech.username) : '<span class="text-yellow-600 font-bold">' + L('Not assigned', 'غير معين') + '</span>'}</td>
-            <td class="p-4">${renderTaskStatusBadge(t.status)}</td>
-            <td class="p-4 text-center">
-                <button type="button" onclick="deleteArabiRow('${t.id}')" class="text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="${L('Delete row', 'حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button>
-            </td>
+    const body = rows.length ? rows.map(t => {
+        const values = systemOrderExcelRow(makeArabiOrder(t));
+        const current = getArabiCurrentTask(t);
+        return `<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+            ${values.map((v, i) => `<td class="p-3 align-top whitespace-pre-wrap min-w-[110px] ${i === 0 ? 'font-mono text-sky-600 font-bold' : 'text-slate-600 dark:text-slate-300'}">${escapeHtml(v)}</td>`).join('')}
+            <td class="p-3">${renderTaskStatusBadge(current.status)}</td>
+            <td class="p-3"><button type="button" onclick="deleteArabiRow('${t.id}')" class="text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="${L('Delete row','حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button></td>
         </tr>`;
-    }).join('') : `<tr><td colspan="8" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
+    }).join('') : `<tr><td colspan="16" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
 
     box.innerHTML = `
         <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
             <div>
                 <h1 class="text-2xl font-bold">${L('Arabi Extraction', 'استخراج عربي')}</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload an Excel sheet (.xlsx, .xls or .csv) with: Name, Phone, Address, Fix. Rows appear below and on the Dashboard under "Arabi", and count in the task counters.', 'ارفع ملف إكسل (.xlsx أو .xls أو .csv) بالأعمدة: الاسم، الهاتف، العنوان، العطل. تظهر الصفوف بالأسفل وفي لوحة التحكم تحت "عربي" وتُحتسب في العدادات.')}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 14-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٤ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
                 <label class="inline-flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
                     <i class="fa-solid fa-file-arrow-up"></i> ${L('Upload Excel sheet', 'رفع ملف إكسل')}
                     <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
                 </label>
+                <button type="button" onclick="downloadArabiExcel()" class="inline-flex items-center gap-2 px-4 py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-excel"></i> ${L('Download Arabi Excel','تحميل إكسل عربي')}</button>
+                <button type="button" onclick="downloadSystemExcelTemplate()" class="inline-flex items-center gap-2 px-4 py-3 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Blank template (14 columns)','نموذج فارغ (١٤ عمود)')}</button>
                 <button type="button" onclick="navigateTo('admin-dashboard')" class="inline-flex items-center gap-2 px-5 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold rounded-xl text-xs transition">
                     <i class="fa-solid fa-table-columns"></i> ${L('Open Dashboard', 'فتح لوحة التحكم')}
                 </button>
@@ -6494,17 +6630,11 @@ function renderArabiPage() {
                 <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">${rows.length}</span>
             </div>
             <div class="overflow-x-auto overflow-y-auto max-h-[560px] custom-scrollbar">
-                <table class="w-full text-left border-collapse text-xs">
+                <table class="min-w-max text-left border-collapse text-xs">
                     <thead class="sticky top-0 z-10">
                         <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
-                            <th class="p-4">#</th>
-                            <th class="p-4">${L('Name', 'الاسم')}</th>
-                            <th class="p-4">${L('Phone', 'الهاتف')}</th>
-                            <th class="p-4">${L('Address', 'العنوان')}</th>
-                            <th class="p-4">${L('Fix', 'العطل')}</th>
-                            <th class="p-4">${L('Technician', 'الفني')}</th>
-                            <th class="p-4">${L('Status', 'الحالة')}</th>
-                            <th class="p-4"></th>
+                            ${SYSTEM_EXCEL_HEADERS.map(h => `<th class="p-3 whitespace-nowrap text-[10px]">${escapeHtml(h)}</th>`).join('')}
+                            <th class="p-3">${L('Status','الحالة')}</th><th class="p-3"></th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${body}</tbody>
@@ -6523,7 +6653,7 @@ const LOCATION_OFFLINE_MS = 30 * 60 * 1000;    // older than this = treated as n
 const LOCATION_WRITE_MIN_MS = 20 * 1000;       // at most one update per 20 s while moving
 const LOCATION_HEARTBEAT_MS = 60 * 1000;       // standing still: one update per minute
 const locShare = { watchId: null, user: null, lastWriteAt: 0, lastPos: null, status: 'off' };
-// status: off | starting | on | paused | blocked | unsupported
+// status: off | ready | starting | on | paused | blocked | error | unsupported
 
 function readLiveLocations() {
     try {
@@ -6557,26 +6687,77 @@ function isLocationSharingPaused(username) {
 }
 
 // ---- worker side ----
+function beginLocationWatch() {
+    const me = state.currentUser;
+    if (!me || me.role !== 'technician' || isLocationSharingPaused(me.username)) return;
+    if (locShare.watchId !== null) return;
+    locShare.user = me.username;
+    locShare.watchId = navigator.geolocation.watchPosition(onMyPosition, onMyPositionError,
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+}
+
+// Do not prompt automatically during page render. A denied permission becomes a persistent
+// browser block on phones; the user should explicitly press "Enable location" first.
 function startLocationSharing() {
     const me = state.currentUser;
     if (!me || me.role !== 'technician') return;
     if (isLocationSharingPaused(me.username)) {
-        if (locShare.status !== 'paused') { stopLocationWatch(); locShare.user = me.username; locShare.status = 'paused'; renderLocationShareControl(); }
+        stopLocationWatch();
+        locShare.user = me.username;
+        locShare.status = 'paused';
+        renderLocationShareControl();
         return;
     }
     if (locShare.watchId !== null && locShare.user === me.username) return;
+    if (locShare.user === me.username && ['ready', 'starting', 'blocked', 'error'].includes(locShare.status)) return;
     stopLocationWatch();
     locShare.user = me.username;
-    locShare.lastWriteAt = 0;
-    locShare.lastPos = null;
     if (!navigator.geolocation || !window.isSecureContext) {
         locShare.status = 'unsupported';
         renderLocationShareControl();
         return;
     }
-    locShare.status = 'starting';
-    locShare.watchId = navigator.geolocation.watchPosition(onMyPosition, onMyPositionError, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+    locShare.status = 'ready';
     renderLocationShareControl();
+    // A previously granted site permission may restart live tracking without a new prompt.
+    if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'geolocation' }).then(permission => {
+            if (!state.currentUser || state.currentUser.username !== me.username ||
+                isLocationSharingPaused(me.username) || locShare.user !== me.username) return;
+            if (permission.state === 'granted' && locShare.status === 'ready') {
+                locShare.status = 'starting';
+                beginLocationWatch();
+                renderLocationShareControl();
+            } else if (permission.state === 'denied' && locShare.status === 'ready') {
+                locShare.status = 'blocked';
+                renderLocationShareControl();
+            }
+        }).catch(() => {});
+    }
+}
+
+function enableLocationSharing() {
+    const me = state.currentUser;
+    if (!me || me.role !== 'technician') return;
+    if (isLocationSharingPaused(me.username)) {
+        localStorage.removeItem('ca_share_loc_off_' + me.username);
+    }
+    if (!navigator.geolocation || !window.isSecureContext) {
+        locShare.status = 'unsupported';
+        renderLocationShareControl();
+        return;
+    }
+    if (locShare.watchId !== null) return;
+    // getCurrentPosition is called directly from the button click (user gesture),
+    // allowing Android Chrome / iOS Safari to show the standard permissions prompt.
+    locShare.user = me.username;
+    locShare.status = 'starting';
+    renderLocationShareControl();
+    navigator.geolocation.getCurrentPosition(pos => {
+        if (!state.currentUser || state.currentUser.username !== me.username) return;
+        onMyPosition(pos);
+        beginLocationWatch();
+    }, onMyPositionError, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
 }
 
 function stopLocationWatch() {
@@ -6614,8 +6795,9 @@ function onMyPositionError(err) {
     if (err && err.code === 1) {            // permission denied
         stopLocationWatch();
         locShare.status = 'blocked';
-    } else if (locShare.status !== 'on') {  // position unavailable / timeout: keep trying
-        locShare.status = 'starting';
+    } else if (locShare.status !== 'on') {  // GPS unavailable / timed out; show a retry option
+        stopLocationWatch();
+        locShare.status = 'error';
     }
     renderLocationShareControl();
 }
@@ -6630,15 +6812,16 @@ function setLocationSharingPaused(paused) {
         writeLiveLocations(readLiveLocations().filter(l => l.id !== me.username)); // off the map
     } else {
         localStorage.removeItem('ca_share_loc_off_' + me.username);
-        startLocationSharing();
+        stopLocationWatch();
+        locShare.user = null;
+        enableLocationSharing();
     }
     renderLocationShareControl();
 }
 
 function retryLocationSharing() {
     stopLocationWatch();
-    locShare.user = null;
-    startLocationSharing();
+    enableLocationSharing();
 }
 
 // The small status card at the top of the technician's Home.
@@ -6649,12 +6832,16 @@ function renderLocationShareControl() {
     const cards = {
         on: ['bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900', 'text-emerald-600', 'fa-location-crosshairs',
             L('Sharing your live location with the office', 'تشارك موقعك المباشر مع المكتب'), L('Pause', 'إيقاف مؤقت'), 'setLocationSharingPaused(true)'],
+        ready: ['bg-sky-50 dark:bg-sky-950/30 border-sky-200 dark:border-sky-900', 'text-sky-600', 'fa-location-dot',
+            L('Enable GPS location to share your position with the office.', 'فعّل موقع GPS لمشاركة موقعك مع المكتب.'), L('Enable location', 'تفعيل الموقع'), 'enableLocationSharing()'],
         starting: ['bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900', 'text-amber-600', 'fa-spinner fa-spin',
             L('Getting your location… allow location access if your browser asks.', 'جارٍ تحديد موقعك… اسمح بالوصول للموقع إذا طلب المتصفح ذلك.'), '', ''],
         paused: ['bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700', 'text-slate-400', 'fa-location-pin-lock',
             L('Location sharing is paused — the office cannot see where you are.', 'مشاركة الموقع متوقفة — المكتب لا يستطيع رؤية مكانك.'), L('Resume', 'استئناف'), 'setLocationSharingPaused(false)'],
+        error: ['bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900', 'text-amber-600', 'fa-triangle-exclamation',
+            L('Could not get a GPS fix. Check that phone Location is on, then try again.', 'تعذر تحديد الموقع. تأكد من تشغيل موقع الهاتف ثم حاول مجدداً.'), L('Try again', 'حاول مجدداً'), 'retryLocationSharing()'],
         blocked: ['bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', 'text-red-600', 'fa-ban',
-            L('Location access is blocked. Allow it in your browser settings, then tap Try again.', 'الوصول للموقع محظور. اسمح به من إعدادات المتصفح ثم اضغط حاول مجدداً.'), L('Try again', 'حاول مجدداً'), 'retryLocationSharing()'],
+            L('Location was blocked by your browser. See the instructions below.', 'المتصفح حظر الموقع. اتبع التعليمات أدناه.'), L('Try again', 'حاول مجدداً'), 'retryLocationSharing()'],
         unsupported: ['bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', 'text-red-600', 'fa-ban',
             L('This device or page cannot share location (it needs a secure https page).', 'لا يمكن مشاركة الموقع من هذا الجهاز أو الصفحة (يلزم اتصال https آمن).'), '', '']
     };
@@ -6664,6 +6851,10 @@ function renderLocationShareControl() {
         <div class="rounded-2xl border ${c[0]} px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
             <span class="flex items-center gap-2.5 text-xs font-bold"><i class="fa-solid ${c[2]} ${c[1]}"></i>${c[3]}</span>
             ${c[4] ? `<button type="button" onclick="${c[5]}" class="text-[11px] font-extrabold bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 transition">${c[4]}</button>` : ''}
+            ${locShare.status === 'blocked' ? `<p class="w-full text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">${L(
+                'Android Chrome: tap the icon beside the website address → Site settings → Location → Allow. iPhone Safari: tap aA / Page Settings → Website Settings → Location → Allow. Turn on your phone GPS, then tap Try again. Open the website directly in Chrome or Safari (not an in-app preview).',
+                'كروم أندرويد: اضغط الرمز بجوار عنوان الموقع ← إعدادات الموقع ← الموقع ← سماح. سفاري آيفون: إعدادات الصفحة aA ← إعدادات موقع الويب ← الموقع ← سماح. فعّل GPS ثم حاول مجدداً، وافتح الموقع مباشرة في المتصفح وليس داخل تطبيق آخر.')}</p>` : ''}
+            ${locShare.status === 'unsupported' ? `<p class="w-full text-[11px] text-slate-600 dark:text-slate-300">${L('Open the deployed website using HTTPS directly in Chrome or Safari. Embedded previews and HTTP pages can block GPS.', 'افتح الموقع المنشور عبر HTTPS مباشرة في Chrome أو Safari. المعاينات المضمنة وصفحات HTTP قد تمنع GPS.')}</p>` : ''}
         </div>`;
 }
 
@@ -6910,6 +7101,19 @@ function removeArea(index) {
     renderAreasManager();
 }
 
+function openArabiRequestDetailsModal(taskId) {
+    const task = state.tasks.find(t => t.id === taskId && t.source === 'arabi');
+    if (!task || !state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return;
+    const order = makeArabiOrder(task);
+    const modal = document.getElementById('orderDetailsModal');
+    const subtitle = document.getElementById('orderDetailsSubtitle');
+    const body = document.getElementById('orderDetailsBody');
+    if (subtitle) subtitle.textContent = `${order.arabiOrderId || acId(order.id)} · ${order.date || ''} · ${L('Arabi Customer','عميل عربي')}`;
+    if (body) body.innerHTML = `<div class="space-y-4">${buildArabiHistoryHtml(order, task)}${task.phone ? `<p class="text-xs text-slate-500"><i class="fa-solid fa-phone me-1"></i>${escapeHtml(task.phone)}</p>` : ''}</div>`;
+    if (modal) modal.style.display = 'flex';
+}
+window.openArabiRequestDetailsModal = openArabiRequestDetailsModal;
+
 // ================= ORDER DETAILS MODAL =================
 function openOrderDetailsModal(orderId) {
     const order = state.orders.find(o => o.id === orderId);
@@ -7071,13 +7275,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         ['fanModel', ['Fan Model', 'موديل المروحة']]
     ];
 
-    // Photo bytes live in IndexedDB, not localStorage — see note above
-    // previewRepairPhoto() for why. task.repairPhotos only stores `true` per
-    // filled slot (tiny, safe to keep in the ca_tasks localStorage blob).
-    // repairPhotoCache mirrors whatever's been loaded/just picked this session
-    // so every render below stays synchronous; a cache miss (e.g. right after
-    // a page reload) kicks off an async IndexedDB read that patches the <img>
-    // in place once it resolves.
+    // Store compressed previews in the task's cloud-synced record so the admin
+    // can see photos on another device even when Supabase Storage is unavailable.
+    // After a Storage upload succeeds, replace that preview with the public URL.
+    // IndexedDB remains a local backup for retries and previously saved photos.
     const REPAIR_PHOTO_DB_NAME = 'ca_repair_photos_db';
     const REPAIR_PHOTO_STORE = 'photos';
     let repairPhotoDbPromise = null;
@@ -7085,6 +7286,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
     // Shown instead of a blank white box when the photo is not available yet (still on the technician's phone) or fails to load.
     const PHOTO_PENDING_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140"><rect width="200" height="140" fill="#1e293b"/><g fill="none" stroke="#64748b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><rect x="62" y="44" width="76" height="52" rx="8"/><circle cx="100" cy="70" r="14"/></g><text x="100" y="122" font-size="11" text-anchor="middle" fill="#94a3b8" font-family="sans-serif">Waiting for upload...</text></svg>');
+    const PHOTO_UNAVAILABLE_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140"><rect width="200" height="140" fill="#7f1d1d"/><text x="100" y="64" font-size="13" text-anchor="middle" fill="white" font-family="sans-serif">Photo unavailable</text><text x="100" y="84" font-size="11" text-anchor="middle" fill="white" font-family="sans-serif">Ask technician to retry</text></svg>');
 
     function repairPhotoDbKey(taskId, slot) { return `${taskId}::${slot}`; }
     function repairPhotoImgId(taskId, slot) { return `rp-img-${taskId}-${slot}`; }
@@ -7128,13 +7330,13 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function repairPhotoImgHtml(taskId, slot, cls, rawValue) {
         if (typeof rawValue === 'string' && /^https?:\/\//i.test(rawValue)) {
             // Uploaded to cloud storage: every device (admin dashboard included) can show it.
-            return `<img id="${repairPhotoImgId(taskId, slot)}" src="${escapeHtml(rawValue)}" class="${cls}" alt="" loading="lazy" onerror="this.onerror=null;this.src=PHOTO_PENDING_IMG">`;
+            return `<img id="${repairPhotoImgId(taskId, slot)}" src="${escapeHtml(rawValue)}" class="${cls}" alt="Repair photo" loading="lazy" onerror="this.onerror=null;this.src=PHOTO_UNAVAILABLE_IMG">`;
         }
         if (typeof rawValue === 'string' && rawValue.startsWith('data:')) {
             // Old format from before repair photos moved to IndexedDB — the
             // task already holds the actual data URL, so just show it.
             repairPhotoCache[repairPhotoDbKey(taskId, slot)] = rawValue;
-            return `<img id="${repairPhotoImgId(taskId, slot)}" src="${rawValue}" class="${cls}" alt="">`;
+            return `<img id="${repairPhotoImgId(taskId, slot)}" src="${escapeHtml(rawValue)}" class="${cls}" alt="Repair photo">`;
         }
         const cached = getCachedRepairPhoto(taskId, slot);
         const id = repairPhotoImgId(taskId, slot);
@@ -7154,23 +7356,26 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     // them inline. Used on the technician log and the admin/CS Task Board.
     function getRepairPhotoCount(task) {
         const photos = task.repairPhotos || {};
-        return REPAIR_PHOTO_SLOTS.filter(([key]) => photos[key]).length;
+        return REPAIR_PHOTO_SLOTS.filter(([key]) => typeof photos[key] === 'string' &&
+            (/^https:\/\//i.test(photos[key]) || photos[key].startsWith('data:image/'))).length;
     }
 
     function renderRepairPhotosIcon(task, compact) {
         if (task.orderType !== 'Tech Fix Service') return '';
         const count = getRepairPhotoCount(task);
-        if (!count) return '';
+        const pending = REPAIR_PHOTO_SLOTS.filter(([slot]) => (task.repairPhotos || {})[slot] === true).length;
+        if (!count && !pending) return '';
+        const photoLabel = count ? `${L('Photos', 'الصور')} (${count})` : L('Photos awaiting sync', 'صور بانتظار المزامنة');
         if (compact) {
             return `<button type="button" onclick="openPhotoViewerModal('${task.id}')"
             class="mt-1 inline-flex items-center gap-1 text-[9px] font-extrabold text-sky-600 dark:text-sky-400 hover:underline uppercase tracking-wide">
-            <i class="fa-solid fa-images"></i> ${L('Photos', 'الصور')} (${count})
+            <i class="fa-solid fa-images"></i> ${photoLabel}
         </button>`;
         }
         return `
         <button type="button" onclick="openPhotoViewerModal('${task.id}')"
             class="inline-flex items-center gap-1.5 text-[11px] font-bold bg-sky-50 hover:bg-sky-100 text-sky-600 dark:bg-sky-950/40 dark:hover:bg-sky-950 dark:text-sky-400 rounded-lg px-2.5 py-1.5 transition">
-            <i class="fa-solid fa-images"></i> ${L('Photos', 'الصور')} (${count})
+            <i class="fa-solid fa-images"></i> ${photoLabel}
         </button>`;
     }
 
@@ -7255,6 +7460,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 <div class="space-y-1.5 p-2 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm">
                     <span class="block font-bold text-slate-600 dark:text-slate-300 truncate">${escapeHtml(L(lbl[0], lbl[1]))}</span>
                     ${photos[key] ? repairPhotoImgHtml(task.id, key, 'w-full h-16 object-cover rounded-lg border border-emerald-300 dark:border-emerald-700 mb-1 bg-slate-100 dark:bg-slate-800', photos[key]) : ''}
+                    ${photos[key] === true ? `<span class="block text-amber-600">${L('Waiting for upload from this phone', 'بانتظار رفع الصورة من الهاتف')}</span>` :
+                        (typeof photos[key] === 'string' && photos[key].startsWith('data:image/') ? `<span class="block text-amber-600">${L('Preview saved; cloud sync pending', 'النسخة المصغرة محفوظة؛ رفع السحابة معلق')}</span>` :
+                        (typeof photos[key] === 'string' && photos[key].startsWith('https://') ? `<span class="block text-emerald-600">${L('Uploaded', 'تم الرفع')}</span>` : ''))}
                     <div class="flex flex-col gap-1.5 pt-1">
                         <label class="flex-1 cursor-pointer inline-flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-2 px-2.5 rounded-xl text-xs transition shadow-sm hover:scale-[1.02] active:scale-[0.98]">
                             <i class="fa-solid fa-camera text-xs"></i> ${L('Take Photo', 'التقاط صورة')}
@@ -7263,70 +7471,80 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     </div>
                 </div>`).join('')}
         </div>
+        ${REPAIR_PHOTO_SLOTS.some(([slot]) => (typeof photos[slot] === 'string' && photos[slot].startsWith('data:image/')) || photos[slot] === true)
+            ? `<button type="button" onclick="syncPendingRepairPhotos()" class="text-xs font-bold text-sky-600 underline">${L('Retry cloud upload', 'إعادة محاولة رفع الصور')}</button>` : ''}
     </div>`;
     }
 
-    function previewRepairPhoto(taskId, key, input) {
+    // A photo never counts as uploaded just because a file was selected. First save a
+    // visible, compact copy in the shared task record, then attempt a full cloud upload.
+    // This also prevents the admin from seeing a white placeholder for a `true` flag.
+    async function previewRepairPhoto(taskId, key, input) {
         const file = input.files && input.files[0];
         if (!file) return;
-        const task = state.tasks.find(t => t.id === taskId);
-        if (!task) return;
-        readImageFileAsDataUrl(file, 1000, 0.8).then(dataUrl => {
+        input.value = '';
+        if (!REPAIR_PHOTO_SLOTS.some(([slot]) => slot === key)) return;
+        try {
+            const dataUrl = await readImageFileAsDataUrl(file, 1000, 0.80);
             repairPhotoCache[repairPhotoDbKey(taskId, key)] = dataUrl;
-            // Store a small inline copy right away so the admin sees the photo even if Storage upload fails.
-            task.repairPhotos = Object.assign({}, task.repairPhotos, { [key]: true });
-            saveState();
-            shrinkDataUrl(dataUrl, 640, 0.55).then(small => {
-                const t2 = state.tasks.find(t => t.id === taskId);
-                if (!t2) return;
-                const cur = (t2.repairPhotos || {})[key];
-                if (typeof cur === 'string' && cur.indexOf('http') === 0) return; // cloud URL already in place
-                t2.repairPhotos = Object.assign({}, t2.repairPhotos, { [key]: small });
-                saveState();
-            }).catch(() => {});
-            const current = getCurrentViewId();
-            if (current === 'tech-home') renderTechHome();
-            else renderAdminDashboard();
-            // Then upload the full-quality image and swap in its link.
-            uploadRepairPhotoToCloud(taskId, key, dataUrl);
-            saveRepairPhotoToDb(taskId, key, dataUrl).catch(() => {
-                showToast(L('Photo shown for this session, but could not be stored permanently on this device.', 'تم عرض الصورة لهذه الجلسة، لكن تعذر تخزينها بشكل دائم على هذا الجهاز.'), 'error');
+            // IndexedDB stores the original resized photo for recovery on this phone.
+            await saveRepairPhotoToDb(taskId, key, dataUrl).catch(err => {
+                console.warn('[Repair photo] IndexedDB backup failed:', err);
             });
-        }).catch(() => {
-            showToast(L('Please choose an image file.', 'يرجى اختيار ملف صورة.'), 'error');
-        });
+            const small = await shrinkDataUrl(dataUrl, 480, 0.45);
+            const task = state.tasks.find(t => t.id === taskId);
+            if (!task) return;
+            task.repairPhotos = { ...(task.repairPhotos || {}), [key]: small };
+            try { saveState(); }
+            catch (storageError) {
+                // Even if the phone's browser storage is full, still try to upload the
+                // real photo to Supabase. A public URL uses much less local space.
+                console.warn('[Repair photo] local quota full; trying cloud upload:', storageError);
+            }
+            if (getCurrentViewId() === 'tech-home') renderTechHome();
+            else if (getCurrentViewId() === 'tech-dashboard') renderTechDashboard();
+            else renderAdminDashboard();
+            // Upload and validate. If it fails, the compact shared copy remains visible.
+            await uploadRepairPhotoToCloud(taskId, key, dataUrl);
+        } catch (err) {
+            console.warn('[Repair photo] failed to process image:', err);
+            showToast(L('Could not save the photo. Please take it again.', 'تعذر حفظ الصورة. يرجى التقاطها مرة أخرى.'), 'error');
+        }
     }
 
-    // Uploads one repair photo to cloud storage and swaps the task's `true` flag for its public link.
+    // Public links only work if the Storage bucket is public and the authenticated
+    // technician has INSERT permission. Check readability before publishing the URL.
     async function uploadRepairPhotoToCloud(taskId, slot, dataUrl) {
-        if (typeof supabaseClient === 'undefined' || !supabaseClient) return false;
+        if (!supabaseClient) return false;
         try {
             const blob = await (await fetch(dataUrl)).blob();
-            const path = `repair/${taskId}-${slot}-${Date.now()}.jpg`;
-            const { error } = await supabaseClient.storage.from(CLOUD_BUCKET).upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
+            const path = `repair/${encodeURIComponent(taskId)}-${slot}-${Date.now()}.jpg`;
+            const { error } = await supabaseClient.storage.from(CLOUD_BUCKET).upload(path, blob,
+                { contentType: blob.type || 'image/jpeg', upsert: false });
             if (error) throw error;
             const url = supabaseClient.storage.from(CLOUD_BUCKET).getPublicUrl(path).data.publicUrl;
+            // getPublicUrl() constructs a URL but doesn't test bucket read access.
+            const check = await fetch(url, { method: 'GET', cache: 'no-store' });
+            if (!check.ok || !String(check.headers.get('content-type') || '').startsWith('image/')) {
+                throw new Error('Uploaded image cannot be viewed publicly. Check site-media bucket visibility and read policy.');
+            }
             const task = state.tasks.find(t => t.id === taskId);
             if (!task) return false;
-            task.repairPhotos = Object.assign({}, task.repairPhotos, { [slot]: url });
+            task.repairPhotos = { ...(task.repairPhotos || {}), [slot]: url };
             repairPhotoCache[repairPhotoDbKey(taskId, slot)] = url;
             saveState();
-            const current = getCurrentViewId();
-            if (current === 'tech-home') renderTechHome(); else if (current === 'admin-dashboard' || current === 'dashboard') renderAdminDashboard();
+            if (getCurrentViewId() === 'tech-home') renderTechHome();
+            else if (getCurrentViewId() === 'tech-dashboard') renderTechDashboard();
+            else if (getCurrentViewId() === 'admin-dashboard' || getCurrentViewId() === 'dashboard') renderAdminDashboard();
             return true;
         } catch (err) {
-            console.warn('[Repair photo] cloud upload failed:', err && err.message);
-            if (!repairPhotoWarned) { repairPhotoWarned = true; showToast(L('Photo storage upload failed (' + ((err && err.message) || 'unknown') + '). Saving a compact copy instead.', 'فشل رفع الصورة للتخزين. سيتم حفظ نسخة مضغوطة بدلاً من ذلك.'), 'error', 6000); }
-            try {
-                const small = await shrinkDataUrl(dataUrl, 640, 0.6);
-                const task = state.tasks.find(t => t.id === taskId);
-                if (!task) return false;
-                task.repairPhotos = Object.assign({}, task.repairPhotos, { [slot]: small });
-                saveState();
-                const current = getCurrentViewId();
-                if (current === 'tech-home') renderTechHome(); else if (current === 'admin-dashboard' || current === 'dashboard') renderAdminDashboard();
-                return true;
-            } catch (e2) { return false; }
+            console.warn('[Repair photo] cloud upload failed:', err);
+            if (!repairPhotoWarned) {
+                repairPhotoWarned = true;
+                showToast(L('Photo saved as a compressed preview. Cloud upload failed; check site-media Storage permissions and reconnect this phone.',
+                    'تم حفظ نسخة مصغّرة للصورة. فشل الرفع للسحابة؛ تحقق من صلاحيات التخزين وأعد الاتصال من الهاتف.'), 'error', 8000);
+            }
+            return false; // Never replace a real preview with a `true` placeholder.
         }
     }
     let repairPhotoWarned = false;
@@ -7349,13 +7567,17 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     // that phone is open, push them to the cloud so the admin can finally see them.
     let repairPhotoSyncBusy = false;
     async function syncPendingRepairPhotos() {
-        if (repairPhotoSyncBusy || typeof supabaseClient === 'undefined' || !supabaseClient || !state.currentUser) return;
+        if (repairPhotoSyncBusy || !supabaseClient || !state.currentUser || state.currentUser.role !== 'technician') return;
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
         repairPhotoSyncBusy = true;
         try {
             for (const task of state.tasks) {
+                if (!isTaskAssignedTo(task, state.currentUser.username)) continue;
                 for (const [slot] of REPAIR_PHOTO_SLOTS) {
-                    if ((task.repairPhotos || {})[slot] !== true) continue;
-                    const dataUrl = await loadRepairPhotoFromDb(task.id, slot).catch(() => null);
+                    const value = (task.repairPhotos || {})[slot];
+                    if (!value || (typeof value === 'string' && /^https:\/\//i.test(value))) continue;
+                    const saved = await loadRepairPhotoFromDb(task.id, slot).catch(() => null);
+                    const dataUrl = saved || (typeof value === 'string' && value.startsWith('data:image/') ? value : null);
                     if (dataUrl) await uploadRepairPhotoToCloud(task.id, slot, dataUrl);
                 }
             }
@@ -7363,12 +7585,15 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     }
     setTimeout(syncPendingRepairPhotos, 6000);
     setInterval(syncPendingRepairPhotos, 30000);
+    window.addEventListener('online', syncPendingRepairPhotos);
 
     // Collects the 4 repair photos already picked on the task (via
     // previewRepairPhoto) and reports which ones, if any, are still missing.
     function getMissingRepairPhotoLabels(task) {
         const photos = task.repairPhotos || {};
-        return REPAIR_PHOTO_SLOTS.filter(([key]) => !photos[key]).map(([, lbl]) => L(lbl[0], lbl[1]));
+        return REPAIR_PHOTO_SLOTS.filter(([key]) => typeof photos[key] !== 'string' ||
+            (!/^https:\/\//i.test(photos[key]) && !photos[key].startsWith('data:image/')))
+            .map(([, lbl]) => L(lbl[0], lbl[1]));
     }
 
     // ================= TECHNICIAN HOME (ACTIVE TASKS) =================
@@ -8930,9 +9155,15 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
 
         saveState();
-        if (acceptPos && state.currentUser) {
-            // Accepting means location is on: make sure the live map is sharing it too.
-            if (isLocationSharingPaused(state.currentUser.username)) setLocationSharingPaused(false); else startLocationSharing();
+        if (acceptPos && state.currentUser && state.currentUser.role === 'technician') {
+            // The Accept button already obtained GPS permission by a user gesture;
+            // immediately publish that first location and start the live watcher.
+            if (isLocationSharingPaused(state.currentUser.username)) setLocationSharingPaused(false);
+            else {
+                locShare.user = state.currentUser.username;
+                onMyPosition({ coords: { latitude: acceptPos.lat, longitude: acceptPos.lng, accuracy: acceptPos.accuracy } });
+                beginLocationWatch();
+            }
         }
         const isUndo = (previousStatus === 'In Progress' && newStatus === 'Open') || (previousStatus === 'Done' && newStatus === 'In Progress');
         const isAccept = previousStatus === 'Open' && newStatus === 'In Progress';

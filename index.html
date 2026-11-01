@@ -730,8 +730,7 @@
                     <div>
                         <h3 class="font-bold text-sm" data-i18n="global_orders_title">Global System Orders & Repair
                             Requests</h3>
-                        <p class="text-[11px] text-slate-400" data-i18n="global_orders_subtitle">Manage and filter
-                            customer purchases and repair bookings
+                        <p class="text-[11px] text-slate-400" data-i18n="global_orders_subtitle">Manage Cooling Art and Arabi purchases and repair requests
                         </p>
                     </div>
                     <!-- USER FILTER & BACKUP TO SUPABASE BUTTON -->
@@ -748,6 +747,10 @@
                             title="Sync and backup all orders to Supabase Database">
                             <i class="fa-solid fa-cloud-arrow-up"></i> <span>Backup to Supabase</span>
                         </button>
+                        <label id="adminImportOrderExcelBtn" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition shadow-sm cursor-pointer" title="Import Arabi requests; only new rows are added">
+                            <i class="fa-solid fa-file-arrow-up"></i> <span>Import Arabi Excel</span>
+                            <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
+                        </label>
                         <button type="button" id="adminDownloadExcelBtn" onclick="downloadOrdersExcel()"
                             class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition shadow-sm hover:scale-105"
                             title="Download all orders as an Excel sheet">
@@ -756,8 +759,8 @@
                         <div class="flex items-center gap-2">
                             <label for="adminOrderUserFilter"
                                 class="text-xs font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap"
-                                data-i18n="filter_by_user">Filter by
-                                User:</label>
+                                data-i18n="filter_by_customer">Filter by
+                                Customer:</label>
                             <select id="adminOrderUserFilter" onchange="renderAdminDashboard()"
                                 class="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
                                 <option value="all" data-i18n="all_users">All Users</option>
