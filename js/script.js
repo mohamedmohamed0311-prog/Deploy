@@ -7273,12 +7273,21 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!task) return;
         readImageFileAsDataUrl(file, 1000, 0.8).then(dataUrl => {
             repairPhotoCache[repairPhotoDbKey(taskId, key)] = dataUrl;
+            // Store a small inline copy right away so the admin sees the photo even if Storage upload fails.
             task.repairPhotos = Object.assign({}, task.repairPhotos, { [key]: true });
-            saveState(); // tiny now — just a flag — so this won't hit the localStorage quota
+            saveState();
+            shrinkDataUrl(dataUrl, 640, 0.55).then(small => {
+                const t2 = state.tasks.find(t => t.id === taskId);
+                if (!t2) return;
+                const cur = (t2.repairPhotos || {})[key];
+                if (typeof cur === 'string' && cur.indexOf('http') === 0) return; // cloud URL already in place
+                t2.repairPhotos = Object.assign({}, t2.repairPhotos, { [key]: small });
+                saveState();
+            }).catch(() => {});
             const current = getCurrentViewId();
             if (current === 'tech-home') renderTechHome();
             else renderAdminDashboard();
-            // The photo must leave this phone, otherwise the admin's dashboard only sees an empty (white) box.
+            // Then upload the full-quality image and swap in its link.
             uploadRepairPhotoToCloud(taskId, key, dataUrl);
             saveRepairPhotoToDb(taskId, key, dataUrl).catch(() => {
                 showToast(L('Photo shown for this session, but could not be stored permanently on this device.', 'تم عرض الصورة لهذه الجلسة، لكن تعذر تخزينها بشكل دائم على هذا الجهاز.'), 'error');
@@ -7780,6 +7789,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                         ${busyTask ? `<button type="button" disabled title="${escapeHtml(L('Finish your current task first', 'أنهِ مهمتك الحالية أولاً'))}"
                             class="text-xs font-extrabold bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500 rounded-xl px-4 py-2.5 inline-flex items-center justify-center gap-2 min-h-[42px] cursor-not-allowed">
                             <i class="fa-solid fa-lock"></i> ${L('Finish current task first', 'أنهِ المهمة الحالية أولاً')}
+                        </button>` : (state.currentUser && (isLocationSharingPaused(state.currentUser.username) || locShare.status === 'blocked' || locShare.status === 'unsupported')) ? `<button type="button" onclick="updateTaskStatus('${task.id}', 'In Progress')" title="${escapeHtml(L('Turn location on to accept', 'شغّل الموقع للقبول'))}"
+                            class="text-xs font-extrabold bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500 rounded-xl px-4 py-2.5 inline-flex items-center justify-center gap-2 min-h-[42px] cursor-not-allowed">
+                            <i class="fa-solid fa-location-crosshairs"></i> ${L('Turn location on to accept', 'شغّل الموقع للقبول')}
                         </button>` : `<button onclick="updateTaskStatus('${task.id}', 'In Progress')" title="${escapeHtml(L('Location must be on to accept', 'يجب تشغيل الموقع للقبول'))}"
                             class="text-xs font-extrabold bg-sky-500 hover:bg-sky-600 text-white rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2 min-h-[42px]">
                             <i class="fa-solid fa-location-dot"></i> ${L('Accept Task', 'قبول المهمة')}
@@ -8804,6 +8816,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 resolve(null);
                 return;
             }
+            const denyMsg = L('Location is turned off for this site. You cannot accept the task until you turn it on in your phone/browser settings.', 'الموقع مغلق لهذا الموقع. لا يمكنك قبول المهمة حتى تشغّله من إعدادات الهاتف أو المتصفح.');
+            const go = () => {
             showToast(L('Checking your location...', 'جارٍ التحقق من موقعك...'), 'info', 2500);
             navigator.geolocation.getCurrentPosition(
                 pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0), at: new Date().toISOString() }),
@@ -8815,6 +8829,14 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     resolve(null);
                 },
                 { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+            };
+            try {
+                if (navigator.permissions && navigator.permissions.query) {
+                    navigator.permissions.query({ name: 'geolocation' }).then(p => {
+                        if (p.state === 'denied') { showToast(denyMsg, 'error', 8000); resolve(null); } else go();
+                    }).catch(go);
+                } else go();
+            } catch (e) { go(); }
         });
     }
 
