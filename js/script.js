@@ -160,6 +160,11 @@ function cloudMergeById(remote, local, deletedSet, key) {
             });
             l.repairPhotos = merged;
         });
+        local.forEach(l => {
+            const r = remoteById.get(l.id);
+            if (!r || !r.techNotes) return;
+            if (!l.techNotes || String(r.techNotes.at || '') > String(l.techNotes.at || '')) l.techNotes = r.techNotes;
+        });
     }
     return local.concat(extra);
 }
@@ -1551,11 +1556,25 @@ function buildOrderRecords() {
 // One documented, language-independent column order for download AND re-import.
 // Do not localize these titles: the next spreadsheet must have exactly the same headers.
 const SYSTEM_EXCEL_HEADERS = [
-    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Product Type',
+    'Order ID', 'Customer Name', 'Address', 'Product Type',
     'Customer Complain', 'Date', 'Office Notes', 'Call Center Notes',
     'Services Type', 'Has Issue', 'SAP Number', 'Reporting Entity', 'Technician Assigned'
 ];
-const SYSTEM_EXCEL_WIDTHS = [22, 25, 17, 38, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
+// Arabic version of the same 13 columns (same order). Building number is part of the address. The importers recognise these titles too.
+const SYSTEM_EXCEL_HEADERS_AR = [
+    'رقم الطلب', 'اسم العميل', 'العنوان', 'نوع المنتج',
+    'شكوى العميل', 'التاريخ', 'ملاحظات المكتب', 'ملاحظات الكول سنتر',
+    'نوع الخدمة', 'هل توجد مشكلة', 'رقم ساب', 'الجهة المبلغة', 'الفني المكلف'
+];
+const SYSTEM_EXCEL_WIDTHS = [22, 25, 44, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
+
+// Building number and address live in ONE column: "12 Street name"
+function mergeBuildingAddress(building, address) {
+    const b = String(building || '').trim(), a = String(address || '').trim();
+    if (!b) return a;
+    if (!a) return b;
+    return a.includes(b) ? a : b + ' ' + a;
+}
 
 function systemOrderExcelRow(o) {
     const task = getLinkedTaskForOrder(o.id);
@@ -1567,8 +1586,7 @@ function systemOrderExcelRow(o) {
     return [
         isArabi ? (o.arabiOrderId || o.id) : o.id,
         isArabi ? o.customerName : ((user && user.name) || o.customerName || o.username || ''),
-        isArabi ? (o.buildingNumber || '') : (o.buildingNumber || ''),
-        isArabi ? (o.arabiAddress || o.customerAddress || '') : (o.customerAddress || ''),
+        mergeBuildingAddress(o.buildingNumber, isArabi ? (o.arabiAddress || o.customerAddress || '') : (o.customerAddress || '')),
         isArabi ? (o.productType || '') : (o.productType || (o.type === 'Product' ? o.itemTitle : '')),
         isArabi ? (o.customerComplain || o.itemTitle || '') : (o.customerComplain || o.notes || (o.type === 'Tech Fix Service' ? o.itemTitle : '')),
         isArabi ? (o.arabiDate || o.date || '') : (o.date || ''),
@@ -1582,17 +1600,19 @@ function systemOrderExcelRow(o) {
     ].map(v => v === null || v === undefined ? '' : String(v));
 }
 
-function makeSystemOrdersWorkbook(orders, filename) {
+function makeSystemOrdersWorkbook(orders, filename, lang) {
     if (typeof XLSX === 'undefined') {
         showToast(L('Excel library could not load. Check your internet connection and refresh.', 'تعذر تحميل مكتبة الإكسل. تأكد من الاتصال بالإنترنت وأعد تحميل الصفحة.'), 'error');
         return;
     }
     const rows = orders.map(systemOrderExcelRow);
-    const ws = XLSX.utils.aoa_to_sheet([SYSTEM_EXCEL_HEADERS].concat(rows));
+    const isAr = lang !== 'en'; // Arabic by default
+    const ws = XLSX.utils.aoa_to_sheet([(isAr ? SYSTEM_EXCEL_HEADERS_AR : SYSTEM_EXCEL_HEADERS)].concat(rows));
     ws['!cols'] = SYSTEM_EXCEL_WIDTHS.map(wch => ({ wch }));
-    ws['!autofilter'] = { ref: `A1:N${rows.length + 1}` };
+    ws['!autofilter'] = { ref: `A1:M${rows.length + 1}` };
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Orders & Repairs');
+    XLSX.utils.book_append_sheet(wb, ws, isAr ? 'الطلبات والصيانة' : 'Orders & Repairs');
+    if (isAr) wb.Workbook = { Views: [{ RTL: true }] }; // Arabic sheet opens right-to-left
     XLSX.writeFile(wb, filename);
     showToast(L(`Downloaded ${rows.length} rows.`, `تم تحميل ${rows.length} صف.`), 'success');
 }
@@ -1651,7 +1671,7 @@ function downloadArabiExcel() {
 }
 function downloadSystemExcelTemplate() {
     if (!canUseArabi()) return;
-    makeSystemOrdersWorkbook([], 'orders-and-repairs-template.xlsx');
+    makeSystemOrdersWorkbook([], 'orders-and-repairs-template-ar.xlsx');
 }
 window.downloadOrdersExcel = downloadOrdersExcel;
 window.downloadArabiExcel = downloadArabiExcel;
@@ -1795,7 +1815,7 @@ const TRANSLATIONS = {
         welcome_back: "Welcome back",
         whats_on_plate: "What's on your plate right now",
         task_log_title: "Task Log",
-        task_log_subtitle: "A record of the tasks you've completed",
+        task_log_subtitle: "The tasks you completed today",
         active_right_now: "Active Right Now",
         open_tasks: "Open",
         in_progress_tasks: "In Progress",
@@ -1809,6 +1829,7 @@ const TRANSLATIONS = {
         btn_mark_done: "Mark as Done",
         status_done: "Done",
         about_title: "About Cooling Art & Official Policies",
+        who_we_are_text: "Cooling Art is an Egyptian company founded in Cairo, dedicated to delivering engineering excellence in HVAC climate solutions. We sell high-efficiency inverter air conditioners, provide 24-hour emergency technical repairs, and offer affordable monthly unit insurance protection.",
         about_desc: "Founded in Cairo, Egypt, Cooling Art is dedicated to delivering engineering excellence in HVAC climate solutions. From high-efficiency inverter air conditioners to 24-hour emergency technical repairs and affordable monthly unit insurance protection.",
         terms_title: "2-Year Extended AC Insurance — Full Terms & Conditions",
         terms_subtitle: "As certified by Cooling Art, an authorized service center and distributor for Al-Araby air conditioning units",
@@ -2026,7 +2047,7 @@ const TRANSLATIONS = {
         welcome_back: "مرحباً بك",
         whats_on_plate: "المهام المطلوبة منك الآن",
         task_log_title: "سجل المهام",
-        task_log_subtitle: "سجل المهام التي قمت بإنجازها",
+        task_log_subtitle: "المهام التي أنجزتها اليوم",
         active_right_now: "المهام النشطة الآن",
         open_tasks: "مفتوحة",
         in_progress_tasks: "قيد التنفيذ",
@@ -2040,6 +2061,7 @@ const TRANSLATIONS = {
         btn_mark_done: "تحديد كمنجز",
         status_done: "منجز",
         about_title: "عن كولينج آرت والسياسات الرسمية",
+        who_we_are_text: "كولينج آرت شركة مصرية تأسست في القاهرة، وتهدف إلى تقديم التميز الهندسي في حلول تكييف الهواء. نبيع أجهزة التكييف الإنفيرتر عالية الكفاءة، ونقدم خدمات الصيانة الفنية الطارئة على مدار 24 ساعة، ونوفر تغطية التأمين الشهري للأجهزة بأسعار مناسبة.",
         about_desc: "تأسست شركة كولينج آرت في القاهرة - مصر، وتهدف إلى تقديم التميز الهندسي في حلول تكييف الهواء. بدءاً من أجهزة التكييف الإنفيرتر عالية الكفاءة إلى خدمات الصيانة الفنية الطارئة على مدار 24 ساعة وتغطية التأمين الشهري بأسعار مناسبة.",
         terms_title: "تأمين التكييف الممتد لمدة عامين — الشروط والأحكام الكاملة",
         terms_subtitle: "معتمد من كولينج آرت، مركز صيانة وموزع معتمد لأجهزة تكييف العربي",
@@ -2640,10 +2662,12 @@ function startArabicLayer() {
 // Service share links look like  #service/<serviceId>  and open the Repairs page with only that service.
 let serviceFocusId = null;
 let productFocusId = null;   // same idea for product links:  #product/<productId>
+let videoFocusId = null;     // and for video links:  #video/<videoId>  (opens Ratings with only that video)
 
 function getCurrentRoute() {
     if (serviceFocusId) return 'service/' + encodeURIComponent(serviceFocusId);
     if (productFocusId) return 'product/' + encodeURIComponent(productFocusId);
+    if (videoFocusId) return 'video/' + encodeURIComponent(videoFocusId);
     return getCurrentViewId();
 }
 
@@ -2654,6 +2678,9 @@ function navigateTo(viewId, fromHistory = false) {
     const productRoute = /^product\/(.+)$/.exec(String(viewId));
     productFocusId = productRoute ? decodeURIComponent(productRoute[1]) : null;
     if (productRoute) viewId = 'products';
+    const videoRoute = /^video\/(.+)$/.exec(String(viewId));
+    videoFocusId = videoRoute ? decodeURIComponent(videoRoute[1]) : null;
+    if (videoRoute) viewId = 'reviews';
 
     if (viewId === 'user-dashboard') {
         viewId = 'customer-dashboard';
@@ -2734,8 +2761,10 @@ function navigateTo(viewId, fromHistory = false) {
 
     if (viewId !== 'tech-fix') serviceFocusId = null;
     if (viewId !== 'products') productFocusId = null;
+    if (viewId !== 'reviews') videoFocusId = null;
     const route = serviceFocusId ? 'service/' + encodeURIComponent(serviceFocusId)
-        : productFocusId ? 'product/' + encodeURIComponent(productFocusId) : viewId;
+        : productFocusId ? 'product/' + encodeURIComponent(productFocusId)
+        : videoFocusId ? 'video/' + encodeURIComponent(videoFocusId) : viewId;
 
     if (!fromHistory) {
         try {
@@ -3103,11 +3132,13 @@ function closeLogoutModal() {
 
 function confirmLogout() {
     closeLogoutModal();
+    const wasTechnician = !!state.currentUser && state.currentUser.role === 'technician';
     if (supabaseClient) {
         supabaseClient.auth.signOut().catch(err => console.warn('[Supabase Auth] SignOut warning:', err));
     }
     state.currentUser = null;
     saveState();
+    if (wasTechnician) stopLocationSharing(); // the only way to turn technician location off
     sessionStorage.setItem('ca_last_view', 'home');
 
     try {
@@ -3642,6 +3673,10 @@ function getServiceLink(id) {
     return location.href.split('#')[0] + '#service/' + encodeURIComponent(id);
 }
 
+function getVideoLink(id) {
+    return location.href.split('#')[0] + '#video/' + encodeURIComponent(id);
+}
+
 function getProductLink(id) {
     return location.href.split('#')[0] + '#product/' + encodeURIComponent(id);
 }
@@ -3665,6 +3700,11 @@ function copyLinkToClipboard(link, doneMsg) {
 function copyServiceLink(id) {
     if (!canManageAreas()) return;
     copyLinkToClipboard(getServiceLink(id), L('Service link copied.', 'تم نسخ رابط الخدمة.'));
+}
+
+function copyVideoLink(id) {
+    if (!canEditAbout()) return;
+    copyLinkToClipboard(getVideoLink(id), L('Video link copied.', 'تم نسخ رابط الفيديو.'));
 }
 
 function copyProductLink(id) {
@@ -3800,6 +3840,7 @@ function removeService(id) {
 
 // ================= POLICIES (head admin / admin can edit) =================
 let policyEditing = false;
+let whoEditing = false;
 
 function loadPolicyOverrides() {
     try {
@@ -3819,7 +3860,9 @@ function getPolicyDefaults() {
         voidTitle: t('void_warning'),
         voids: [1, 2, 3].map(i => t('void_' + i)),
         notCoveredTitle: t('not_covered_title'),
-        notCovered: [1, 2, 3, 4].map(i => t('not_covered_' + i))
+        notCovered: [1, 2, 3, 4].map(i => t('not_covered_' + i)),
+        whoTitle: t('who_we_are_title'),
+        who: t('who_we_are_text')
     };
 }
 
@@ -3827,6 +3870,22 @@ function getPolicyDefaults() {
 function getPolicy() {
     const saved = loadPolicyOverrides()[state.currentLang || 'en'] || {};
     return { ...getPolicyDefaults(), ...saved };
+}
+
+function startWhoEdit() { if (canManageAreas()) { whoEditing = true; renderPolicies(); } }
+function cancelWhoEdit() { whoEditing = false; renderPolicies(); }
+function saveWhoEdit() {
+    if (!canManageAreas()) return;
+    const whoTitle = document.getElementById('polWhoTitleInline').value.trim();
+    const who = document.getElementById('polWhoInline').value.trim();
+    if (!whoTitle || !who) { showToast(L('Heading and paragraph cannot be empty.', 'العنوان والنص لا يمكن أن يكونا فارغين.'), 'error'); return; }
+    const all = loadPolicyOverrides();
+    const lang = state.currentLang || 'en';
+    all[lang] = { ...(all[lang] || {}), whoTitle, who };
+    localStorage.setItem('ca_policies', JSON.stringify(all));
+    whoEditing = false;
+    renderPolicies();
+    showToast(L('Who We Are updated.', 'تم تحديث "من نحن".'), 'success');
 }
 
 function startPolicyEdit() { if (canManageAreas()) { policyEditing = true; renderPolicies(); } }
@@ -3839,7 +3898,8 @@ function savePolicyEdit() {
     const data = {
         title: val('polTitle'), subtitle: val('polSubtitle'), intro: val('polIntro'), fee: val('polFee'),
         terms: lines('polTerms'), voidTitle: val('polVoidTitle'), voids: lines('polVoids'),
-        notCoveredTitle: val('polNotCoveredTitle'), notCovered: lines('polNotCovered')
+        notCoveredTitle: val('polNotCoveredTitle'), notCovered: lines('polNotCovered'),
+        whoTitle: val('polWhoTitle'), who: val('polWho')
     };
     if (!data.title) { showToast(L('The policy needs a title.', 'يجب أن يحتوي النص على عنوان.'), 'error'); return; }
     const all = loadPolicyOverrides();
@@ -3861,7 +3921,37 @@ function resetPolicyEdit() {
     showToast(L('Original policy restored.', 'تمت استعادة السياسة الأصلية.'), 'success');
 }
 
+function renderWhoCard() {
+    const box = document.getElementById('whoCard');
+    if (!box) return;
+    const canEdit = canManageAreas();
+    if (!canEdit) whoEditing = false;
+    const p = getPolicy();
+    const cardCls = 'bg-white dark:bg-slate-900 p-6 md:p-8 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm';
+    if (whoEditing && canEdit) {
+        box.innerHTML = `
+        <div class="${cardCls}">
+            <input type="text" id="polWhoTitleInline" value="${escapeHtml(p.whoTitle)}" class="${CATALOG_INPUT_CLS} text-sm font-bold">
+            <textarea id="polWhoInline" rows="4" class="${CATALOG_INPUT_CLS} text-sm leading-relaxed">${escapeHtml(p.who)}</textarea>
+            <div class="flex flex-wrap gap-3 text-xs">
+                <button type="button" onclick="saveWhoEdit()" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-5 py-2.5 rounded-xl uppercase tracking-wider transition">${L('Save', 'حفظ')}</button>
+                <button type="button" onclick="cancelWhoEdit()" class="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 font-bold px-5 py-2.5 rounded-xl uppercase tracking-wider transition">${L('Cancel', 'إلغاء')}</button>
+            </div>
+        </div>`;
+        return;
+    }
+    box.innerHTML = `
+    <div class="${cardCls}">
+        <div class="flex items-center justify-between gap-3">
+            <h1 class="text-2xl font-bold flex items-center gap-3"><i class="fa-solid fa-building text-sky-500"></i> ${escapeHtml(p.whoTitle)}</h1>
+            ${canEdit ? `<button type="button" onclick="startWhoEdit()" class="shrink-0 inline-flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold px-3 py-2 rounded-xl text-xs transition"><i class="fa-solid fa-pen"></i> ${L('Edit', 'تعديل')}</button>` : ''}
+        </div>
+        <p class="text-sm text-slate-600 dark:text-slate-300 font-medium leading-relaxed">${escapeHtml(p.who)}</p>
+    </div>`;
+}
+
 function renderPolicies() {
+    renderWhoCard();
     const box = document.getElementById('policyCard');
     if (!box) return;
     const canEdit = canManageAreas();
@@ -3890,6 +3980,8 @@ function renderPolicies() {
                 <div>${lbl(L('Cases where the plan is void', 'حالات إلغاء التأمين') + ' — ' + hint)}${area('polVoids', p.voids.join('\n'), 4)}</div>
                 <div>${lbl(L('"Not covered" heading', 'عنوان الأعمال غير المشمولة'))}${input('polNotCoveredTitle', p.notCoveredTitle)}</div>
                 <div>${lbl(L('Work not covered', 'الأعمال غير المشمولة') + ' — ' + hint)}${area('polNotCovered', p.notCovered.join('\n'), 5)}</div>
+                <div>${lbl(L('\"Who we are\" heading', 'عنوان \"من نحن\"'))}${input('polWhoTitle', p.whoTitle)}</div>
+                <div>${lbl(L('Who we are (company definition)', 'من نحن (تعريف الشركة)'))}${area('polWho', p.who, 4)}</div>
             </div>
             <div class="flex flex-wrap gap-3 text-xs">
                 <button type="button" onclick="savePolicyEdit()" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-5 py-3 rounded-xl uppercase tracking-wider transition">${L('Save Changes', 'حفظ التعديلات')}</button>
@@ -4574,7 +4666,12 @@ function renderCsRating(username) {
 
 // ================= RATINGS & VIDEOS PAGE (own nav item, separate from About) =================
 function renderReviewsPage() {
-    renderAboutRatings();
+    if (videoFocusId) {
+        const ratingsBox = document.getElementById('aboutRatings');
+        if (ratingsBox) ratingsBox.innerHTML = '';
+    } else {
+        renderAboutRatings();
+    }
     renderAboutVideos();
 }
 
@@ -4751,16 +4848,17 @@ function renderAboutVideos() {
 
     state.aboutVideos = loadAboutVideos();
     const canEdit = canEditAbout();
-    const videos = state.aboutVideos;
+    const allVideos = state.aboutVideos;
+    const videos = videoFocusId ? allVideos.filter(v => v.id === videoFocusId) : allVideos;
 
     // Visitors only see this section once there is something to watch.
-    if (!canEdit && videos.length === 0) {
+    if (!canEdit && allVideos.length === 0) {
         box.innerHTML = '';
         return;
     }
 
     const inputClass = 'w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-sky-500';
-    const adminForm = canEdit ? `
+    const adminForm = (canEdit && !videoFocusId) ? `
         <form onsubmit="handleAddVideoSubmit(event)" class="grid grid-cols-1 md:grid-cols-5 gap-3 text-xs items-center">
             <input type="text" id="aboutVideoTitle" required maxlength="80" placeholder="${L('Video title', 'عنوان الفيديو')}" class="md:col-span-2 ${inputClass}">
             <input type="file" id="aboutVideoFile" accept="video/*,.mp4,.m4v,.webm,.mov,.mkv,.ogg" onchange="previewAboutVideoFile(event)" class="md:col-span-2 ${IMAGE_PICK_INPUT_CLS}">
@@ -4793,6 +4891,7 @@ function renderAboutVideos() {
                     <span class="text-sm font-bold truncate">${escapeHtml(v.title)}</span>
                     <div class="flex items-center gap-3 shrink-0">
                         ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-[11px] font-bold text-sky-500 hover:underline">${L('Open', 'فتح')} <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i></a>` : ''}
+                        ${canEdit ? `<button onclick="copyVideoLink('${v.id}')" class="text-[11px] font-bold text-slate-500 hover:text-sky-500 inline-flex items-center gap-1" title="${L('Generate video link', 'إنشاء رابط الفيديو')}"><i class="fa-solid fa-link"></i> ${L('Link', 'رابط')}</button>` : ''}
                         ${canEdit ? `<button onclick="removeAboutVideo('${v.id}')" class="text-xs text-red-500 hover:text-red-600" title="${L('Remove video', 'حذف الفيديو')}"><i class="fa-solid fa-trash-can"></i></button>` : ''}
                     </div>
                 </div>
@@ -4811,10 +4910,15 @@ function renderAboutVideos() {
                     <p class="text-xs sm:text-sm font-semibold text-slate-400 mt-0.5">${L('See how Cooling Art works', 'شاهد كيف تعمل كولينج آرت')}</p>
                 </div>
             </div>
+            ${videoFocusId ? `
+            <div class="flex flex-wrap items-center justify-between gap-3 bg-sky-50 dark:bg-slate-800 border border-sky-200 dark:border-slate-700 rounded-2xl px-5 py-3">
+                <span class="text-xs font-bold text-slate-700 dark:text-slate-200">${videos.length ? L('Showing one video only', 'عرض فيديو واحد فقط') : L('This video is not available.', 'هذا الفيديو غير متاح.')}</span>
+                <button type="button" onclick="navigateTo('reviews')" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-4 py-2 rounded-xl text-xs transition">${L('Show all videos', 'عرض كل الفيديوهات')}</button>
+            </div>` : ''}
             ${adminForm}
             ${videos.length === 0
-            ? `<p class="text-xs text-slate-400 text-center py-6">${L('No videos yet — add the first one above.', 'لا توجد فيديوهات بعد — أضف أول فيديو من الأعلى.')}</p>`
-            : `<div class="grid grid-cols-1 md:grid-cols-2 gap-5">${cards}</div>`}
+            ? (videoFocusId ? '' : `<p class="text-xs text-slate-400 text-center py-6">${L('No videos yet — add the first one above.', 'لا توجد فيديوهات بعد — أضف أول فيديو من الأعلى.')}</p>`)
+            : `<div class="grid grid-cols-1 ${videoFocusId ? '' : 'md:grid-cols-2'} gap-5">${cards}</div>`}
         </div>
     `;
     hydrateLocalVideos(box);
@@ -5306,6 +5410,7 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
             ${loc.coords ? `<span class="block">${renderMapLink(loc.coords)}</span>` : ''}
             <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy ? ` · ${escapeHtml(task.createdBy === 'Arabi Sheet' ? L('Arabi Sheet', 'ملف عربي') : task.createdBy === 'Customer Sheet' ? L('Customer Sheet', 'شيت العملاء') : task.createdBy)}` : ''}</span>
             ${task.status === 'Open' && waitingSince && !isLate ? `<span class="block text-slate-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
+            ${renderTechNoteView(task)}
         </td>
         <td class="p-4"><span class="block">${sourceChip}</span>${customerCell}${folderLink}</td>
         <td class="p-4">${assignedCell}</td>
@@ -5407,6 +5512,7 @@ function buildArabiHistoryHtml(order, task) {
             ${current && current.status === 'Done' ? renderRepairPhotosIcon(current, true) : ''}
             ${current && current.completedAt ? `<span class="text-[11px] text-slate-400">${escapeHtml(formatDateTime(current.completedAt))}</span>` : ''}
         </div>
+        ${current && techNoteHasContent(current) ? `<div class="sm:col-span-2 lg:col-span-3">${renderTechNoteView(current)}</div>` : ''}
     </div>`;
 }
 
@@ -5653,7 +5759,7 @@ function renderAdminDashboard() {
     const backupBtn = document.getElementById('adminBackupBtn');
     if (backupBtn) backupBtn.classList.toggle('hidden', !isHeadAdmin);
     const importBtn = document.getElementById('adminImportOrderExcelBtn');
-    if (importBtn) importBtn.classList.toggle('hidden', !isHeadAdmin);
+    if (importBtn) importBtn.classList.toggle('hidden', !canUseArabi());
 
     if (canSeeOrders) {
         // Only customers ever place orders — staff accounts (admin/Customer Services/
@@ -5793,12 +5899,18 @@ function folderIdForKey(key) {
     return 'CF-' + stableHash(key) + stableHash(key.split('').reverse().join(''));
 }
 
-function folderOrigins(f) {
+// Every folder has exactly ONE category. A folder that is a registered account or came from the
+// Customer Files Excel is "ours"; a folder that exists only because of the Arabi sheet is "arabi".
+function folderCategory(f) {
     const tags = Array.isArray(f.tags) ? f.tags : [];
-    return {
-        ours: tags.includes('ours') || f.source === 'excel' || f.source === 'account' || tags.includes('arabi') || f.source === 'arabi',
-        arabi: tags.includes('arabi') || f.source === 'arabi'
-    };
+    if (f.source === 'excel' || f.source === 'account' || tags.includes('ours')) return 'ours';
+    if (f.source === 'arabi' || tags.includes('arabi')) return 'arabi';
+    return 'ours';
+}
+
+function folderOrigins(f) {
+    const cat = folderCategory(f);
+    return { ours: cat === 'ours', arabi: cat === 'arabi' };
 }
 
 // Customer Services never sees folders that exist only because of the Arabi sheet.
@@ -5930,10 +6042,12 @@ const INTAKE_HEADERS = [
 
 // Sheet (array of rows) -> [{ name, phone, address, issue, notes }]
 function parseIntakeRows(matrix) {
-    // The common 14-column template is accepted by both Customer Log and Arabi.
+    // The common 13-column template (14 with the old Building Number column) is accepted by both Customer Log and Arabi.
     // Old Customer Log (6 columns) and old Arabi (4 columns) are still supported.
     const header = ((matrix && matrix[0]) || []).map(v => String(v || '').trim().toLowerCase());
-    if (header.includes('order id') && header.includes('customer complain')) {
+    const isEnglishTemplate = header.includes('order id') && header.includes('customer complain');
+    const isArabicTemplate = header.includes('رقم الطلب') && header.includes('شكوى العميل');
+    if (isEnglishTemplate || isArabicTemplate) {
         return parseArabiRows(matrix).map(r => ({
             orderId: r.orderId, name: r.name, phone: r.phone,
             building: r.building, rawAddress: r.address,
@@ -6010,9 +6124,9 @@ function saveImportLedger(items) {
     localStorage.setItem(IMPORT_LEDGER_KEY, JSON.stringify(items));
 }
 
-// Arabi Extraction (page, Excel import, delete) is for the admin only - Customer Services has no access.
+// Arabi Extraction (page, Excel import, templates, delete) is for the admin AND Customer Services.
 function canUseArabi() {
-    return !!state.currentUser && isTopAdmin(state.currentUser.role);
+    return !!state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
 }
 
 function canImportCustomers() {
@@ -6154,8 +6268,10 @@ function importCustomerRows(rows, fileName) {
 
 function downloadCustomerSheetTemplate() {
     if (!canImportCustomers()) return;
-    makeSystemOrdersWorkbook([], 'customer-sheet-template.xlsx');
+    makeSystemOrdersWorkbook([], 'customer-sheet-template-ar.xlsx');
 }
+window.downloadCustomerSheetTemplate = downloadCustomerSheetTemplate;
+window.handleCustomerSheet = handleCustomerSheet;
 
 // ---- Customer folders ----
 const expandedCustomerFolders = new Set();
@@ -6326,6 +6442,13 @@ function renderCustomerFolders() {
                 <h3 class="font-bold text-sm">${L('Customer Files', 'ملفات العملاء')}</h3>
                 <p class="text-[11px] text-slate-400 mt-0.5">${L('Our customers and Arabi customers. Arabi data comes from the Arabi Extraction page.', 'عملاؤنا وعملاء عربي. بيانات عربي تأتي من صفحة استخراج عربي.')}</p>
             </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 mt-4">
+            <label class="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
+                <i class="fa-solid fa-file-arrow-up"></i> ${L('Upload Excel sheet', 'رفع ملف إكسل')}
+                <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleCustomerSheet(this)">
+            </label>
+            <button type="button" onclick="downloadCustomerSheetTemplate()" class="inline-flex items-center gap-2 px-4 py-2.5 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Arabic Excel template', 'نموذج إكسل عربي')}</button>
         </div>`;
     }
 
@@ -6347,6 +6470,7 @@ function renderCustomerFolders() {
     if (searchBox) searchBox.placeholder = L('Search folders by name, phone, address or issue...', 'ابحث في الملفات بالاسم أو الهاتف أو العنوان أو العطل...');
     const term = searchBox ? normalizeIntakeText(searchBox.value) : '';
     const termDigits = searchBox ? toAsciiDigits(searchBox.value).replace(/\D/g, '') : '';
+    const termNoZero = termDigits.replace(/^0+/, ''); // 010658... also finds +2010658... and 10658...
 
     const lastActivity = f => Math.max(new Date(f.createdAt || 0).getTime(), ...(f.history || []).map(h => new Date(h.at || 0).getTime()));
     const tabsBox = document.getElementById('folderSourceTabs');
@@ -6363,7 +6487,9 @@ function renderCustomerFolders() {
         .filter(f => {
             if (!term) return true;
             const text = normalizeIntakeText([f.name, f.address, ...(f.history || []).map(h => h.issue)].join(' '));
-            return text.includes(term) || (termDigits.length > 2 && intakePhoneDigits(f.phone).includes(termDigits));
+            if (text.includes(term)) return true;
+            const phone = toAsciiDigits(f.phone).replace(/\D/g, ''); // full number, not the trimmed 10-digit key
+            return (termDigits.length >= 3 && phone.includes(termDigits)) || (termNoZero.length >= 3 && phone.includes(termNoZero));
         })
         .sort((a, b) => lastActivity(b) - lastActivity(a));
 
@@ -6426,7 +6552,7 @@ function parseArabiRows(matrix) {
         body = rows.slice(1);
     } else {
         Object.keys(map).forEach(k => delete map[k]);
-        const order = rows[0].length >= 14 ? ARABI_SCHEMA_ORDER :
+        const order = rows[0].length >= 14 ? ARABI_SCHEMA_ORDER : rows[0].length === 13 ? ARABI_SCHEMA_ORDER.filter(k => k !== 'building') :
             rows[0].length >= 4 ? ['name', 'phone', 'address', 'fix'] : ['name', 'address', 'fix'];
         order.forEach((key, i) => { map[key] = i; });
     }
@@ -6602,13 +6728,13 @@ function renderArabiPage() {
             <td class="p-3">${renderTaskStatusBadge(current.status)}</td>
             <td class="p-3"><button type="button" onclick="deleteArabiRow('${t.id}')" class="text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="${L('Delete row','حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button></td>
         </tr>`;
-    }).join('') : `<tr><td colspan="16" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
+    }).join('') : `<tr><td colspan="15" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
 
     box.innerHTML = `
         <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
             <div>
                 <h1 class="text-2xl font-bold">${L('Arabi Extraction', 'استخراج عربي')}</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 14-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٤ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 13-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٣ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
                 <label class="inline-flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
@@ -6616,7 +6742,7 @@ function renderArabiPage() {
                     <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
                 </label>
                 <button type="button" onclick="downloadArabiExcel()" class="inline-flex items-center gap-2 px-4 py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-excel"></i> ${L('Download Arabi Excel','تحميل إكسل عربي')}</button>
-                <button type="button" onclick="downloadSystemExcelTemplate()" class="inline-flex items-center gap-2 px-4 py-3 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Blank template (14 columns)','نموذج فارغ (١٤ عمود)')}</button>
+                <button type="button" onclick="downloadSystemExcelTemplate()" class="inline-flex items-center gap-2 px-4 py-3 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Arabic Excel template (13 columns)','نموذج إكسل عربي (١٣ عمود)')}</button>
                 <button type="button" onclick="navigateTo('admin-dashboard')" class="inline-flex items-center gap-2 px-5 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold rounded-xl text-xs transition">
                     <i class="fa-solid fa-table-columns"></i> ${L('Open Dashboard', 'فتح لوحة التحكم')}
                 </button>
@@ -6633,7 +6759,7 @@ function renderArabiPage() {
                 <table class="min-w-max text-left border-collapse text-xs">
                     <thead class="sticky top-0 z-10">
                         <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase">
-                            ${SYSTEM_EXCEL_HEADERS.map(h => `<th class="p-3 whitespace-nowrap text-[10px]">${escapeHtml(h)}</th>`).join('')}
+                            ${(state.currentLang === 'ar' ? SYSTEM_EXCEL_HEADERS_AR : SYSTEM_EXCEL_HEADERS).map(h => `<th class="p-3 whitespace-nowrap text-[10px]">${escapeHtml(h)}</th>`).join('')}
                             <th class="p-3">${L('Status','الحالة')}</th><th class="p-3"></th>
                         </tr>
                     </thead>
@@ -6682,8 +6808,10 @@ function formatAgo(iso) {
     return L(`${hours} h ago`, `منذ ${hours} ساعة`);
 }
 
+// Location sharing can no longer be paused: it is on for the whole session until the technician logs out.
 function isLocationSharingPaused(username) {
-    return localStorage.getItem('ca_share_loc_off_' + username) === '1';
+    try { localStorage.removeItem('ca_share_loc_off_' + username); } catch (e) {}
+    return false;
 }
 
 // ---- worker side ----
@@ -6694,63 +6822,38 @@ function beginLocationWatch() {
     locShare.user = me.username;
     locShare.watchId = navigator.geolocation.watchPosition(onMyPosition, onMyPositionError,
         { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+    // keep the position fresh even while standing still
+    if (!locShare.timer) locShare.timer = setInterval(() => {
+        if (locShare.status !== 'on' || !state.currentUser || state.currentUser.username !== locShare.user) return;
+        navigator.geolocation.getCurrentPosition(onMyPosition, err => { if (err && err.code === 1) onMyPositionError(err); },
+            { enableHighAccuracy: false, maximumAge: 30000, timeout: 20000 });
+    }, 45000);
 }
 
-// Do not prompt automatically during page render. A denied permission becomes a persistent
-// browser block on phones; the user should explicitly press "Enable location" first.
-function startLocationSharing() {
+// Technicians are always tracked: location turns on automatically at login and cannot be disabled until logout.
+function locationPermissionWatch() {
+    if (locShare.permBound || !navigator.permissions || !navigator.permissions.query) return;
+    locShare.permBound = true;
+    navigator.permissions.query({ name: 'geolocation' }).then(p => {
+        p.onchange = () => {
+            const me = state.currentUser;
+            if (!me || me.role !== 'technician') return;
+            if (p.state === 'denied') { stopLocationWatch(); locShare.status = 'blocked'; renderLocationShareControl(); }
+            else if (p.state === 'granted' && locShare.status !== 'on') requestLocationNow();
+        };
+    }).catch(() => {});
+}
+
+function requestLocationNow() {
     const me = state.currentUser;
     if (!me || me.role !== 'technician') return;
-    if (isLocationSharingPaused(me.username)) {
-        stopLocationWatch();
-        locShare.user = me.username;
-        locShare.status = 'paused';
+    locShare.user = me.username;
+    if (!navigator.geolocation || !window.isSecureContext) {
+        locShare.status = 'unsupported';
         renderLocationShareControl();
         return;
     }
-    if (locShare.watchId !== null && locShare.user === me.username) return;
-    if (locShare.user === me.username && ['ready', 'starting', 'blocked', 'error'].includes(locShare.status)) return;
     stopLocationWatch();
-    locShare.user = me.username;
-    if (!navigator.geolocation || !window.isSecureContext) {
-        locShare.status = 'unsupported';
-        renderLocationShareControl();
-        return;
-    }
-    locShare.status = 'ready';
-    renderLocationShareControl();
-    // A previously granted site permission may restart live tracking without a new prompt.
-    if (navigator.permissions && navigator.permissions.query) {
-        navigator.permissions.query({ name: 'geolocation' }).then(permission => {
-            if (!state.currentUser || state.currentUser.username !== me.username ||
-                isLocationSharingPaused(me.username) || locShare.user !== me.username) return;
-            if (permission.state === 'granted' && locShare.status === 'ready') {
-                locShare.status = 'starting';
-                beginLocationWatch();
-                renderLocationShareControl();
-            } else if (permission.state === 'denied' && locShare.status === 'ready') {
-                locShare.status = 'blocked';
-                renderLocationShareControl();
-            }
-        }).catch(() => {});
-    }
-}
-
-function enableLocationSharing() {
-    const me = state.currentUser;
-    if (!me || me.role !== 'technician') return;
-    if (isLocationSharingPaused(me.username)) {
-        localStorage.removeItem('ca_share_loc_off_' + me.username);
-    }
-    if (!navigator.geolocation || !window.isSecureContext) {
-        locShare.status = 'unsupported';
-        renderLocationShareControl();
-        return;
-    }
-    if (locShare.watchId !== null) return;
-    // getCurrentPosition is called directly from the button click (user gesture),
-    // allowing Android Chrome / iOS Safari to show the standard permissions prompt.
-    locShare.user = me.username;
     locShare.status = 'starting';
     renderLocationShareControl();
     navigator.geolocation.getCurrentPosition(pos => {
@@ -6760,15 +6863,36 @@ function enableLocationSharing() {
     }, onMyPositionError, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
 }
 
+function startLocationSharing() {
+    const me = state.currentUser;
+    if (!me || me.role !== 'technician') return;
+    isLocationSharingPaused(me.username); // clears any old "paused" flag
+    locationPermissionWatch();
+    if (locShare.user === me.username && ['on', 'starting', 'blocked', 'error', 'unsupported'].includes(locShare.status)) {
+        renderLocationShareControl();
+        return;
+    }
+    requestLocationNow();
+}
+
+function enableLocationSharing() { requestLocationNow(); }
+
 function stopLocationWatch() {
     if (locShare.watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(locShare.watchId);
     locShare.watchId = null;
+    if (locShare.timer) { clearInterval(locShare.timer); locShare.timer = null; }
 }
 
+// Only called on logout: stops tracking and removes the technician from the map.
 function stopLocationSharing() {
+    const id = locShare.user;
     stopLocationWatch();
+    if (id) writeLiveLocations(readLiveLocations().filter(l => l.id !== id));
     locShare.user = null;
     locShare.status = 'off';
+    locShare.lastWriteAt = 0;
+    locShare.lastPos = null;
+    renderLocationShareControl();
 }
 
 function onMyPosition(pos) {
@@ -6802,59 +6926,68 @@ function onMyPositionError(err) {
     renderLocationShareControl();
 }
 
-function setLocationSharingPaused(paused) {
-    const me = state.currentUser;
-    if (!me) return;
-    if (paused) {
-        localStorage.setItem('ca_share_loc_off_' + me.username, '1');
-        stopLocationWatch();
-        locShare.status = 'paused';
-        writeLiveLocations(readLiveLocations().filter(l => l.id !== me.username)); // off the map
-    } else {
-        localStorage.removeItem('ca_share_loc_off_' + me.username);
-        stopLocationWatch();
-        locShare.user = null;
-        enableLocationSharing();
-    }
-    renderLocationShareControl();
-}
+// Kept for compatibility: pausing is no longer possible, so this always (re)starts sharing.
+function setLocationSharingPaused() { requestLocationNow(); }
 
-function retryLocationSharing() {
-    stopLocationWatch();
-    enableLocationSharing();
-}
+function retryLocationSharing() { requestLocationNow(); }
 
 // The small status card at the top of the technician's Home.
 function renderLocationShareControl() {
     const box = document.getElementById('techLocationBox');
-    if (!box) return;
-    if (!state.currentUser || state.currentUser.role !== 'technician') { box.innerHTML = ''; return; }
-    const cards = {
-        on: ['bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900', 'text-emerald-600', 'fa-location-crosshairs',
-            L('Sharing your live location with the office', 'تشارك موقعك المباشر مع المكتب'), L('Pause', 'إيقاف مؤقت'), 'setLocationSharingPaused(true)'],
-        ready: ['bg-sky-50 dark:bg-sky-950/30 border-sky-200 dark:border-sky-900', 'text-sky-600', 'fa-location-dot',
-            L('Enable GPS location to share your position with the office.', 'فعّل موقع GPS لمشاركة موقعك مع المكتب.'), L('Enable location', 'تفعيل الموقع'), 'enableLocationSharing()'],
-        starting: ['bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900', 'text-amber-600', 'fa-spinner fa-spin',
-            L('Getting your location… allow location access if your browser asks.', 'جارٍ تحديد موقعك… اسمح بالوصول للموقع إذا طلب المتصفح ذلك.'), '', ''],
-        paused: ['bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700', 'text-slate-400', 'fa-location-pin-lock',
-            L('Location sharing is paused — the office cannot see where you are.', 'مشاركة الموقع متوقفة — المكتب لا يستطيع رؤية مكانك.'), L('Resume', 'استئناف'), 'setLocationSharingPaused(false)'],
-        error: ['bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900', 'text-amber-600', 'fa-triangle-exclamation',
-            L('Could not get a GPS fix. Check that phone Location is on, then try again.', 'تعذر تحديد الموقع. تأكد من تشغيل موقع الهاتف ثم حاول مجدداً.'), L('Try again', 'حاول مجدداً'), 'retryLocationSharing()'],
-        blocked: ['bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', 'text-red-600', 'fa-ban',
-            L('Location was blocked by your browser. See the instructions below.', 'المتصفح حظر الموقع. اتبع التعليمات أدناه.'), L('Try again', 'حاول مجدداً'), 'retryLocationSharing()'],
-        unsupported: ['bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', 'text-red-600', 'fa-ban',
-            L('This device or page cannot share location (it needs a secure https page).', 'لا يمكن مشاركة الموقع من هذا الجهاز أو الصفحة (يلزم اتصال https آمن).'), '', '']
-    };
-    const c = cards[locShare.status];
-    if (!c) { box.innerHTML = ''; return; }
-    box.innerHTML = `
-        <div class="rounded-2xl border ${c[0]} px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
-            <span class="flex items-center gap-2.5 text-xs font-bold"><i class="fa-solid ${c[2]} ${c[1]}"></i>${c[3]}</span>
-            ${c[4] ? `<button type="button" onclick="${c[5]}" class="text-[11px] font-extrabold bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 transition">${c[4]}</button>` : ''}
-            ${locShare.status === 'blocked' ? `<p class="w-full text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">${L(
-                'Android Chrome: tap the icon beside the website address → Site settings → Location → Allow. iPhone Safari: tap aA / Page Settings → Website Settings → Location → Allow. Turn on your phone GPS, then tap Try again. Open the website directly in Chrome or Safari (not an in-app preview).',
-                'كروم أندرويد: اضغط الرمز بجوار عنوان الموقع ← إعدادات الموقع ← الموقع ← سماح. سفاري آيفون: إعدادات الصفحة aA ← إعدادات موقع الويب ← الموقع ← سماح. فعّل GPS ثم حاول مجدداً، وافتح الموقع مباشرة في المتصفح وليس داخل تطبيق آخر.')}</p>` : ''}
-            ${locShare.status === 'unsupported' ? `<p class="w-full text-[11px] text-slate-600 dark:text-slate-300">${L('Open the deployed website using HTTPS directly in Chrome or Safari. Embedded previews and HTTP pages can block GPS.', 'افتح الموقع المنشور عبر HTTPS مباشرة في Chrome أو Safari. المعاينات المضمنة وصفحات HTTP قد تمنع GPS.')}</p>` : ''}
+    const isTech = !!state.currentUser && state.currentUser.role === 'technician';
+    if (box) {
+        if (!isTech) box.innerHTML = '';
+        else {
+            const on = locShare.status === 'on';
+            box.innerHTML = `
+            <div class="rounded-2xl border ${on ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900' : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900'} px-4 py-3 flex items-center gap-2.5 text-xs font-bold">
+                ${on ? '<span class="loc-live-dot"></span>' : '<i class="fa-solid fa-spinner fa-spin text-amber-600"></i>'}
+                <span>${on
+                    ? L('Live location is on. It stays on until you log out.', 'موقعك المباشر يعمل ويبقى مفعلاً حتى تسجيل الخروج.')
+                    : L('Waiting for your location…', 'بانتظار موقعك…')}</span>
+            </div>`;
+        }
+    }
+    updateLocationGate(isTech);
+}
+
+// Full-screen lock: a technician cannot use the app while location is off or blocked. Only "Turn on" or "Log out" are possible.
+function updateLocationGate(isTech) {
+    let gate = document.getElementById('techLocationGate');
+    const need = isTech && locShare.status !== 'on';
+    if (!need) {
+        if (gate) gate.remove();
+        document.body.classList.remove('loc-gated');
+        return;
+    }
+    if (!gate) { gate = document.createElement('div'); gate.id = 'techLocationGate'; document.body.appendChild(gate); }
+    document.body.classList.add('loc-gated');
+    const st = locShare.status;
+    const waiting = st === 'starting' || st === 'off' || st === 'ready' || st === 'paused';
+    let title, text;
+    if (waiting) {
+        title = L('Turning on your location…', 'جارٍ تفعيل موقعك…');
+        text = L('Allow location access when your browser asks. Location must stay on while you are logged in.', 'اسمح بالوصول للموقع عندما يطلب المتصفح ذلك. يجب أن يبقى الموقع مفعلاً طوال تسجيل دخولك.');
+    } else if (st === 'blocked') {
+        title = L('Location is blocked', 'الموقع محظور');
+        text = L('Allow location for this site. Android Chrome: tap the icon beside the address → Site settings → Location → Allow. iPhone Safari: aA → Website Settings → Location → Allow. Then tap Turn on location.',
+                 'اسمح بالموقع لهذا الموقع. كروم أندرويد: الرمز بجوار العنوان ← إعدادات الموقع ← الموقع ← سماح. سفاري آيفون: aA ← إعدادات موقع الويب ← الموقع ← سماح. ثم اضغط تفعيل الموقع.');
+    } else if (st === 'unsupported') {
+        title = L('Secure page required', 'مطلوب اتصال آمن');
+        text = L('Open the website over HTTPS directly in Chrome or Safari (not an in-app preview).', 'افتح الموقع عبر HTTPS مباشرة في Chrome أو Safari وليس داخل تطبيق آخر.');
+    } else {
+        title = L('Could not get your location', 'تعذر تحديد موقعك');
+        text = L('Make sure phone Location/GPS is on, then try again.', 'تأكد من تشغيل الموقع/GPS في الهاتف ثم حاول مرة أخرى.');
+    }
+    gate.innerHTML = `
+        <div class="loc-gate-card">
+            <div class="loc-gate-icon"><i class="fa-solid ${waiting ? 'fa-location-crosshairs' : 'fa-location-pin-lock'}"></i></div>
+            <h2>${title}</h2>
+            <p>${text}</p>
+            <div class="loc-gate-actions">
+                ${waiting ? '' : `<button type="button" class="loc-gate-primary" onclick="enableLocationSharing()"><i class="fa-solid fa-location-arrow"></i> ${L('Turn on location', 'تفعيل الموقع')}</button>`}
+                <button type="button" class="loc-gate-secondary" onclick="confirmLogout()"><i class="fa-solid fa-right-from-bracket"></i> ${L('Log out', 'تسجيل الخروج')}</button>
+            </div>
         </div>`;
 }
 
@@ -7261,6 +7394,151 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         <span class="block text-[10px] text-slate-400 mt-1">${escapeHtml(formatDateTime(fb.submittedAt || fb.submittedDate))}</span>
         ${fb.message ? `<span class="block text-[10px] text-slate-400 mt-1 italic max-w-[160px]">"${escapeHtml(fb.message)}"</span>` : ''}
     `;
+    }
+
+
+    // ================= TECHNICIAN NOTES (optional text + photos, shown to Customer Services / Admin) =================
+    const TECH_NOTE_MAX_PHOTOS = 6;
+
+    function getTechNote(task) {
+        const n = task && task.techNotes;
+        if (!n || typeof n !== 'object') return { text: '', photos: [], at: '', by: '' };
+        return { text: String(n.text || ''), photos: Array.isArray(n.photos) ? n.photos.filter(p => typeof p === 'string' && p) : [], at: n.at || '', by: n.by || '' };
+    }
+
+    function techNoteHasContent(task) {
+        const n = getTechNote(task);
+        return !!(n.text.trim() || n.photos.length);
+    }
+
+    function techNoteImgHtml(src, cls) {
+        return `<img src="${escapeHtml(src)}" class="${cls}" alt="" loading="lazy" onclick="openNoteImage(this.src)" onerror="this.onerror=null;this.src=PHOTO_UNAVAILABLE_IMG">`;
+    }
+
+    // Tap a note photo to see it full size
+    function openNoteImage(src) {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-zoom-out';
+        overlay.onclick = () => overlay.remove();
+        const img = document.createElement('img');
+        img.src = src;
+        img.className = 'max-w-full max-h-full rounded-xl';
+        overlay.appendChild(img);
+        document.body.appendChild(overlay);
+    }
+
+    function refreshAfterTechNoteChange() {
+        const view = getCurrentViewId();
+        if (view === 'tech-home') renderTechHome();
+        else if (view === 'tech-dashboard') renderTechDashboard();
+        else if (view === 'admin-dashboard') renderAdminDashboard();
+    }
+
+    // The technician's editable box (only while the task is in progress)
+    function renderTechNoteInput(task) {
+        const n = getTechNote(task);
+        return `
+        <div class="rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900 p-3 space-y-2">
+            <label for="tnote-${task.id}" class="block text-[10px] font-extrabold uppercase text-amber-700 dark:text-amber-400"><i class="fa-regular fa-note-sticky me-1"></i>${L('Notes (optional)', 'ملاحظات (اختياري)')}</label>
+            <textarea id="tnote-${task.id}" rows="2" maxlength="600" dir="auto" onchange="saveTechNoteText('${task.id}', this.value)"
+                placeholder="${L('Write anything Customer Services / Admin should know', 'اكتب أي شيء يجب أن تعرفه خدمة العملاء / الإدارة')}"
+                class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500">${escapeHtml(n.text)}</textarea>
+            <div class="flex flex-wrap items-center gap-2">
+                ${n.photos.map((p, i) => `
+                    <span class="relative">
+                        ${techNoteImgHtml(p, 'w-16 h-16 object-cover rounded-lg border border-amber-200 dark:border-amber-800 cursor-pointer bg-slate-100 dark:bg-slate-800')}
+                        <button type="button" onclick="removeTechNotePhoto('${task.id}', ${i})" class="absolute -top-1.5 -end-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-[9px] flex items-center justify-center shadow"><i class="fa-solid fa-xmark"></i></button>
+                    </span>`).join('')}
+                ${n.photos.length < TECH_NOTE_MAX_PHOTOS ? `
+                <label class="cursor-pointer inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold py-2 px-3 rounded-xl text-xs transition shadow-sm">
+                    <i class="fa-solid fa-camera text-xs"></i> ${L('Take Photo', 'التقاط صورة')}
+                    <input type="file" accept="image/*" capture="environment" class="hidden" onchange="addTechNotePhoto('${task.id}', this)">
+                </label>` : ''}
+            </div>
+        </div>`;
+    }
+
+    // Read-only version for Customer Services, Admin and the technician's own log
+    function renderTechNoteView(task) {
+        if (!techNoteHasContent(task)) return '';
+        const n = getTechNote(task);
+        const who = n.by ? ((state.users.find(u => u.username === n.by) || {}).name || n.by) : '';
+        return `
+        <div class="rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900 p-2 mt-1.5 space-y-1.5 text-[11px]">
+            <span class="block text-[9px] font-extrabold uppercase text-amber-700 dark:text-amber-400"><i class="fa-regular fa-note-sticky me-1"></i>${L('Technician notes', 'ملاحظات الفني')}${who ? ' · ' + escapeHtml(who) : ''}</span>
+            ${n.text ? `<span dir="auto" class="block whitespace-pre-wrap text-slate-700 dark:text-slate-200">${escapeHtml(n.text)}</span>` : ''}
+            ${n.photos.length ? `<span class="flex flex-wrap gap-1.5">${n.photos.map(p => techNoteImgHtml(p, 'w-14 h-14 object-cover rounded-lg border border-amber-200 dark:border-amber-800 cursor-pointer bg-slate-100 dark:bg-slate-800')).join('')}</span>` : ''}
+        </div>`;
+    }
+
+    function saveTechNoteText(taskId, value) {
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task) return;
+        const prev = getTechNote(task);
+        const text = String(value || '').trim();
+        if (text === prev.text.trim()) return;
+        task.techNotes = { ...prev, text, at: new Date().toISOString(), by: state.currentUser ? state.currentUser.username : prev.by };
+        try { saveState(); } catch (e) { console.warn('[Tech note] save failed:', e); }
+    }
+
+    async function addTechNotePhoto(taskId, input) {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        input.value = '';
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task) return;
+        if (getTechNote(task).photos.length >= TECH_NOTE_MAX_PHOTOS) {
+            showToast(L(`Up to ${TECH_NOTE_MAX_PHOTOS} photos per note.`, `حتى ${TECH_NOTE_MAX_PHOTOS} صور لكل ملاحظة.`), 'error');
+            return;
+        }
+        try {
+            const full = await readImageFileAsDataUrl(file, 1000, 0.8);
+            const small = await shrinkDataUrl(full, 640, 0.5); // compact copy saved in the shared task record
+            const note = getTechNote(task);
+            task.techNotes = { ...note, photos: [...note.photos, small], at: new Date().toISOString(), by: state.currentUser ? state.currentUser.username : note.by };
+            try { saveState(); } catch (e) { console.warn('[Tech note] local save failed:', e); }
+            refreshAfterTechNoteChange();
+            uploadTechNotePhotoToCloud(taskId, small, full);
+        } catch (err) {
+            console.warn('[Tech note] photo failed:', err);
+            showToast(L('Could not save the photo. Please take it again.', 'تعذر حفظ الصورة. يرجى التقاطها مرة أخرى.'), 'error');
+        }
+    }
+
+    // Replaces the compact copy with a public link once the upload works. If it fails the compact copy stays visible.
+    async function uploadTechNotePhotoToCloud(taskId, small, full) {
+        if (typeof supabaseClient === 'undefined' || !supabaseClient) return;
+        try {
+            const blob = await (await fetch(full)).blob();
+            const path = `notes/${encodeURIComponent(taskId)}-${Date.now()}.jpg`;
+            const { error } = await supabaseClient.storage.from(CLOUD_BUCKET).upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: false });
+            if (error) throw error;
+            const url = supabaseClient.storage.from(CLOUD_BUCKET).getPublicUrl(path).data.publicUrl;
+            const check = await fetch(url, { method: 'GET', cache: 'no-store' });
+            if (!check.ok || !String(check.headers.get('content-type') || '').startsWith('image/')) throw new Error('Uploaded image is not publicly readable');
+            const task = state.tasks.find(t => t.id === taskId);
+            if (!task) return;
+            const note = getTechNote(task);
+            const idx = note.photos.indexOf(small);
+            if (idx < 0) return;
+            const photos = note.photos.slice();
+            photos[idx] = url;
+            task.techNotes = { ...note, photos, at: new Date().toISOString() };
+            saveState();
+            refreshAfterTechNoteChange();
+        } catch (err) {
+            console.warn('[Tech note] cloud upload failed:', err);
+        }
+    }
+
+    function removeTechNotePhoto(taskId, index) {
+        const task = state.tasks.find(t => t.id === taskId);
+        if (!task) return;
+        const note = getTechNote(task);
+        if (index < 0 || index >= note.photos.length) return;
+        task.techNotes = { ...note, photos: note.photos.filter((_, i) => i !== index), at: new Date().toISOString() };
+        saveState();
+        refreshAfterTechNoteChange();
     }
 
 
@@ -7706,7 +7984,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (!state.currentUser || state.currentUser.role !== 'technician') return;
 
         const greeting = document.getElementById('techDashGreeting');
-        if (greeting) greeting.textContent = `Task Log — ${state.currentUser.name || state.currentUser.username}`;
+        if (greeting) greeting.textContent = `${L('Today\'s Tasks', 'مهام اليوم')} — ${state.currentUser.name || state.currentUser.username}`;
 
         const dateBox = document.getElementById('techDashDate');
         if (dateBox) {
@@ -7716,34 +7994,23 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const myTasks = state.tasks.filter(t => isTaskAssignedTo(t, state.currentUser.username));
         const completedTasks = myTasks.filter(t => t.status === 'Done');
 
-        const now = new Date();
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay());
-        startOfWeek.setHours(0, 0, 0, 0);
-        const completedThisWeek = completedTasks.filter(t => { const d = getTaskCompletionDate(t); return d && d >= startOfWeek; }).length;
-        const completedThisMonth = completedTasks.filter(t => { const d = getTaskCompletionDate(t); return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); }).length;
+        // Today only: no week / month numbers and no older tasks on this page.
+        const todayKey = new Date().toDateString();
+        const todayTasks = completedTasks.filter(t => { const d = getTaskCompletionDate(t); return d && d.toDateString() === todayKey; });
 
         const statsGrid = document.getElementById('techStatsGrid');
         if (statsGrid) {
             statsGrid.innerHTML = `
             <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
-                <span class="text-xs font-bold text-slate-400 uppercase">Total Completed</span>
-                <h3 class="text-2xl font-extrabold text-emerald-500 mt-1">${completedTasks.length}</h3>
-            </div>
-            <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
-                <span class="text-xs font-bold text-slate-400 uppercase">Completed This Week</span>
-                <h3 class="text-2xl font-extrabold mt-1">${completedThisWeek}</h3>
-            </div>
-            <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
-                <span class="text-xs font-bold text-slate-400 uppercase">Completed This Month</span>
-                <h3 class="text-2xl font-extrabold mt-1">${completedThisMonth}</h3>
+                <span class="text-xs font-bold text-slate-400 uppercase">${L('Completed Today', 'المنجز اليوم')}</span>
+                <h3 class="text-2xl font-extrabold text-emerald-500 mt-1">${todayTasks.length}</h3>
             </div>
         `;
         }
 
         // Sorted chronologically, most recently completed first — a log, not a
         // to-do list, so no filter tabs and no way to flip status from here.
-        const sorted = [...completedTasks].sort((a, b) => (getTaskCompletionDate(b) || new Date(b.createdDate)) - (getTaskCompletionDate(a) || new Date(a.createdDate)));
+        const sorted = [...todayTasks].sort((a, b) => (getTaskCompletionDate(b) || new Date(b.createdDate)) - (getTaskCompletionDate(a) || new Date(a.createdDate)));
 
         const grid = document.getElementById('techTaskGrid');
         if (grid) {
@@ -7753,8 +8020,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                     <div class="w-14 h-14 rounded-2xl bg-sky-50 dark:bg-slate-800 text-sky-400 flex items-center justify-center text-2xl mb-4">
                         <i class="fa-solid fa-clock-rotate-left"></i>
                     </div>
-                    <h3 class="font-bold text-sm text-slate-600 dark:text-slate-300">No completed tasks yet</h3>
-                    <p class="text-xs text-slate-400 mt-1">Tasks you mark "Done" from Home will show up here as a record of your work.</p>
+                    <h3 class="font-bold text-sm text-slate-600 dark:text-slate-300">${L('No tasks completed today yet', 'لم تنجز أي مهمة اليوم بعد')}</h3>
+                    <p class="text-xs text-slate-400 mt-1">${L('Tasks you mark "Done" from Home today will show up here.', 'المهام التي تنهيها اليوم من الصفحة الرئيسية ستظهر هنا.')}</p>
                 </div>
             `;
             } else {
@@ -7796,6 +8063,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             </div>
             ${renderTaskDescription(task)}
             ${renderReceivedLine(task)}
+            ${renderTechNoteView(task)}
             <div class="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-slate-100 dark:border-slate-800">
                 <span class="text-[11px] text-emerald-500 font-bold flex items-center gap-1.5">
                     <i class="fa-solid fa-circle-check"></i> Completed ${escapeHtml(formatDateTime(task.completedAt || task.completedDate))}
@@ -8001,6 +8269,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             ${renderTechLocationBox(task)}
             ${moneyBlock}
             ${task.status === 'In Progress' ? renderRepairPhotosInput(task) : ''}
+            ${task.status === 'In Progress' ? renderTechNoteInput(task) : (isDone ? renderTechNoteView(task) : '')}
             <div class="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-slate-100 dark:border-slate-800">
                 <span class="text-[11px] text-slate-400 flex items-center gap-1.5">
                     <i class="fa-regular fa-calendar"></i> ${task.dueDate || 'No due date'}
@@ -8014,12 +8283,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                         ${busyTask ? `<button type="button" disabled title="${escapeHtml(L('Finish your current task first', 'أنهِ مهمتك الحالية أولاً'))}"
                             class="text-xs font-extrabold bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500 rounded-xl px-4 py-2.5 inline-flex items-center justify-center gap-2 min-h-[42px] cursor-not-allowed">
                             <i class="fa-solid fa-lock"></i> ${L('Finish current task first', 'أنهِ المهمة الحالية أولاً')}
-                        </button>` : (state.currentUser && (isLocationSharingPaused(state.currentUser.username) || locShare.status === 'blocked' || locShare.status === 'unsupported')) ? `<button type="button" onclick="updateTaskStatus('${task.id}', 'In Progress')" title="${escapeHtml(L('Turn location on to accept', 'شغّل الموقع للقبول'))}"
-                            class="text-xs font-extrabold bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500 rounded-xl px-4 py-2.5 inline-flex items-center justify-center gap-2 min-h-[42px] cursor-not-allowed">
-                            <i class="fa-solid fa-location-crosshairs"></i> ${L('Turn location on to accept', 'شغّل الموقع للقبول')}
-                        </button>` : `<button onclick="updateTaskStatus('${task.id}', 'In Progress')" title="${escapeHtml(L('Location must be on to accept', 'يجب تشغيل الموقع للقبول'))}"
+                        </button>` : `<button onclick="updateTaskStatus('${task.id}', 'In Progress')"
                             class="text-xs font-extrabold bg-sky-500 hover:bg-sky-600 text-white rounded-xl px-4 py-2.5 transition shadow-sm hover:scale-[1.02] active:scale-[0.98] inline-flex items-center justify-center gap-2 min-h-[42px]">
-                            <i class="fa-solid fa-location-dot"></i> ${L('Accept Task', 'قبول المهمة')}
+                            <i class="fa-solid fa-hand"></i> ${L('Accept Task', 'قبول المهمة')}
                         </button>`}
                     </div>
                 ` : task.status === 'In Progress' ? `
@@ -9033,38 +9299,6 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     }
 
     // Resolves with the technician's current position, or null (after telling them why) when location is off.
-    let techAcceptBusy = false;
-    function requestAcceptLocation() {
-        return new Promise(resolve => {
-            if (!navigator.geolocation || !window.isSecureContext) {
-                showToast(L('Location is not available on this device or browser, so the task cannot be accepted.', 'الموقع غير متاح على هذا الجهاز أو المتصفح، لذلك لا يمكن قبول المهمة.'), 'error', 7000);
-                resolve(null);
-                return;
-            }
-            const denyMsg = L('Location is turned off for this site. You cannot accept the task until you turn it on in your phone/browser settings.', 'الموقع مغلق لهذا الموقع. لا يمكنك قبول المهمة حتى تشغّله من إعدادات الهاتف أو المتصفح.');
-            const go = () => {
-            showToast(L('Checking your location...', 'جارٍ التحقق من موقعك...'), 'info', 2500);
-            navigator.geolocation.getCurrentPosition(
-                pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0), at: new Date().toISOString() }),
-                err => {
-                    const blocked = err && err.code === 1;
-                    showToast(blocked
-                        ? L('Location is turned off for this site. Turn it on in your phone/browser settings, then accept the task again.', 'الموقع مغلق لهذا الموقع. شغّله من إعدادات الهاتف أو المتصفح ثم اقبل المهمة مرة أخرى.')
-                        : L('Could not get your location. Turn on GPS / location and try again.', 'تعذر تحديد موقعك. شغّل خدمة الموقع (GPS) وحاول مرة أخرى.'), 'error', 8000);
-                    resolve(null);
-                },
-                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
-            };
-            try {
-                if (navigator.permissions && navigator.permissions.query) {
-                    navigator.permissions.query({ name: 'geolocation' }).then(p => {
-                        if (p.state === 'denied') { showToast(denyMsg, 'error', 8000); resolve(null); } else go();
-                    }).catch(go);
-                } else go();
-            } catch (e) { go(); }
-        });
-    }
-
     function updateTaskStatus(taskId, newStatus, amountReceived, paymentMethod, acceptPos) {
         state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
         state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
@@ -9086,24 +9320,11 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             return;
         }
 
-        // Technicians: one task at a time, and the phone's location must be on to accept.
+        // Technicians: one task at a time. Location is optional and never blocks accepting.
         if (newStatus === 'In Progress' && state.currentUser && state.currentUser.role === 'technician') {
             const busy = getTechBusyTask(state.currentUser.username, task.id);
             if (busy) {
                 showToast(L(`You already have a task in progress (${acId(busy.id)}). Finish it before accepting another.`, `لديك مهمة قيد التنفيذ بالفعل (${acId(busy.id)}). أنهِها قبل قبول مهمة أخرى.`), 'error', 6000);
-                return;
-            }
-            if (previousStatus === 'Open' && isLocationSharingPaused(state.currentUser.username)) {
-                showToast(L('Location sharing is paused. Turn location on first, then accept the task.', 'مشاركة الموقع متوقفة. شغّل الموقع أولاً ثم اقبل المهمة.'), 'error', 6000);
-                return;
-            }
-            if (previousStatus === 'Open' && !acceptPos) {
-                if (techAcceptBusy) return;
-                techAcceptBusy = true;
-                requestAcceptLocation().then(pos => {
-                    techAcceptBusy = false;
-                    if (pos) updateTaskStatus(taskId, newStatus, amountReceived, paymentMethod, pos);
-                }).catch(() => { techAcceptBusy = false; });
                 return;
             }
         }
@@ -9129,7 +9350,11 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             // it by how long it had been waiting before that.
             task.acceptedAt = new Date().toISOString();
             task.acceptedBy = state.currentUser ? state.currentUser.username : null;
-            if (acceptPos) task.acceptedLocation = acceptPos;   // where the technician was when accepting
+            // Where the technician was when accepting - only if they are sharing their location right now
+            if (acceptPos) task.acceptedLocation = acceptPos;
+            else if (state.currentUser && locShare.status === 'on' && locShare.user === state.currentUser.username && locShare.lastPos) {
+                task.acceptedLocation = { lat: locShare.lastPos.lat, lng: locShare.lastPos.lng, accuracy: 0, at: new Date().toISOString() };
+            }
         }
         if (newStatus === 'Open') task.acceptedBy = null;
         if (newStatus === 'Done') {
@@ -9158,8 +9383,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (acceptPos && state.currentUser && state.currentUser.role === 'technician') {
             // The Accept button already obtained GPS permission by a user gesture;
             // immediately publish that first location and start the live watcher.
-            if (isLocationSharingPaused(state.currentUser.username)) setLocationSharingPaused(false);
-            else {
+            if (!isLocationSharingPaused(state.currentUser.username)) {
                 locShare.user = state.currentUser.username;
                 onMyPosition({ coords: { latitude: acceptPos.lat, longitude: acceptPos.lng, accuracy: acceptPos.accuracy } });
                 beginLocationWatch();
@@ -9444,7 +9668,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (dashNav) dashNav.classList.toggle('hidden', !isTechnician);
         if (customerLogNav) customerLogNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (chatsNav) chatsNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
-        if (arabiNav) arabiNav.classList.toggle('hidden', !isTopAdmin(role));
+        if (arabiNav) arabiNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (mapNav) mapNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (typeof updateChatsBadge === 'function') updateChatsBadge();
 
@@ -10048,12 +10272,26 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         btn.title = L('Contact Us', 'تواصل معنا');
         btn.className = 'fixed right-4 z-[60] flex flex-col items-center gap-1.5 bg-transparent p-0';
         btn.innerHTML = `
-        <span class="w-14 h-14 rounded-full bg-sky-500 hover:bg-sky-600 text-white shadow-lg shadow-sky-500/40 flex items-center justify-center transition hover:scale-105">
-            <i class="fa-solid fa-headset text-xl"></i>
+        <span class="relative w-14 h-14 rounded-full bg-sky-500 hover:bg-sky-600 text-white shadow-lg shadow-sky-500/40 flex items-center justify-center transition hover:scale-105">
+            <i class="fa-solid fa-headset text-xl"></i><span class="bot-dot">1</span>
         </span>
         <span class="text-[10px] font-extrabold uppercase tracking-wide text-white bg-sky-600/90 px-2.5 py-1 rounded-full shadow">${L('Contact Us', 'تواصل معنا')}</span>`;
         btn.onclick = toggleContactBot;
         document.body.appendChild(btn);
+
+        // friendly nudge bubble (once per session)
+        try {
+            if (!sessionStorage.getItem('ca_bot_nudged')) setTimeout(() => {
+                const p = document.getElementById('contactBotPanel');
+                if ((p && !p.classList.contains('hidden')) || document.getElementById('contactBotNudge')) return;
+                const n = document.createElement('div');
+                n.id = 'contactBotNudge';
+                n.innerHTML = `<span>${L('Need help? Ask me anything 👋', 'تحتاج مساعدة؟ اسألني أي شيء 👋')}</span><button type="button" aria-label="Close">×</button>`;
+                n.onclick = e => { if (e.target.tagName === 'BUTTON') botDismissNudge(); else toggleContactBot(); };
+                document.body.appendChild(n);
+                sessionStorage.setItem('ca_bot_nudged', '1');
+            }, 4500);
+        } catch (e) { /* storage blocked: skip the nudge */ }
 
         const panel = document.createElement('div');
         panel.id = 'contactBotPanel';
@@ -10064,7 +10302,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center"><i class="fa-solid fa-headset"></i></div>
                 <div>
                     <span class="block text-sm font-extrabold">${L('Contact Us', 'تواصل معنا')}</span>
-                    <span class="block text-[10px] text-sky-100">${L('Cooling Art Assistant', 'مساعد كولينج آرت')}</span>
+                    <span class="block text-[10px] text-sky-100"><span class="bot-online"></span>${L('Cooling Art Assistant · Online', 'مساعد كولينج آرت · متصل')}</span>
                 </div>
             </div>
             <div class="flex items-center gap-3 shrink-0">
@@ -10095,6 +10333,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const opening = panel.classList.contains('hidden');
         panel.classList.toggle('hidden');
         if (!opening) return;
+        botDismissNudge();
+        if (window.matchMedia && matchMedia('(hover: hover)').matches) setTimeout(() => { const i = document.getElementById('chatBotInput'); if (i) i.focus(); }, 80);
         if (botStep === 'closed' || botStep === 'ask_contact') startBotConversation();
         else if (botStep === 'menu') showBotMainMenu();
         else if (botStep === 'in_chat') renderBotMessages();
@@ -10105,15 +10345,32 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         }
     }
 
+    let botInstant = false, botBusyUntil = 0, botMenuTimer = null;
+
     function botAddMessage(who, html) {
         const box = document.getElementById('chatBotMessages');
         if (!box) return;
         const row = document.createElement('div');
+        const pop = botInstant ? '' : ' bot-msg';
+        const bubble = h => `<div class="max-w-[85%] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl rounded-tl-sm px-3.5 py-2.5 leading-relaxed">${h}</div>`;
         if (who === 'bot') {
-            row.className = 'flex justify-start';
-            row.innerHTML = `<div class="max-w-[85%] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl rounded-tl-sm px-3.5 py-2.5 leading-relaxed">${html}</div>`;
+            row.className = 'flex justify-start' + pop;
+            if (botInstant) {
+                row.innerHTML = bubble(html);
+            } else {
+                // typing dots first, then the message (queued so several messages arrive one after another)
+                const now = Date.now();
+                const start = Math.max(now, botBusyUntil);
+                const len = String(html).replace(/<[^>]+>/g, '').length;
+                const end = start + Math.min(1100, 380 + len * 6);
+                botBusyUntil = end;
+                const dots = '<div class="bot-typing" aria-label="typing"><span></span><span></span><span></span></div>';
+                if (start > now) { row.style.display = 'none'; setTimeout(() => { row.style.display = ''; row.innerHTML = dots; box.scrollTop = box.scrollHeight; }, start - now); }
+                else row.innerHTML = dots;
+                setTimeout(() => { if (!row.isConnected) return; row.innerHTML = bubble(html); box.scrollTop = box.scrollHeight; }, end - now);
+            }
         } else {
-            row.className = 'flex justify-end';
+            row.className = 'flex justify-end' + pop;
             row.innerHTML = `<div class="max-w-[85%] bg-sky-500 text-white rounded-2xl rounded-tr-sm px-3.5 py-2.5 leading-relaxed">${escapeHtml(html)}</div>`;
         }
         box.appendChild(row);
@@ -10124,14 +10381,23 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function botShowMenu(buttons) {
         const menu = document.getElementById('chatBotMenu');
         if (!menu) return;
-        menu.innerHTML = buttons.map(b => `
-        <button type="button" onclick='${b.action}' class="w-full text-start bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 font-bold transition flex items-center gap-2.5">
+        clearTimeout(botMenuTimer);
+        const render = () => {
+            menu.innerHTML = buttons.map((b, i) => `
+        <button type="button" onclick='${b.action}' style="animation-delay:${i * 70}ms" class="bot-chip w-full text-start bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 font-bold transition flex items-center gap-2.5">
             <i class="fa-solid ${b.icon} text-sky-500"></i>${b.label}
         </button>`).join('');
-        menu.classList.remove('hidden');
+            menu.classList.remove('hidden');
+            const box = document.getElementById('chatBotMessages');
+            if (box) box.scrollTop = box.scrollHeight;
+        };
+        const wait = botBusyUntil - Date.now();
+        if (wait > 0 && !botInstant) { menu.classList.add('hidden'); botMenuTimer = setTimeout(render, wait); }
+        else render();
     }
 
     function botHideMenu() {
+        clearTimeout(botMenuTimer);
         const m = document.getElementById('chatBotMenu');
         if (m) m.classList.add('hidden');
         botSyncHeader();
@@ -10140,6 +10406,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     function startBotConversation() {
         const box = document.getElementById('chatBotMessages');
         if (box) box.innerHTML = '';
+        botBusyUntil = 0;
         botHideMenu();
         botStep = 'ask_contact';
         botName = '';
@@ -10205,6 +10472,8 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             return;
         }
 
+        if (botStep === 'menu') { botIntentReply(text); return; }
+
         if (botStep === 'await_issue') {
             const chat = createCsChat({ name: botName, phone: botPhone, topic: text, userId: botMatchedUserId });
             if (!chat) {
@@ -10216,6 +10485,81 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             botStep = 'in_chat';
             botAddMessage('bot', L('Thank you! Your message has been passed to our customer service team. The first available agent will reply here — you can keep typing in this chat.', 'شكراً! تم تمرير رسالتك إلى فريق خدمة العملاء. سيرد عليك أول موظف متاح هنا — يمكنك الاستمرار في الكتابة في هذه المحادثة.'));
         }
+    }
+
+function botDismissNudge() {
+        const n = document.getElementById('contactBotNudge'); if (n) n.remove();
+        const d = document.querySelector('#contactBotBtn .bot-dot'); if (d) d.remove();
+    }
+
+    function botOpenInsurance() {
+        const panel = document.getElementById('contactBotPanel');
+        if (panel) panel.classList.add('hidden');
+        if (typeof openInsuranceModal === 'function') openInsuranceModal();
+    }
+
+    function botOrderStatus(refRaw) {
+        const ref = String(refRaw).toUpperCase().replace(/\s+/g, '-');
+        if (!state.currentUser) {
+            botAddMessage('bot', L('For privacy, please log in first, then send me your order number again.', 'للخصوصية، يرجى تسجيل الدخول أولاً ثم إرسال رقم الطلب مرة أخرى.'));
+            return;
+        }
+        const me = state.currentUser;
+        const o = (state.orders || []).find(x => String(x.id).toUpperCase() === ref);
+        const allowed = o && (o.username === me.username || o.userId === (typeof getCurrentUserId === 'function' ? getCurrentUserId() : null) ||
+            (typeof isStaffRole === 'function' && isStaffRole(me.role)));
+        if (!allowed) {
+            botAddMessage('bot', L(`I couldn't find an order <strong>${escapeHtml(ref)}</strong> on your account. Check the number and try again.`, `لم أجد طلباً بالرقم <strong>${escapeHtml(ref)}</strong> في حسابك. تحقق من الرقم وحاول مجدداً.`));
+            return;
+        }
+        botAddMessage('bot', `📦 <strong>${escapeHtml(o.id)}</strong><br>${escapeHtml(o.itemTitle || '')}<br>${L('Status', 'الحالة')}: <strong>${escapeHtml(o.status || '—')}</strong>`);
+    }
+
+    // Free-text understanding (English + Arabic keywords) for the main-menu step.
+    function botIntentReply(text) {
+        const s = String(text).toLowerCase();
+        const w = re => re.test(s);
+        const egp = t('egp_symbol', 'EGP');
+        const more = { icon: 'fa-list', label: L('More options', 'خيارات أخرى'), action: 'showBotMainMenu()' };
+        const cs = { icon: 'fa-headset', label: L('Talk to Customer Service', 'التحدث إلى خدمة العملاء'), action: 'botTopic("cs")' };
+
+        const ref = String(text).match(/\b(?:ORD|REP|INS)[-\s]?[A-Z0-9][A-Z0-9-]{3,}\b/i);
+        if (ref) { botOrderStatus(ref[0]); botShowMenu([more, cs]); return; }
+
+        if (w(/\b(hi|hello|hey|hola)\b|مرحب|أهلا|اهلا|السلام|صباح|مساء/)) {
+            botAddMessage('bot', `${L('Hi', 'أهلاً')} ${escapeHtml(botName || '')} 👋 ${L('Ask me about prices, repairs, insurance, or send an order number to check its status.', 'اسألني عن الأسعار أو الصيانة أو التأمين، أو أرسل رقم الطلب لمعرفة حالته.')}`);
+            showBotMainMenu(); return;
+        }
+        if (w(/\b(thanks|thank you|thx)\b|شكر/)) {
+            botAddMessage('bot', L("You're welcome! 😊 Anything else I can help with?", 'على الرحب والسعة! 😊 هل تحتاج شيئاً آخر؟'));
+            showBotMainMenu(); return;
+        }
+        if (w(/insur|warrant|تأمين|تامين|ضمان/)) {
+            botAddMessage('bot', `🛡️ ${L('Cooling Art Protection Insurance covers breakdowns, electrical failures and Freon leaks for <strong>100 EGP / month</strong>, paid by InstaPay or Vodafone Cash.', 'تأمين كولينج آرت يغطي الأعطال والمشاكل الكهربائية وتسريب الفريون مقابل <strong>100 جنيه شهرياً</strong> عبر إنستاباي أو فودافون كاش.')}`);
+            botShowMenu([{ icon: 'fa-shield-heart', label: L('Open insurance plan', 'فتح خطة التأمين'), action: 'botOpenInsurance()' }, more, cs]); return;
+        }
+        if (w(/price|cost|how much|cheap|offer|سعر|اسعار|أسعار|بكام|كام|تكلف|عرض/)) {
+            const pl = state.products.slice(0, 3).map(p => `• ${escapeHtml(p.name)} — <strong>${Number(p.price).toLocaleString()} ${egp}</strong>`).join('<br>');
+            const sl = state.services.slice(0, 3).map(x => `• ${escapeHtml(x.name)} — <strong>${Number(x.price).toLocaleString()} ${egp}</strong>`).join('<br>');
+            botAddMessage('bot', `${L('Here are some prices:', 'بعض الأسعار:')}<br>${pl}<br><br>${L('Repairs:', 'الصيانة:')}<br>${sl}`);
+            botShowMenu([{ icon: 'fa-box', label: L('Open Products page', 'فتح صفحة المنتجات'), action: 'botNavigate("products")' }, more, cs]); return;
+        }
+        if (w(/repair|fix|freon|leak|broken|noise|not cooling|maint|technic|صيان|تصليح|عطل|فريون|تسريب|خربان|مش بيبرد|فني/)) { botTopic('repairs'); return; }
+        if (w(/\b(buy|order|ac|unit|product|catalog)\b|تكييف|شراء|اشتري|اطلب|منتج|جهاز/)) { botTopic('orders'); return; }
+        if (w(/contact|phone|call|whatsapp|email|number|hotline|تواصل|تليفون|هاتف|رقم|اتصال|واتس|ايميل|بريد/)) {
+            const c = (typeof loadContactInfo === 'function') ? loadContactInfo() : { email: '', phone: '', whatsapp: '' };
+            botAddMessage('bot', `📞 <strong>${escapeHtml(c.phone)}</strong><br>💬 WhatsApp: <strong>${escapeHtml(c.whatsapp)}</strong><br>✉️ ${escapeHtml(c.email)}`);
+            botShowMenu([{ icon: 'fa-address-book', label: L('Open Contact page', 'فتح صفحة التواصل'), action: 'botNavigate("contact")' }, more, cs]); return;
+        }
+        if (w(/area|where|deliver|zone|cover|منطقة|مناطق|توصيل|فين|تغطية/)) {
+            const names = (state.areas || []).map(a => escapeHtml(state.currentLang === 'ar' && a.nameAr ? a.nameAr : a.name)).join('، ');
+            botAddMessage('bot', names ? `📍 ${L('We currently serve:', 'نخدم حالياً:')} ${names}` : L('Tell us your area when you book and we will confirm coverage.', 'أخبرنا بمنطقتك عند الحجز وسنؤكد التغطية.'));
+            botShowMenu([more, cs]); return;
+        }
+        if (w(/agent|human|person|support|someone|complain|موظف|خدمة العملاء|شكوى|حد يكلمني/)) { botTopic('cs'); return; }
+
+        botAddMessage('bot', L("I didn't quite get that 🤔 Try: <em>prices</em>, <em>repair</em>, <em>insurance</em>, <em>contact</em>, or an order number like ORD-…", 'لم أفهم تماماً 🤔 جرّب: <em>الأسعار</em> أو <em>صيانة</em> أو <em>تأمين</em> أو <em>تواصل</em> أو رقم طلب مثل ORD-…'));
+        showBotMainMenu();
     }
 
     function showBotMainMenu() {
@@ -10361,6 +10705,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === botChatId);
         if (!chat) return;
+        botInstant = true; // re-render of existing messages: no typing animation
         box.innerHTML = `<p class="text-center text-[10px] text-slate-400 font-bold uppercase tracking-wide">${L('Conversation with Customer Service', 'محادثة مع خدمة العملاء')}</p>`;
         // 'bot'-role bubbles render raw HTML (used for our own scripted messages), so an
         // agent's free-typed reply must be escaped here first or stray <, >, & can make
@@ -10378,6 +10723,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             if (chat.closedBy !== 'customer') botAddMessage('bot', L('This conversation has been closed by our team. Thanks for reaching out!', 'تم إغلاق هذه المحادثة من قبل فريقنا. شكراً لتواصلك معنا!'));
             botAskCsRating(chat.id);
         }
+        botInstant = false;
         botSyncHeader();
     }
 
@@ -11033,3 +11379,88 @@ window.addEventListener('resize', () => { if (window.innerWidth >= 1024) closeMo
 
 // Load the shared gallery from the cloud as soon as the page is ready
 window.addEventListener('DOMContentLoaded', () => { syncHomeGalleryFromCloud(true); });
+
+
+// ================= LIVE VISUALS: falling snowflakes, mouse parallax, scroll progress =================
+(function () {
+    function init() {
+        const calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const bg = document.getElementById('ambientBg');
+        if (bg && !calm && !bg.querySelector('.amb-flake')) {
+            const n = window.innerWidth < 640 ? 8 : 16;
+            for (let i = 0; i < n; i++) {
+                const f = document.createElement('i');
+                f.className = 'fa-solid fa-snowflake amb-flake';
+                f.style.cssText = `--x:${(Math.random() * 100).toFixed(1)}%;--s:${(10 + Math.random() * 16).toFixed(0)}px;--t:${(14 + Math.random() * 16).toFixed(1)}s;--d:${(-Math.random() * 24).toFixed(1)}s;--dx:${(Math.random() * 80 - 40).toFixed(0)}px`;
+                bg.appendChild(f);
+            }
+            let raf = 0;
+            window.addEventListener('mousemove', e => {
+                if (raf) return;
+                raf = requestAnimationFrame(() => {
+                    raf = 0;
+                    bg.style.setProperty('--mx', (e.clientX / window.innerWidth - 0.5).toFixed(3));
+                    bg.style.setProperty('--my', (e.clientY / window.innerHeight - 0.5).toFixed(3));
+                });
+            }, { passive: true });
+        }
+        if (!document.getElementById('scrollProgress')) {
+            const bar = document.createElement('div');
+            bar.id = 'scrollProgress';
+            document.body.appendChild(bar);
+            const upd = () => {
+                const h = document.documentElement;
+                const max = h.scrollHeight - h.clientHeight;
+                bar.style.transform = `scaleX(${max > 0 ? Math.min(1, h.scrollTop / max) : 0})`;
+            };
+            window.addEventListener('scroll', upd, { passive: true });
+            window.addEventListener('resize', upd);
+            upd();
+        }
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+})();
+
+
+// ================= LIVE VISUALS 2: list stagger on scroll-in, click ripple, header depth =================
+(function () {
+    const calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function init() {
+        if (calm) return;
+        // lists animate once each time they scroll into view (never on re-render, so typing in search never flickers)
+        const GRIDS = ['techServicesGrid', 'techHomeTaskGrid', 'adminHeroStats', 'adminAnalyticsGrid', 'techHomeStatsGrid', 'techStatsGrid', 'contactCards', 'manageTeamGrid', 'whoStats'];
+        if ('IntersectionObserver' in window) {
+            const io = new IntersectionObserver(entries => {
+                entries.forEach(en => {
+                    const g = en.target;
+                    if (!en.isIntersecting) { g._seen = false; return; }
+                    if (g._seen || !g.children.length) return;
+                    g._seen = true;
+                    [...g.children].slice(0, 14).forEach((c, i) => c.style.setProperty('--i', i));
+                    g.classList.remove('stagger'); void g.offsetWidth; g.classList.add('stagger');
+                    setTimeout(() => g.classList.remove('stagger'), 1400);
+                });
+            }, { threshold: 0.05 });
+            GRIDS.forEach(id => { const el = document.getElementById(id); if (el) io.observe(el); });
+        }
+        // click ripple (separate element, so buttons and images are never touched)
+        document.addEventListener('pointerdown', e => {
+            if (!e.target.closest || !e.target.closest('button, .nav-link')) return;
+            const r = document.createElement('span');
+            r.className = 'click-ripple';
+            r.style.left = e.clientX + 'px'; r.style.top = e.clientY + 'px';
+            document.body.appendChild(r);
+            setTimeout(() => r.remove(), 600);
+        }, { passive: true });
+    }
+    // header shadow after scrolling
+    function headerDepth() {
+        const h = document.getElementById('siteHeader');
+        if (!h) return;
+        const upd = () => h.classList.toggle('scrolled', window.scrollY > 8);
+        window.addEventListener('scroll', upd, { passive: true });
+        upd();
+    }
+    function boot() { init(); headerDepth(); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();

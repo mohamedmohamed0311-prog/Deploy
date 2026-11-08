@@ -893,8 +893,8 @@
                             data-i18n="tech_workspace">Technician
                             Workspace</span>
                         <h1 class="text-xl sm:text-2xl font-bold mt-0.5" id="techDashGreeting">Task Log</h1>
-                        <p class="text-xs text-slate-200/90 mt-0.5" data-i18n="task_log_subtitle">A record of the tasks
-                            you've completed</p>
+                        <p class="text-xs text-slate-200/90 mt-0.5" data-i18n="task_log_subtitle">The tasks
+                            you completed today</p>
                     </div>
                 </div>
                 <div id="techDashDate"
@@ -903,7 +903,7 @@
             </div>
 
             <!-- Stat Strip -->
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="techStatsGrid"></div>
+            <div class="grid grid-cols-1 gap-4" id="techStatsGrid"></div>
 
             <!-- Completed Task Log Entries -->
             <div class="overflow-y-auto max-h-[340px] custom-scrollbar pr-1">
@@ -982,15 +982,8 @@
 
         <!-- ================= PAGE 7: ABOUT US & POLICIES ================= -->
         <section id="view-about" class="hidden space-y-8">
-            <div
-                class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
-                <h1 class="text-2xl font-bold" data-i18n="about_title">About Cooling Art & Official Policies</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="about_desc">
-                    Founded in Cairo, Egypt, Cooling Art is dedicated to delivering engineering excellence in HVAC
-                    climate solutions. From high-efficiency inverter air conditioners to 24-hour emergency technical
-                    repairs and affordable monthly unit insurance protection.
-                </p>
-            </div>
+            <!-- "Who We Are" card is rendered by renderPolicies() so admins can edit it -->
+            <div id="whoCard"></div>
 
 
             <!-- Policies card is rendered by renderPolicies() so head admin / admin can edit it -->
