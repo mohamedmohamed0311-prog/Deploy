@@ -1556,24 +1556,29 @@ function buildOrderRecords() {
 // One documented, language-independent column order for download AND re-import.
 // Do not localize these titles: the next spreadsheet must have exactly the same headers.
 const SYSTEM_EXCEL_HEADERS = [
-    'Order ID', 'Customer Name', 'Address', 'Product Type',
+    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Product Type',
     'Customer Complain', 'Date', 'Office Notes', 'Call Center Notes',
     'Services Type', 'Has Issue', 'SAP Number', 'Reporting Entity', 'Technician Assigned'
 ];
-// Arabic version of the same 13 columns (same order). Building number is part of the address. The importers recognise these titles too.
+// Arabic version of the same 14 columns (same order). Building number has its own column. The importers recognise these titles too.
 const SYSTEM_EXCEL_HEADERS_AR = [
-    'رقم الطلب', 'اسم العميل', 'العنوان', 'نوع المنتج',
+    'رقم الطلب', 'اسم العميل', 'رقم العقار', 'العنوان', 'نوع المنتج',
     'شكوى العميل', 'التاريخ', 'ملاحظات المكتب', 'ملاحظات الكول سنتر',
     'نوع الخدمة', 'هل توجد مشكلة', 'رقم ساب', 'الجهة المبلغة', 'الفني المكلف'
 ];
-const SYSTEM_EXCEL_WIDTHS = [22, 25, 44, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
+const SYSTEM_EXCEL_WIDTHS = [22, 25, 14, 44, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
 
-// Building number and address live in ONE column: "12 Street name"
-function mergeBuildingAddress(building, address) {
-    const b = String(building || '').trim(), a = String(address || '').trim();
-    if (!b) return a;
-    if (!a) return b;
-    return a.includes(b) ? a : b + ' ' + a;
+// Building number and address are separate columns. If no building number was saved,
+// a leading number in the address ("12 Street name") is split off into the building column.
+function splitBuildingAddress(building, address) {
+    let b = String(building || '').trim(), a = String(address || '').trim();
+    if (b) {
+        // strip the building number if an older merged address still starts with it
+        if (a.startsWith(b + ' ')) a = a.slice(b.length).trim();
+        return [b, a];
+    }
+    const m = a.match(/^([0-9\u0660-\u0669]+(?:\s?[-\/]\s?[0-9\u0660-\u0669]+)?[A-Za-z\u0621-\u064A]?)[\s,،.\-]+(\S[\s\S]*)$/);
+    return m ? [m[1].trim(), m[2].trim()] : ['', a];
 }
 
 function systemOrderExcelRow(o) {
@@ -1583,10 +1588,12 @@ function systemOrderExcelRow(o) {
     const techName = task && task.assignedTo
         ? ((state.users.find(u => u.username === task.assignedTo) || {}).name || task.assignedTo)
         : ((task && task.importedTechnicianAssigned) || o.assignedTech || '');
+    const [buildingNo, addressOnly] = splitBuildingAddress(o.buildingNumber, isArabi ? (o.arabiAddress || o.customerAddress || '') : (o.customerAddress || ''));
     return [
         isArabi ? (o.arabiOrderId || o.id) : o.id,
         isArabi ? o.customerName : ((user && user.name) || o.customerName || o.username || ''),
-        mergeBuildingAddress(o.buildingNumber, isArabi ? (o.arabiAddress || o.customerAddress || '') : (o.customerAddress || '')),
+        buildingNo,
+        addressOnly,
         isArabi ? (o.productType || '') : (o.productType || (o.type === 'Product' ? o.itemTitle : '')),
         isArabi ? (o.customerComplain || o.itemTitle || '') : (o.customerComplain || o.notes || (o.type === 'Tech Fix Service' ? o.itemTitle : '')),
         isArabi ? (o.arabiDate || o.date || '') : (o.date || ''),
@@ -1609,7 +1616,7 @@ function makeSystemOrdersWorkbook(orders, filename, lang) {
     const isAr = lang !== 'en'; // Arabic by default
     const ws = XLSX.utils.aoa_to_sheet([(isAr ? SYSTEM_EXCEL_HEADERS_AR : SYSTEM_EXCEL_HEADERS)].concat(rows));
     ws['!cols'] = SYSTEM_EXCEL_WIDTHS.map(wch => ({ wch }));
-    ws['!autofilter'] = { ref: `A1:M${rows.length + 1}` };
+    ws['!autofilter'] = { ref: `A1:N${rows.length + 1}` };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, isAr ? 'الطلبات والصيانة' : 'Orders & Repairs');
     if (isAr) wb.Workbook = { Views: [{ RTL: true }] }; // Arabic sheet opens right-to-left
@@ -6728,13 +6735,13 @@ function renderArabiPage() {
             <td class="p-3">${renderTaskStatusBadge(current.status)}</td>
             <td class="p-3"><button type="button" onclick="deleteArabiRow('${t.id}')" class="text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="${L('Delete row','حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button></td>
         </tr>`;
-    }).join('') : `<tr><td colspan="15" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
+    }).join('') : `<tr><td colspan="16" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
 
     box.innerHTML = `
         <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
             <div>
                 <h1 class="text-2xl font-bold">${L('Arabi Extraction', 'استخراج عربي')}</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 13-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٣ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 14-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٤ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
                 <label class="inline-flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
@@ -6742,7 +6749,7 @@ function renderArabiPage() {
                     <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
                 </label>
                 <button type="button" onclick="downloadArabiExcel()" class="inline-flex items-center gap-2 px-4 py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-excel"></i> ${L('Download Arabi Excel','تحميل إكسل عربي')}</button>
-                <button type="button" onclick="downloadSystemExcelTemplate()" class="inline-flex items-center gap-2 px-4 py-3 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Arabic Excel template (13 columns)','نموذج إكسل عربي (١٣ عمود)')}</button>
+                <button type="button" onclick="downloadSystemExcelTemplate()" class="inline-flex items-center gap-2 px-4 py-3 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Arabic Excel template (14 columns)','نموذج إكسل عربي (١٤ عمود)')}</button>
                 <button type="button" onclick="navigateTo('admin-dashboard')" class="inline-flex items-center gap-2 px-5 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold rounded-xl text-xs transition">
                     <i class="fa-solid fa-table-columns"></i> ${L('Open Dashboard', 'فتح لوحة التحكم')}
                 </button>
