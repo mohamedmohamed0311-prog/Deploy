@@ -130,6 +130,8 @@
                     class="nav-link hover:text-sky-500 hidden">Arabi Extraction</a>
                 <a href="javascript:void(0)" id="nav-map" onclick="navigateTo('map')"
                     class="nav-link hover:text-sky-500 hidden">Map</a>
+                <a href="javascript:void(0)" id="nav-insurance" onclick="navigateTo('insurance')"
+                    class="nav-link hover:text-sky-500 hidden inline-flex items-center gap-1.5"><i class="fa-solid fa-shield-heart text-sky-500"></i><span data-i18n="nav_insurance">Insurance</span></a>
             </nav>
 
             <!-- Actions & Utility -->
@@ -538,6 +540,13 @@
                             </select>
                         </div>
 
+                        <!-- Month being paid (customers only): the payment is recorded under this month instantly -->
+                        <div id="insuranceMonthBox" class="hidden">
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Month you are paying for</label>
+                            <select id="insuranceMonth"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500"></select>
+                        </div>
+
                         <div>
                             <label class="block text-xs font-bold uppercase text-slate-500 mb-1"
                                 data-i18n="customer_serial_label">Customer Serial Number</label>
@@ -779,6 +788,11 @@
         </section>
 
         <!-- ================= MAP: live technicians / assistants + open tasks (Admin & Customer Services) ================= -->
+        <!-- ================= INSURANCE: monthly payment tracker (Head Admin, Executive & Customer Services) ================= -->
+        <section id="view-insurance" class="hidden w-full">
+            <div id="insurancePageBody"></div>
+        </section>
+
         <section id="view-map" class="hidden space-y-6 w-full">
             <div
                 class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">

@@ -113,6 +113,21 @@ function mergeCsChat(a, b) {
     return out;
 }
 
+// Insurance: two devices may record different months for the same customer. Keep every month,
+// and when both touched the same month the newest change wins.
+function mergeInsurance(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    const newer = String(a.updatedAt || '') >= String(b.updatedAt || '') ? a : b;
+    const pa = a.payments || {}, pb = b.payments || {};
+    const payments = {};
+    new Set(Object.keys(pa).concat(Object.keys(pb))).forEach(k => {
+        const x = pa[k], y = pb[k];
+        payments[k] = !x ? y : !y ? x : (String(x.updatedAt || '') >= String(y.updatedAt || '') ? x : y);
+    });
+    return Object.assign({}, newer, { payments });
+}
+
 // Items from both lists, matched by id (this device's version wins), minus anything deleted here.
 function cloudMergeById(remote, local, deletedSet, key) {
     // Live positions: every device holds a copy of everybody's last position, so the
@@ -136,6 +151,13 @@ function cloudMergeById(remote, local, deletedSet, key) {
     }
     const localIds = new Set(local.map(i => i.id));
     const extra = remote.filter(i => !localIds.has(i.id) && !(deletedSet && deletedSet.has(i.id)));
+    if (key === 'ca_customer_folders') {
+        const remoteById = new Map(remote.map(i => [i.id, i]));
+        local.forEach(l => {
+            const r = remoteById.get(l.id);
+            if (r && (l.insurance || r.insurance)) l.insurance = mergeInsurance(l.insurance, r.insurance);
+        });
+    }
     // Tasks: a stale copy (flag `true` or no photo) must never wipe a repair photo link that is already in the cloud.
     if (key === 'ca_tasks') {
         const remoteById = new Map(remote.map(i => [i.id, i]));
@@ -2327,7 +2349,7 @@ const AR_UI = {
     'On The Way': 'في الطريق', 'Inspection Requested': 'تم طلب المعاينة', 'Pending Dispatch': 'قيد الإرسال',
     'Active / Verified': 'نشط / موثق', 'High': 'عالية', 'Normal': 'عادية', 'Urgent': 'عاجلة',
     // ----- orders / items -----
-    'Protection Insurance': 'تأمين الحماية', 'Monthly Protection Insurance': 'تأمين الحماية الشهري',
+    'Protection Insurance': 'تأمين الحماية', 'Month you are paying for': 'الشهر الذي تدفع عنه', 'Monthly Protection Insurance': 'تأمين الحماية الشهري',
     'Monthly Unit Protection Insurance': 'تأمين حماية الوحدة الشهري', 'Test AC Unit Diagnostic Visit': 'زيارة تشخيص تجريبية للتكييف',
     '100 EGP / Month': '100 جنيه / شهرياً', 'Other Area': 'منطقة أخرى'
 };
@@ -2717,6 +2739,13 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
+    if (viewId === 'insurance' && !canImportCustomers()) {
+        showToast('Access restricted to administrators only.', 'error');
+        try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
+        navigateTo('home', true);
+        return;
+    }
+
     if (viewId === 'customer-log' && (!state.currentUser || !isStaffRole(state.currentUser.role) || state.currentUser.role === 'technician' || state.currentUser.role === 'admin')) {
         showToast('Access restricted to administrators only.', 'error');
         try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
@@ -2784,7 +2813,7 @@ function navigateTo(viewId, fromHistory = false) {
     // Remember the current view so a page refresh reopens it instead of bouncing to Home
     sessionStorage.setItem('ca_last_view', route);
 
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'insurance', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
 
     views.forEach(v => {
         const el = document.getElementById(`view-${v}`);
@@ -2822,11 +2851,12 @@ function navigateTo(viewId, fromHistory = false) {
     if (viewId === 'about') renderPolicies();
     if (viewId === 'arabi') renderArabiPage();
     if (viewId === 'map') renderMapPage();
+    if (viewId === 'insurance') renderInsurancePage();
 }
 
 // Returns the id (without the "view-" prefix) of whichever section is currently visible
 function getCurrentViewId() {
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'insurance', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
     for (const v of views) {
         const el = document.getElementById(`view-${v}`);
         if (el && !el.classList.contains('hidden')) return v;
@@ -2841,6 +2871,7 @@ function refreshCurrentView() {
     if (current === 'tech-fix') renderTechServices();
     if (current === 'arabi') renderArabiPage();
     if (current === 'map') renderMapPage();
+    if (current === 'insurance') renderInsurancePage();
     if (current === 'admin-dashboard') renderAdminDashboard();
     if (current === 'tech-home') renderTechHome();
     if (current === 'tech-dashboard') renderTechDashboard();
@@ -4881,9 +4912,9 @@ function renderAboutVideos() {
         if (!embed) {
             player = `<div class="w-full h-full flex items-center justify-center text-xs text-slate-400 p-4 text-center">${L('This link can’t be embedded.', 'لا يمكن تضمين هذا الرابط.')}</div>`;
         } else if (embed.platform === 'idb') {
-            player = `<video data-idb-id="${escapeHtml(embed.idbId)}" controls preload="metadata" playsinline class="w-full h-full"></video>`;
+            player = `<video data-idb-id="${escapeHtml(embed.idbId)}" controls controlsList="nodownload noremoteplayback" disablePictureInPicture oncontextmenu="return false" preload="metadata" playsinline class="w-full h-full"></video>`;
         } else if (embed.kind === 'file') {
-            player = `<video src="${escapeHtml(embed.src)}" controls preload="metadata" class="w-full h-full"></video>`;
+            player = `<video src="${escapeHtml(embed.src)}" controls controlsList="nodownload noremoteplayback" disablePictureInPicture oncontextmenu="return false" preload="metadata" playsinline class="w-full h-full"></video>`;
         } else if (embed.platform === 'youtube') {
             // Click-to-play facade — no auto-loaded iframe, no Error 153.
             player = youtubeFacadeCardHtml(v, embed);
@@ -4897,7 +4928,7 @@ function renderAboutVideos() {
                 <div class="p-3 flex items-center justify-between gap-3">
                     <span class="text-sm font-bold truncate">${escapeHtml(v.title)}</span>
                     <div class="flex items-center gap-3 shrink-0">
-                        ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-[11px] font-bold text-sky-500 hover:underline">${L('Open', 'فتح')} <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i></a>` : ''}
+                        ${safeUrl && !(embed && (embed.kind === 'file' || embed.platform === 'idb')) ? `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-[11px] font-bold text-sky-500 hover:underline">${L('Open', 'فتح')} <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i></a>` : ''}
                         ${canEdit ? `<button onclick="copyVideoLink('${v.id}')" class="text-[11px] font-bold text-slate-500 hover:text-sky-500 inline-flex items-center gap-1" title="${L('Generate video link', 'إنشاء رابط الفيديو')}"><i class="fa-solid fa-link"></i> ${L('Link', 'رابط')}</button>` : ''}
                         ${canEdit ? `<button onclick="removeAboutVideo('${v.id}')" class="text-xs text-red-500 hover:text-red-600" title="${L('Remove video', 'حذف الفيديو')}"><i class="fa-solid fa-trash-can"></i></button>` : ''}
                     </div>
@@ -6355,6 +6386,697 @@ function buildFolderEvents(folder, tasks, profile) {
     return events.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
 }
 
+// ================= INSURANCE WIDGET (monthly payment tracking inside each customer folder) =================
+// Stored on the folder:  folder.insurance = { startMonth:'YYYY-MM', amount:100, updatedAt, payments:{ 'YYYY-MM': {...} } }
+//  - every payment lives under the month it COVERS (the "paid on" date is stored separately)
+//  - coverage runs INSURANCE_TERM_MONTHS months from the start month (the plan is 2 years)
+//  - a month before today that is not paid = "missed"; the current month unpaid = "due"
+//  - unpaid is stored as { paid:false, updatedAt } (not deleted) so cloud merging keeps the newest change
+const INSURANCE_FEE = 100;
+const INSURANCE_TERM_MONTHS = 24;
+const INSURANCE_METHODS = ['InstaPay', 'Vodafone Cash', 'Cash'];
+const insuranceUi = {};          // folderId -> { year, sel, missedOnly }
+
+function insUi(folderId) {
+    if (!insuranceUi[folderId]) insuranceUi[folderId] = { year: new Date().getFullYear(), sel: null, missedOnly: false };
+    return insuranceUi[folderId];
+}
+const insMonthKey = (date = new Date()) => getLocalDateString(date).slice(0, 7);
+const insIdx = key => { const [y, m] = key.split('-').map(Number); return y * 12 + (m - 1); };
+const insKey = idx => `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
+function insLabel(key, month = 'long') {
+    const [y, m] = key.split('-').map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString(state.currentLang === 'ar' ? 'ar-EG' : 'en-GB', { month, year: 'numeric' });
+}
+function insMonthName(m) { // m = 0..11
+    return new Date(2000, m, 1).toLocaleDateString(state.currentLang === 'ar' ? 'ar-EG' : 'en-GB', { month: 'short' });
+}
+
+// Everything the widget and the folder header need, or null when the customer has no plan.
+function insuranceInfo(folder) {
+    const ins = folder && folder.insurance;
+    if (!ins || !/^\d{4}-\d{2}$/.test(ins.startMonth || '')) return null;
+    const payments = ins.payments || {};
+    const isPaid = k => !!(payments[k] && payments[k].paid);
+    const start = insIdx(ins.startMonth);
+    const end = start + INSURANCE_TERM_MONTHS - 1;
+    const nowIdx = insIdx(insMonthKey());
+    const fee = Number(ins.amount) || INSURANCE_FEE;
+    const paidIdx = Object.keys(payments).filter(k => /^\d{4}-\d{2}$/.test(k) && isPaid(k)).map(insIdx).filter(i => i >= start && i <= end);
+    const lastShown = Math.min(end, Math.max(nowIdx, ...paidIdx));
+    const months = [];
+    for (let i = start; i <= lastShown; i++) {
+        const key = insKey(i);
+        months.push({ key, idx: i, paid: isPaid(key), p: payments[key] || null, isNow: i === nowIdx });
+    }
+    const missed = months.filter(m => !m.paid && m.idx < nowIdx);
+    const currentKey = insMonthKey();
+    const currentCovered = nowIdx >= start && nowIdx <= end;
+    const currentPaid = isPaid(currentKey);
+    return {
+        ins, payments, start, end, nowIdx, fee, months, missed, currentKey, currentCovered, currentPaid,
+        notStarted: nowIdx < start, expired: nowIdx > end,
+        paidCount: months.filter(m => m.paid).length,
+        outstanding: (missed.length + (currentCovered && !currentPaid ? 1 : 0)) * fee
+    };
+}
+
+function insNeedsPayment(folder) {
+    const i = insuranceInfo(folder);
+    return !!i && (i.missed.length > 0 || (i.currentCovered && !i.currentPaid));
+}
+
+// State of one calendar cell: paid | missed | due | future | out
+function insCellState(info, key) {
+    const idx = insIdx(key);
+    if (idx < info.start || idx > info.end) return 'out';
+    if (info.payments[key] && info.payments[key].paid) return 'paid';
+    if (idx > info.nowIdx) return 'future';
+    return idx === info.nowIdx ? 'due' : 'missed';
+}
+
+// Small chip for the folder header, so unpaid customers are visible without opening the folder.
+function insuranceChipHtml(folder) {
+    const info = insuranceInfo(folder);
+    if (!info || info.notStarted) return '';
+    let cls, icon, text;
+    if (info.missed.length) {
+        cls = 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400'; icon = 'fa-triangle-exclamation';
+        text = `${L('Insurance', 'التأمين')}: ${info.missed.length} ${L('missed', 'متأخر')}`;
+    } else if (info.currentCovered && !info.currentPaid) {
+        cls = 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400'; icon = 'fa-clock';
+        text = `${L('Insurance', 'التأمين')}: ${L('unpaid', 'غير مدفوع')}`;
+    } else if (info.currentCovered) {
+        cls = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'; icon = 'fa-shield-heart';
+        text = `${L('Insurance', 'التأمين')}: ${L('paid', 'مدفوع')}`;
+    } else {
+        cls = 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'; icon = 'fa-shield-halved';
+        text = `${L('Insurance', 'التأمين')}: ${L('ended', 'انتهى')}`;
+    }
+    return `<span class="text-[11px] font-bold px-2.5 py-1 rounded-full ${cls}"><i class="fa-solid ${icon} me-1"></i>${text}</span>`;
+}
+
+// ---- Actions ----
+// Always works on the latest saved folders (another device may have just changed them).
+function insMutate(folderId, fn) {
+    if (!canImportCustomers()) return false;
+    state.customerFolders = loadCustomerFolders();
+    const f = state.customerFolders.find(x => x.id === folderId);
+    if (!f || fn(f) === false) return false;
+    if (f.insurance) f.insurance.updatedAt = new Date().toISOString();
+    try { saveState(); } catch (e) { showToast(L('Could not save. Browser storage may be full.', 'تعذر الحفظ. قد تكون مساحة المتصفح ممتلئة.'), 'error'); return false; }
+    return true;
+}
+function insSelectMonth(folderId, key) {
+    const ui = insUi(folderId);
+    ui.sel = key;
+    if (key) ui.year = Number(key.slice(0, 4));
+    insRerender();
+}
+function insShiftYear(folderId, delta) {
+    const ui = insUi(folderId);
+    ui.year = Math.min(2100, Math.max(2000, ui.year + delta));
+    insPage.animate = true;
+    insRerender();
+}
+function insToggleMissed(folderId) {
+    const ui = insUi(folderId);
+    ui.missedOnly = !ui.missedOnly;
+    insRerender();
+}
+function insStartPlan(folderId) {
+    const input = document.getElementById('ins-start-' + folderId);
+    const month = input ? input.value : '';
+    if (!/^\d{4}-\d{2}$/.test(month)) { showToast(L('Choose a start month.', 'اختر شهر البداية.'), 'error'); return; }
+    let blocked = false;
+    const ok = insMutate(folderId, f => {
+        const old = f.insurance || {};
+        const early = Object.keys(old.payments || {}).some(k => old.payments[k].paid && insIdx(k) < insIdx(month));
+        if (early) { blocked = true; return false; }
+        f.insurance = { startMonth: month, amount: old.amount || INSURANCE_FEE, payments: old.payments || {} };
+    });
+    if (blocked) { showToast(L('There are payments recorded before that month. Mark them unpaid first, or pick an earlier month.', 'توجد مدفوعات مسجلة قبل هذا الشهر. سجلها كغير مدفوعة أولاً أو اختر شهراً أبكر.'), 'error', 6000); return; }
+    if (ok) { insUi(folderId).year = Number(month.slice(0, 4)); showToast(L('Insurance plan saved.', 'تم حفظ خطة التأمين.'), 'success'); insRerender(); }
+}
+function insSavePayment(folderId, paid) {
+    const ui = insUi(folderId);
+    const key = ui.sel;
+    if (!key) return;
+    const date = (document.getElementById('ins-date-' + folderId) || {}).value || '';
+    const method = (document.getElementById('ins-method-' + folderId) || {}).value || INSURANCE_METHODS[0];
+    const ref = ((document.getElementById('ins-ref-' + folderId) || {}).value || '').trim();
+    if (paid && !/^\d{4}-\d{2}-\d{2}$/.test(date)) { showToast(L('Choose the date the payment was made.', 'اختر تاريخ السداد.'), 'error'); return; }
+    const nowIso = new Date().toISOString();
+    const by = state.currentUser ? state.currentUser.username : '';
+    const ok = insMutate(folderId, f => {
+        const info = insuranceInfo(f);
+        if (!info) return false;
+        const idx = insIdx(key);
+        if (idx < info.start || idx > info.end) return false;
+        f.insurance.payments = f.insurance.payments || {};
+        f.insurance.payments[key] = paid
+            ? { paid: true, amount: info.fee, paidAt: date, method, ref, by, updatedAt: nowIso }
+            : { paid: false, by, updatedAt: nowIso };
+    });
+    if (ok) {
+        ui.sel = null;
+        if (paid) ui.stamp = key;
+        showToast(paid ? L(`${insLabel(key)} marked as paid.`, `تم تسجيل ${insLabel(key)} كمدفوع.`) : L(`${insLabel(key)} marked as unpaid.`, `تم تسجيل ${insLabel(key)} كغير مدفوع.`), 'success');
+        insRerender();
+    }
+}
+function insRemovePlan(folderId) {
+    if (!confirm(L('Remove this customer\'s insurance plan and its payment history?', 'إزالة خطة التأمين لهذا العميل وسجل مدفوعاتها؟'))) return;
+    const nowIso = new Date().toISOString();
+    const ok = insMutate(folderId, f => {
+        // keep "unpaid" markers instead of deleting, so another device cannot bring the old payments back
+        const payments = {};
+        Object.keys((f.insurance && f.insurance.payments) || {}).forEach(k => { payments[k] = { paid: false, updatedAt: nowIso }; });
+        f.insurance = { startMonth: '', amount: INSURANCE_FEE, payments };
+    });
+    if (ok) { insUi(folderId).sel = null; insRerender(); }
+}
+
+
+// ---- The Insurance page (top-bar widget) ----
+const insPage = { q: '', filter: 'all', selId: null, lang: null, kpiSig: '', animate: true };
+const insLocale = () => (state.currentLang === 'ar' ? 'ar-EG' : 'en-GB');
+const insMoney = n => `${Number(n).toLocaleString()} EGP`;
+const INS_INPUT = 'bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500';
+
+function insStatusOf(f) {
+    const i = insuranceInfo(f);
+    if (!i) return 'none';
+    if (i.missed.length) return 'missed';
+    if (i.currentCovered) return i.currentPaid ? 'paid' : 'unpaid';
+    return 'idle';
+}
+function insStatusPill(f) {
+    const i = insuranceInfo(f);
+    const s = insStatusOf(f);
+    const map = {
+        missed: ['ins-pill-red', 'fa-triangle-exclamation', `${i ? i.missed.length : 0} ${L('missed', 'متأخر')}`],
+        unpaid: ['ins-pill-amber', 'fa-clock', L('Unpaid', 'غير مدفوع')],
+        paid: ['ins-pill-green', 'fa-circle-check', L('Paid', 'مدفوع')],
+        idle: ['ins-pill-slate', 'fa-shield-halved', L('Not active', 'غير نشط')],
+        none: ['ins-pill-slate', 'fa-minus', L('No plan', 'بدون خطة')]
+    }[s];
+    return `<span class="ins-pill ${map[0]}"><i class="fa-solid ${map[1]}"></i>${map[2]}</span>`;
+}
+function insShortDate(v) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(insLocale(), { day: 'numeric', month: 'short' }) : '';
+}
+function insFolders() {
+    state.customerFolders = loadCustomerFolders();
+    return state.customerFolders.filter(folderVisibleToViewer);
+}
+function insCountUp(root, animate) {
+    const calm = !animate || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+    root.querySelectorAll('[data-count]').forEach(el => {
+        const to = Number(el.dataset.count) || 0, suf = el.dataset.suffix || '';
+        if (calm) { el.textContent = to.toLocaleString() + suf; return; }
+        const t0 = performance.now();
+        const step = t => {
+            const p = Math.min(1, (t - t0) / 900);
+            el.textContent = Math.round(to * (1 - Math.pow(1 - p, 3))).toLocaleString() + suf;
+            if (p < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+    });
+}
+
+function renderInsurancePage() {
+    const body = document.getElementById('insurancePageBody');
+    if (!body) return;
+    if (!canImportCustomers()) { body.innerHTML = ''; return; }
+    if (insPage.lang !== state.currentLang || !document.getElementById('insShell')) {
+        // The shell (search box etc.) is built once, so typing is never interrupted by re-renders.
+        insPage.lang = state.currentLang;
+        const today = new Date().toLocaleDateString(insLocale(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        body.innerHTML = `
+        <div id="insShell" class="space-y-6">
+            <div class="ins-hero">
+                <span class="ins-orb ins-orb-1"></span><span class="ins-orb ins-orb-2"></span>
+                <div class="relative flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div class="flex items-center gap-4 min-w-0">
+                        <span class="ins-shield"><i class="fa-solid fa-shield-heart"></i></span>
+                        <div class="min-w-0">
+                            <h1 class="text-2xl sm:text-3xl font-extrabold text-white">${L('Insurance Tracker', 'متابعة التأمين')}</h1>
+                            <p class="text-xs sm:text-sm text-sky-100/90 mt-1">${L('Monthly payments for every customer, at a glance.', 'المدفوعات الشهرية لكل عميل في لمحة.')}</p>
+                        </div>
+                    </div>
+                    <span class="self-start sm:self-center text-[11px] font-bold bg-white/15 border border-white/25 text-white px-3.5 py-2 rounded-xl whitespace-nowrap"><i class="fa-regular fa-calendar me-1.5"></i>${escapeHtml(today)}</span>
+                </div>
+                <div id="insKpis" class="relative mt-6 grid grid-cols-2 lg:grid-cols-5 gap-3"></div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-6 items-start">
+                <aside class="ins-card p-4 space-y-3 lg:sticky lg:top-24">
+                    <div class="relative">
+                        <i class="fa-solid fa-magnifying-glass absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <input id="insSearch" type="search" value="${escapeHtml(insPage.q)}" oninput="insSearchInput(this.value)" placeholder="${L('Search customer, phone or address...', 'ابحث بالاسم أو الهاتف أو العنوان...')}"
+                            class="w-full ${INS_INPUT} ps-9">
+                    </div>
+                    <div id="insChips" class="flex flex-wrap gap-1.5"></div>
+                    <div id="insList" class="max-h-[620px] overflow-y-auto custom-scrollbar -mx-1 px-1 space-y-1.5"></div>
+                </aside>
+                <section id="insDetail" class="min-w-0"></section>
+            </div>
+        </div>`;
+    }
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
+    syncCustomerLogSources();
+    insRenderAll();
+}
+
+function insRenderAll() {
+    if (!document.getElementById('insShell')) return;
+    const folders = insFolders();
+    insRenderKpis(folders);
+    insRenderList(folders);
+    insRenderDetail(folders);
+}
+function insRerender() { insRenderAll(); }
+function insSearchInput(v) { insPage.q = v; insRenderList(insFolders()); }
+function insSetFilter(k) { insPage.filter = k; insRenderList(insFolders()); }
+
+function insRenderKpis(folders) {
+    const box = document.getElementById('insKpis');
+    if (!box) return;
+    let enrolled = 0, paid = 0, unpaid = 0, missedC = 0, owed = 0;
+    folders.forEach(f => {
+        const i = insuranceInfo(f);
+        if (!i) return;
+        enrolled++;
+        if (i.currentCovered) { if (i.currentPaid) paid++; else unpaid++; }
+        if (i.missed.length) missedC++;
+        owed += i.outstanding;
+    });
+    const sig = [enrolled, paid, unpaid, missedC, owed].join('|');
+    const animate = sig !== insPage.kpiSig;
+    insPage.kpiSig = sig;
+    const card = (icon, label, n, tone, suffix) => `
+        <div class="ins-kpi">
+            <span class="ins-kpi-icon ${tone}"><i class="fa-solid ${icon}"></i></span>
+            <b class="ins-kpi-num" data-count="${n}" data-suffix="${suffix || ''}">${Number(n).toLocaleString()}${suffix || ''}</b>
+            <span class="ins-kpi-label">${label}</span>
+        </div>`;
+    box.innerHTML =
+        card('fa-users', L('Enrolled', 'مشتركون'), enrolled, 'text-sky-200') +
+        card('fa-circle-check', L('Paid this month', 'دفعوا هذا الشهر'), paid, 'text-emerald-300') +
+        card('fa-clock', L('Unpaid this month', 'لم يدفعوا هذا الشهر'), unpaid, 'text-amber-300') +
+        card('fa-triangle-exclamation', L('Missed payments', 'متأخرون'), missedC, 'text-red-300') +
+        card('fa-coins', L('Outstanding', 'المستحق'), owed, 'text-yellow-200', ' EGP');
+    insCountUp(box, animate);
+}
+
+function insRenderList(folders) {
+    const list = document.getElementById('insList');
+    const chips = document.getElementById('insChips');
+    if (!list || !chips) return;
+    const preds = {
+        all: () => true,
+        paid: i => i && i.currentCovered && i.currentPaid,
+        unpaid: i => i && i.currentCovered && !i.currentPaid,
+        missed: i => i && i.missed.length > 0,
+        none: i => !i
+    };
+    const rows = folders.map(f => ({ f, i: insuranceInfo(f) }));
+    const labels = { all: L('All', 'الكل'), paid: L('Paid', 'مدفوع'), unpaid: L('Unpaid', 'غير مدفوع'), missed: L('Missed', 'متأخر'), none: L('No plan', 'بدون خطة') };
+    chips.innerHTML = Object.keys(labels).map(k => {
+        const n = rows.filter(r => preds[k](r.i)).length;
+        return `<button type="button" onclick="insSetFilter('${k}')" class="ins-chip ${insPage.filter === k ? 'active' : ''}">${labels[k]}<span>${n}</span></button>`;
+    }).join('');
+
+    const q = normalizeIntakeText(insPage.q);
+    const qd = toAsciiDigits(insPage.q).replace(/\D/g, '');
+    const rank = { missed: 0, unpaid: 1, paid: 2, idle: 3, none: 4 };
+    const shown = rows
+        .filter(r => preds[insPage.filter](r.i))
+        .filter(r => {
+            if (!q) return true;
+            if (normalizeIntakeText([r.f.name, r.f.address].join(' ')).includes(q)) return true;
+            return qd.length >= 3 && toAsciiDigits(r.f.phone).replace(/\D/g, '').includes(qd);
+        })
+        .sort((a, b) => (rank[insStatusOf(a.f)] - rank[insStatusOf(b.f)]) || ((b.i ? b.i.missed.length : 0) - (a.i ? a.i.missed.length : 0)) || String(a.f.name || '').localeCompare(String(b.f.name || '')));
+
+    if (!insPage.selId || !folders.some(f => f.id === insPage.selId)) {
+        const first = shown.find(r => r.i) || shown[0];
+        insPage.selId = first ? first.f.id : null;
+    }
+    const top = list.scrollTop;
+    const LIMIT = 80;
+    list.innerHTML = shown.length ? shown.slice(0, LIMIT).map((r, n) => {
+        const dots = r.i ? Array.from({ length: 6 }, (_, k) => {
+            const st = insCellState(r.i, insKey(r.i.nowIdx - 5 + k));
+            return `<span class="ins-dot ins-d-${st}"></span>`;
+        }).join('') : '';
+        return `
+        <button type="button" onclick="insSelectCustomer('${r.f.id}')" style="--i:${Math.min(n, 12)}" class="ins-row ${insPage.selId === r.f.id ? 'active' : ''}">
+            <span class="ins-avatar ins-av-${insStatusOf(r.f)}">${escapeHtml((String(r.f.name || r.f.phone || '?').trim()[0] || '?').toUpperCase())}</span>
+            <span class="min-w-0 flex-1 text-start">
+                <b dir="auto" class="block text-xs truncate text-slate-800 dark:text-slate-100">${escapeHtml(r.f.name || r.f.phone || '—')}</b>
+                <span dir="ltr" class="block text-[10px] text-slate-400 font-mono truncate">${escapeHtml(r.f.phone || '')}</span>
+            </span>
+            <span class="flex flex-col items-end gap-1.5 shrink-0">${insStatusPill(r.f)}<span class="flex gap-1" dir="ltr">${dots}</span></span>
+        </button>`;
+    }).join('') + (shown.length > LIMIT ? `<p class="text-center text-[11px] text-slate-400 py-2">${L(`Showing ${LIMIT} of ${shown.length}. Use search to narrow down.`, `عرض ${LIMIT} من ${shown.length}. استخدم البحث للتضييق.`)}</p>` : '')
+        : `<p class="text-center text-xs text-slate-400 font-bold py-8">${L('No customers match.', 'لا يوجد عملاء مطابقون.')}</p>`;
+    list.scrollTop = top;
+}
+
+function insSelectCustomer(id) {
+    insPage.selId = id;
+    insPage.animate = true;
+    insRenderAll();
+    if (window.innerWidth < 1024) {
+        const d = document.getElementById('insDetail');
+        if (d) d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+// From a customer folder in the Customer Log
+function insOpenCustomer(id) {
+    insPage.selId = id;
+    insPage.animate = true;
+    insPage.filter = 'all';
+    insPage.q = '';
+    navigateTo('insurance');
+}
+function buildInsuranceLinkHtml(folder) {
+    return `
+    <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
+        <span class="flex items-center gap-2 text-xs font-bold"><i class="fa-solid fa-shield-heart text-sky-500"></i>${L('Insurance', 'التأمين')}
+            ${insuranceChipHtml(folder) || `<span class="text-[11px] font-bold text-slate-400">${L('No plan yet', 'لا توجد خطة بعد')}</span>`}</span>
+        <button type="button" onclick="insOpenCustomer('${folder.id}')" class="inline-flex items-center gap-1.5 bg-sky-500 hover:bg-sky-600 text-white font-bold px-3.5 py-2 rounded-xl text-xs transition">
+            <i class="fa-regular fa-calendar-days"></i>${L('Open insurance calendar', 'فتح تقويم التأمين')}
+        </button>
+    </div>`;
+}
+
+function insRenderDetail(folders) {
+    const box = document.getElementById('insDetail');
+    if (!box) return;
+    const ae = document.activeElement;
+    if (ae && box.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName) && ae.type !== 'checkbox') return; // never wipe what is being typed
+    const f = folders.find(x => x.id === insPage.selId);
+    if (!f) {
+        box.innerHTML = `<div class="ins-card p-12 text-center space-y-3"><span class="ins-shield mx-auto !bg-sky-100 !text-sky-500 dark:!bg-sky-950"><i class="fa-solid fa-shield-heart"></i></span><p class="text-sm font-bold text-slate-500">${L('Pick a customer to see their insurance calendar.', 'اختر عميلاً لعرض تقويم التأمين الخاص به.')}</p></div>`;
+        return;
+    }
+    const html = insDetailHtml(f);
+    insPage.animate = false;
+    box.innerHTML = html;
+    insCountUp(box, true);
+}
+
+function insDetailHtml(f) {
+    const id = f.id;
+    const info = insuranceInfo(f);
+    const ui = insUi(id);
+    const anim = insPage.animate;
+    const header = `
+        <div class="ins-card p-5 flex flex-wrap items-center gap-4">
+            <span class="ins-avatar ins-av-${insStatusOf(f)} !w-14 !h-14 !text-xl">${escapeHtml((String(f.name || f.phone || '?').trim()[0] || '?').toUpperCase())}</span>
+            <div class="min-w-0 flex-1">
+                <h2 dir="auto" class="text-lg font-extrabold truncate">${escapeHtml(f.name || f.phone || '—')}</h2>
+                <p class="text-xs text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5">
+                    ${f.phone ? `<span dir="ltr" class="font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(f.phone)}</span>` : ''}
+                    ${f.address ? `<span dir="auto" class="truncate"><i class="fa-solid fa-location-dot me-1 text-[10px]"></i>${escapeHtml(f.address)}</span>` : ''}
+                </p>
+            </div>
+            ${info ? `<span class="ins-pill ins-pill-slate !text-[11px]"><i class="fa-regular fa-calendar"></i>${escapeHtml(insLabel(info.ins.startMonth, 'short'))} → ${escapeHtml(insLabel(insKey(info.end), 'short'))}</span>` : ''}
+        </div>`;
+
+    if (!info) {
+        return `<div class="space-y-5">${header}
+        <div class="ins-card p-8 text-center space-y-4">
+            <span class="ins-shield mx-auto !bg-sky-100 !text-sky-500 dark:!bg-sky-950"><i class="fa-solid fa-shield-heart"></i></span>
+            <div>
+                <h3 class="font-extrabold text-base">${L('No insurance plan yet', 'لا توجد خطة تأمين بعد')}</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">${L(
+                    `Pick the month the plan started (${INSURANCE_FEE} EGP / month for ${INSURANCE_TERM_MONTHS} months). Months since then show as missed until you mark them paid.`,
+                    `اختر الشهر الذي بدأت فيه الخطة (${INSURANCE_FEE} جنيه شهرياً لمدة ${INSURANCE_TERM_MONTHS} شهراً). الأشهر منذ ذلك التاريخ تظهر كمتأخرة حتى تسجل سدادها.`)}</p>
+            </div>
+            <div class="flex flex-wrap items-end justify-center gap-3">
+                <label class="text-[11px] font-bold text-slate-500 text-start">${L('Start month', 'شهر البداية')}
+                    <input type="month" id="ins-start-${id}" value="${insMonthKey()}" class="block mt-1 ${INS_INPUT}"></label>
+                <button type="button" onclick="insStartPlan('${id}')" class="inline-flex items-center gap-2 bg-sky-500 hover:bg-sky-600 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-lg shadow-sky-500/30"><i class="fa-solid fa-play"></i>${L('Start tracking', 'ابدأ التتبع')}</button>
+            </div>
+        </div></div>`;
+    }
+
+    // keep the calendar on a year that is inside the plan the first time it is opened
+    if (!ui.yearInit) {
+        ui.yearInit = true;
+        ui.year = Math.min(Math.max(new Date().getFullYear(), Number(info.ins.startMonth.slice(0, 4))), Number(insKey(info.end).slice(0, 4)));
+    }
+
+    // ---- Progress ring + current-month label ----
+    const dueMonths = info.months.filter(m => m.idx <= info.nowIdx);
+    const paidDue = dueMonths.filter(m => m.paid).length;
+    const pct = dueMonths.length ? Math.round((paidDue / dueMonths.length) * 100) : 0;
+    const C = 2 * Math.PI * 52;
+    const to = C * (1 - pct / 100);
+    const tone = info.missed.length ? 'red' : (info.currentCovered && !info.currentPaid ? 'amber' : 'green');
+    const curLabel = insLabel(info.currentKey);
+    const curP = info.payments[info.currentKey];
+    let banner;
+    if (info.notStarted) banner = { t: 'slate', icon: 'fa-hourglass-start', title: `${L('Plan starts in', 'تبدأ الخطة في')} ${insLabel(info.ins.startMonth)}`, sub: L('Nothing is due yet.', 'لا يوجد مستحق بعد.') };
+    else if (info.expired) banner = { t: 'slate', icon: 'fa-shield-halved', title: `${L('Plan ended', 'انتهت الخطة')} · ${insLabel(insKey(info.end))}`, sub: info.missed.length ? L(`${info.missed.length} month(s) were never paid.`, `${info.missed.length} شهر لم يتم سداده.`) : L('All months were paid.', 'تم سداد كل الأشهر.') };
+    else if (info.currentPaid) banner = { t: 'green', icon: 'fa-circle-check', title: `${L('Paid for', 'تم السداد عن شهر')} ${curLabel}`, sub: [curP && insShortDate(curP.paidAt) ? `${L('Paid on', 'بتاريخ')} ${insShortDate(curP.paidAt)}` : '', curP && curP.method].filter(Boolean).join(' · ') };
+    else banner = { t: info.missed.length ? 'red' : 'amber', icon: 'fa-circle-exclamation', title: `${L('Not paid for', 'لم يتم السداد عن شهر')} ${curLabel}`, sub: `${insMoney(info.fee)} ${L('due', 'مستحق')}${info.missed.length ? ' · ' + L(`${info.missed.length} earlier month(s) missed`, `${info.missed.length} شهر سابق متأخر`) : ''}` };
+
+    const ring = `
+        <div class="ins-ring-wrap">
+            <svg viewBox="0 0 120 120" class="ins-ring">
+                <circle cx="60" cy="60" r="52" class="ins-ring-bg"/>
+                <circle cx="60" cy="60" r="52" class="ins-ring-fg ins-ring-${tone} ${anim ? 'ins-ring-anim' : ''}" style="--full:${C.toFixed(1)};--to:${to.toFixed(1)};stroke-dasharray:${C.toFixed(1)};stroke-dashoffset:${to.toFixed(1)}"/>
+            </svg>
+            <span class="ins-ring-text"><b data-count="${pct}" data-suffix="%">${pct}%</b><small>${L('on time', 'التزام')}</small></span>
+        </div>`;
+
+    const statBox = (label, val, cls) => `<div class="ins-stat ${cls}"><b>${val}</b><span>${label}</span></div>`;
+    const summary = `
+        <div class="ins-card p-5 flex flex-col md:flex-row items-center gap-6">
+            ${ring}
+            <div class="flex-1 min-w-0 w-full space-y-4">
+                <div class="ins-banner ins-banner-${banner.t}">
+                    <span class="ins-banner-icon"><i class="fa-solid ${banner.icon}"></i></span>
+                    <div class="min-w-0 flex-1">
+                        <p class="font-extrabold text-sm sm:text-base leading-tight">${escapeHtml(banner.title)}</p>
+                        ${banner.sub ? `<p class="text-[11px] opacity-80 mt-0.5">${escapeHtml(banner.sub)}</p>` : ''}
+                    </div>
+                    ${info.currentCovered && !info.currentPaid ? `<button type="button" onclick="insSelectMonth('${id}','${info.currentKey}')" class="shrink-0 bg-white/90 hover:bg-white text-slate-800 font-extrabold px-3.5 py-2 rounded-xl text-xs transition shadow"><i class="fa-solid fa-plus me-1"></i>${L('Record', 'تسجيل')}</button>` : ''}
+                </div>
+                <div class="grid grid-cols-3 gap-3">
+                    ${statBox(L('Paid', 'مدفوع'), `${info.paidCount}<small>/${info.months.length}</small>`, 'ins-stat-green')}
+                    ${statBox(L('Missed', 'متأخر'), info.missed.length, info.missed.length ? 'ins-stat-red' : 'ins-stat-slate')}
+                    ${statBox(L('Outstanding', 'المستحق'), insMoney(info.outstanding), info.outstanding ? 'ins-stat-amber' : 'ins-stat-slate')}
+                </div>
+            </div>
+        </div>`;
+
+    // ---- Calendar: twelve tear-off month pages ----
+    const stMeta = {
+        paid: ['fa-check', L('Paid', 'مدفوع')], missed: ['fa-xmark', L('Missed', 'متأخر')], due: ['fa-clock', L('Due now', 'مستحق الآن')],
+        future: ['fa-ellipsis', L('Upcoming', 'قادم')], out: ['fa-minus', L('Not covered', 'خارج التغطية')]
+    };
+    const tiles = Array.from({ length: 12 }, (_, m) => {
+        const key = `${ui.year}-${String(m + 1).padStart(2, '0')}`;
+        const st = insCellState(info, key);
+        const p = info.payments[key] && info.payments[key].paid ? info.payments[key] : null;
+        const sub = st === 'paid' ? (insShortDate(p && p.paidAt) || insMoney(info.fee)) : st === 'future' ? insMoney(info.fee) : st === 'out' ? '—' : stMeta[st][1];
+        const aria = `${insLabel(key)} — ${stMeta[st][1]}`;
+        return `<button type="button" ${st === 'out' ? 'disabled' : `onclick="insSelectMonth('${id}','${key}')"`} style="--i:${m}" title="${escapeHtml(aria)}" aria-label="${escapeHtml(aria)}"
+            class="ins-tile ins-t-${st} ${ui.sel === key ? 'selected' : ''} ${ui.stamp === key ? 'ins-stamp' : ''}">
+            <span class="ins-tile-band">${escapeHtml(insMonthName(m))}${key === info.currentKey ? '<i class="ins-now"></i>' : ''}</span>
+            <span class="ins-tile-body"><i class="fa-solid ${stMeta[st][0]} ins-tile-icon"></i><small dir="auto">${escapeHtml(sub)}</small></span>
+        </button>`;
+    }).join('');
+
+    const segs = Array.from({ length: INSURANCE_TERM_MONTHS }, (_, k) => {
+        const key = insKey(info.start + k);
+        const st = insCellState(info, key);
+        return `<button type="button" onclick="insSelectMonth('${id}','${key}')" title="${escapeHtml(insLabel(key))} — ${escapeHtml(stMeta[st][1])}" aria-label="${escapeHtml(insLabel(key))} — ${escapeHtml(stMeta[st][1])}" class="ins-seg ins-s-${st} ${ui.sel === key ? 'selected' : ''}" style="--i:${k}"></button>`;
+    }).join('');
+
+    const legend = ['paid', 'missed', 'due', 'future'].map(s => `<span class="ins-legend ins-l-${s}"><i></i>${stMeta[s][1]}</span>`).join('');
+    const calendar = `
+        <div class="ins-card p-5 space-y-5">
+            <div class="flex items-center justify-between gap-3">
+                <h3 class="font-extrabold text-sm flex items-center gap-2"><i class="fa-regular fa-calendar-days text-sky-500"></i>${L('Payment calendar', 'تقويم المدفوعات')}</h3>
+                <div class="flex items-center gap-1.5">
+                    <button type="button" onclick="insShiftYear('${id}', -1)" class="ins-nav-btn" aria-label="${L('Previous year', 'السنة السابقة')}"><i class="fa-solid fa-chevron-left rtl:rotate-180"></i></button>
+                    <span class="text-base font-extrabold w-14 text-center tabular-nums">${ui.year}</span>
+                    <button type="button" onclick="insShiftYear('${id}', 1)" class="ins-nav-btn" aria-label="${L('Next year', 'السنة التالية')}"><i class="fa-solid fa-chevron-right rtl:rotate-180"></i></button>
+                    <button type="button" onclick="insGoToday('${id}')" class="ml-1 px-3 h-8 rounded-lg text-[11px] font-bold bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900 transition">${L('Today', 'اليوم')}</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-6 gap-3 ${anim ? 'ins-anim' : ''}">${tiles}</div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1.5">${legend}</div>
+            <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L(`Whole plan · ${INSURANCE_TERM_MONTHS} months`, `الخطة كاملة · ${INSURANCE_TERM_MONTHS} شهراً`)}</p>
+                <div class="ins-seg-row ${anim ? 'ins-anim' : ''}" dir="ltr">${segs}</div>
+                <div class="flex justify-between text-[10px] text-slate-400 font-bold" dir="ltr"><span>${escapeHtml(insLabel(info.ins.startMonth, 'short'))}</span><span>${escapeHtml(insLabel(insKey(info.end), 'short'))}</span></div>
+            </div>
+        </div>`;
+
+    // ---- Edit panel for the selected month ----
+    let panel = '';
+    if (ui.sel && insCellState(info, ui.sel) !== 'out') {
+        const st = insCellState(info, ui.sel);
+        const p = info.payments[ui.sel] && info.payments[ui.sel].paid ? info.payments[ui.sel] : null;
+        panel = `
+        <div class="ins-card ins-panel p-5 space-y-4 !border-sky-300 dark:!border-sky-800">
+            <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-3 min-w-0">
+                    <span class="ins-banner-icon ins-t-${st} !w-10 !h-10"><i class="fa-solid ${stMeta[st][0]}"></i></span>
+                    <div class="min-w-0"><p class="font-extrabold text-sm">${escapeHtml(insLabel(ui.sel))}</p><p class="text-[11px] text-slate-500">${stMeta[st][1]} · ${insMoney(info.fee)}</p></div>
+                </div>
+                <button type="button" onclick="insSelectMonth('${id}', null)" class="ins-nav-btn" aria-label="${L('Close', 'إغلاق')}"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label class="text-[11px] font-bold text-slate-500">${L('Paid on', 'تاريخ السداد')}
+                    <input type="date" id="ins-date-${id}" value="${escapeHtml((p && p.paidAt) || getLocalDateString())}" class="block w-full mt-1 ${INS_INPUT}"></label>
+                <label class="text-[11px] font-bold text-slate-500">${L('Method', 'طريقة الدفع')}
+                    <select id="ins-method-${id}" class="block w-full mt-1 ${INS_INPUT}">${INSURANCE_METHODS.map(m => `<option value="${m}" ${p && p.method === m ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+                <label class="text-[11px] font-bold text-slate-500">${L('Reference / sender phone', 'المرجع / رقم المرسل')}
+                    <input type="text" id="ins-ref-${id}" maxlength="60" dir="auto" value="${escapeHtml((p && p.ref) || '')}" class="block w-full mt-1 ${INS_INPUT}"></label>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <button type="button" onclick="insSavePayment('${id}', true)" class="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-lg shadow-emerald-600/25"><i class="fa-solid fa-check"></i>${p ? L('Update payment', 'تحديث السداد') : L('Mark as paid', 'تسجيل كمدفوع')}</button>
+                ${p ? `<button type="button" onclick="insSavePayment('${id}', false)" class="inline-flex items-center gap-2 border border-red-300 dark:border-red-900 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 font-bold px-5 py-2.5 rounded-xl text-xs transition"><i class="fa-solid fa-rotate-left"></i>${L('Mark as unpaid', 'تسجيل كغير مدفوع')}</button>` : ''}
+                ${p && p.by ? `<span class="text-[10px] text-slate-400">${p.via === 'customer' ? L('Paid online by', 'دفع أونلاين بواسطة') : L('Recorded by', 'سجّله')} @${escapeHtml(p.by)}</span>` : ''}
+            </div>
+        </div>`;
+    }
+
+    // ---- History timeline ----
+    const rows = info.months.slice().reverse().filter(m => !ui.missedOnly || (!m.paid && m.idx < info.nowIdx));
+    const history = rows.length ? rows.map((m, n) => {
+        const st = insCellState(info, m.key);
+        const p = m.paid ? m.p : null;
+        const detail = p ? [insShortDate(p.paidAt), p.method, p.ref, insMoney(p.amount || info.fee), p.via === 'customer' ? L('Paid online', 'دفع أونلاين') : ''].filter(Boolean).join(' · ') : '';
+        return `
+        <li class="ins-tl-item" style="--i:${Math.min(n, 10)}">
+            <span class="ins-tl-dot ins-t-${st}"><i class="fa-solid ${stMeta[st][0]}"></i></span>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 flex-1 min-w-0 ${st === 'missed' ? 'ins-tl-missed' : ''}">
+                <b class="text-xs w-32">${escapeHtml(insLabel(m.key))}</b>
+                <span class="ins-pill ins-pill-${st === 'paid' ? 'green' : st === 'missed' ? 'red' : st === 'due' ? 'amber' : 'slate'}">${stMeta[st][1]}</span>
+                <span dir="auto" class="text-[11px] text-slate-500 dark:text-slate-400 flex-1 min-w-0 truncate">${escapeHtml(detail)}</span>
+                <button type="button" onclick="insSelectMonth('${id}','${m.key}')" class="text-[11px] font-bold text-sky-600 dark:text-sky-400 hover:underline">${m.paid ? L('Edit', 'تعديل') : L('Record payment', 'تسجيل سداد')}</button>
+            </div>
+        </li>`;
+    }).join('') : `<li class="py-6 text-center text-xs text-slate-400 font-bold">${ui.missedOnly ? L('No missed payments. 🎉', 'لا توجد مدفوعات متأخرة. 🎉') : L('No months to show yet.', 'لا توجد أشهر لعرضها بعد.')}</li>`;
+
+    const historyCard = `
+        <div class="ins-card p-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="font-extrabold text-sm flex items-center gap-2"><i class="fa-solid fa-clock-rotate-left text-sky-500"></i>${L('Payment history', 'سجل المدفوعات')}</h3>
+                <label class="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500 cursor-pointer">
+                    <input type="checkbox" class="accent-red-500" ${ui.missedOnly ? 'checked' : ''} onchange="insToggleMissed('${id}')">${L('Missed only', 'المتأخر فقط')}</label>
+            </div>
+            <ul class="ins-tl max-h-[380px] overflow-y-auto custom-scrollbar pe-1">${history}</ul>
+        </div>`;
+
+    const settings = `
+        <details class="ins-card px-5 py-3 text-xs">
+            <summary class="cursor-pointer text-[11px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">${L('Plan settings', 'إعدادات الخطة')}</summary>
+            <div class="flex flex-wrap items-end gap-3 mt-3">
+                <label class="text-[11px] font-bold text-slate-500">${L('Start month', 'شهر البداية')}
+                    <input type="month" id="ins-start-${id}" value="${escapeHtml(info.ins.startMonth)}" class="block mt-1 ${INS_INPUT}"></label>
+                <button type="button" onclick="insStartPlan('${id}')" class="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold text-xs transition">${L('Update start month', 'تحديث شهر البداية')}</button>
+                <button type="button" onclick="insRemovePlan('${id}')" class="px-4 py-2.5 rounded-xl text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 font-bold text-xs transition"><i class="fa-solid fa-trash-can me-1"></i>${L('Remove plan', 'إزالة الخطة')}</button>
+            </div>
+        </details>`;
+
+    ui.stamp = null;
+    return `<div class="space-y-5">${header}${summary}${calendar}${panel}${historyCard}${settings}</div>`;
+}
+
+function insGoToday(folderId) {
+    const ui = insUi(folderId);
+    ui.year = new Date().getFullYear();
+    insPage.animate = true;
+    insRerender();
+}
+
+
+// ---- Customer pays online -> the tracker is updated instantly, no admin approval ----
+// The customer's folder is found through their account phone (or created the same way the Customer Log does).
+function insFolderForUser(user) {
+    const folders = loadCustomerFolders();
+    const digits = [user.whatsapp, user.contactPhone].map(intakePhoneDigits).filter(d => d.length >= 7);
+    let f = folders.find(x => digits.includes(intakePhoneDigits(x.phone)));
+    if (!f) {
+        const phone = [user.contactPhone, user.whatsapp].find(p => intakePhoneDigits(p).length >= 7) || '';
+        const row = { name: user.name || user.username, phone, address: '' };
+        const key = intakeFolderKey(row);
+        f = folders.find(x => x.key === key);
+        if (!f) {
+            f = { id: folderIdForKey(key), key, name: row.name, phone, address: '', source: 'account', createdAt: new Date().toISOString(), history: [], tags: ['ours'] };
+            folders.push(f);
+        }
+    }
+    return { folders, f };
+}
+
+// Months the customer can choose to pay: every unpaid month up to the current one, plus the next one.
+function insPayableMonths(info) {
+    if (!info) return [insMonthKey()];
+    const out = [];
+    for (let i = info.start; i <= Math.min(info.end, info.nowIdx + 1); i++) {
+        const k = insKey(i);
+        if (!(info.payments[k] && info.payments[k].paid)) out.push(k);
+    }
+    return out;
+}
+
+// Fills the "month you are paying for" list in the customer's Insurance modal.
+function populateInsuranceMonths() {
+    const box = document.getElementById('insuranceMonthBox');
+    const sel = document.getElementById('insuranceMonth');
+    if (!box || !sel) return;
+    const u = state.currentUser;
+    box.classList.toggle('hidden', !u || u.role !== 'customer');
+    if (!u || u.role !== 'customer') return;
+    let info = null;
+    try { info = insuranceInfo(insFolderForUser(u).f); } catch (e) { /* new customer: current month */ }
+    const months = insPayableMonths(info);
+    sel.innerHTML = months.length
+        ? months.map((k, n) => `<option value="${k}">${escapeHtml(insLabel(k))}${info && insIdx(k) < info.nowIdx ? ' — ' + L('overdue', 'متأخر') : ''}${n === 0 ? '' : ''}</option>`).join('')
+        : `<option value="">${L('All months are already paid', 'كل الأشهر مدفوعة بالفعل')}</option>`;
+}
+
+// Writes the payment into the customer's calendar as PAID right away. Returns the month recorded, or null.
+function insRecordCustomerPayment(user, monthKey, gateway, ref) {
+    if (!user || user.role !== 'customer') return null;
+    const { folders, f } = insFolderForUser(user);
+    const info = insuranceInfo(f);
+    const key = /^\d{4}-\d{2}$/.test(monthKey || '') ? monthKey : insPayableMonths(info)[0];
+    if (!key) return null;
+    const nowIso = new Date().toISOString();
+    if (!info) {
+        f.insurance = { startMonth: insMonthKey(), amount: INSURANCE_FEE, payments: {} }; // first payment starts the plan
+    } else {
+        const idx = insIdx(key);
+        if (idx < info.start || idx > info.end) return null;
+        const dup = ref && Object.values(info.payments).some(p => p && p.paid && p.ref && p.ref === ref);
+        if (dup) return null; // same transaction reference was already recorded
+    }
+    const start = insIdx(f.insurance.startMonth);
+    if (insIdx(key) < start) f.insurance.startMonth = key; // paying for an earlier month moves the start back
+    f.insurance.payments = f.insurance.payments || {};
+    f.insurance.payments[key] = { paid: true, amount: Number(f.insurance.amount) || INSURANCE_FEE, paidAt: getLocalDateString(), method: gateway, ref: ref || '', by: user.username, via: 'customer', updatedAt: nowIso };
+    f.insurance.updatedAt = nowIso;
+    state.customerFolders = folders;
+    saveState();
+    return key;
+}
+
+Object.assign(window, { populateInsuranceMonths, insRecordCustomerPayment, insSelectMonth, insShiftYear, insToggleMissed, insStartPlan, insSavePayment, insRemovePlan, insSelectCustomer, insOpenCustomer, insSetFilter, insSearchInput, insGoToday, renderInsurancePage });
+
 function buildIntakeFolderHtml(folder) {
     const tasks = state.tasks.filter(t => t.folderId === folder.id);
     const openTasks = tasks.filter(t => t.status !== 'Done').length;
@@ -6404,6 +7126,7 @@ function buildIntakeFolderHtml(folder) {
                     <ul class="space-y-2.5 max-h-[300px] overflow-y-auto custom-scrollbar pe-1">${timeline}</ul>
                 </div>
             </div>
+            ${buildInsuranceLinkHtml(folder)}
             ${taskRows ? `<div class="space-y-2"><p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L('Tasks', 'المهام')}</p>${taskRows}</div>` : ''}
         </div>`;
     }
@@ -6417,6 +7140,7 @@ function buildIntakeFolderHtml(folder) {
             ${profile ? chip('@' + escapeHtml(profile.username), 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400') : ''}
             ${origins.ours ? chip(L('Ours', 'عملاؤنا'), 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400') : ''}
             ${origins.arabi && canUseArabi() ? chip(L('Arabi', 'عربي'), 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400') : ''}
+            ${insuranceChipHtml(folder)}
             <span class="ms-auto inline-flex items-center gap-2">
                 ${chip(`${issues} ${issues === 1 ? L('issue', 'عطل') : L('issues', 'أعطال')}`, 'bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400')}
                 ${openTasks ? chip(`${openTasks} ${L('open', 'مفتوحة')}`, 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400') : ''}
@@ -9655,6 +10379,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         const chatsNav = document.getElementById('nav-chats');
         const arabiNav = document.getElementById('nav-arabi');
         const mapNav = document.getElementById('nav-map');
+        const insuranceNav = document.getElementById('nav-insurance');
 
         const role = state.currentUser ? state.currentUser.role : null;
         const isTechnician = role === 'technician';
@@ -9677,6 +10402,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (chatsNav) chatsNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (arabiNav) arabiNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (mapNav) mapNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
+        if (insuranceNav) insuranceNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (typeof updateChatsBadge === 'function') updateChatsBadge();
 
         // Technicians and assistants share their live position while they are logged in.
@@ -11318,6 +12044,13 @@ function botDismissNudge() {
             return;
         }
 
+        const monthEl = document.getElementById('insuranceMonth');
+        const monthBox = document.getElementById('insuranceMonthBox');
+        if (monthEl && monthBox && !monthBox.classList.contains('hidden') && !monthEl.value) {
+            showToast(state.currentLang === 'ar' ? 'كل الأشهر مدفوعة بالفعل.' : 'All months are already paid.', 'info');
+            return;
+        }
+
         const newOrder = {
             id: createDateBasedId('INS'),
             orderRef: 'INS-' + Math.floor(100000 + Math.random() * 900000),
@@ -11325,7 +12058,7 @@ function botDismissNudge() {
             username: state.currentUser.username,
             itemTitle: `Protection Insurance (${unitRef})`,
             amount: 100,
-            gateway: selectedGw === 'instapay' ? 'InstaPay' : 'Vodafone Cash',
+            gateway: selectedGw,
             transactionRef: txRef,
             status: 'Approved',
             date: getLocalDateString(),
@@ -11337,10 +12070,19 @@ function botDismissNudge() {
         state.orders.unshift(newOrder);
         saveState();
 
+        // Mark the month as paid in the customer's insurance calendar immediately (no approval step)
+        let recordedMonth = null;
+        try {
+            const mSel = document.getElementById('insuranceMonth');
+            recordedMonth = insRecordCustomerPayment(state.currentUser, mSel ? mSel.value : '', selectedGw, txRef);
+        } catch (err) { console.warn('[Insurance] could not update the tracker', err); }
+
         if (document.getElementById('insuranceUnitRef')) document.getElementById('insuranceUnitRef').value = '';
         if (document.getElementById('insuranceTxRef')) document.getElementById('insuranceTxRef').value = '';
 
-        showToast(state.currentLang === 'ar' ? 'تم تأكيد سداد قسط التأمين بنجاح!' : 'Insurance Payment Submitted & Verified!', 'success');
+        showToast(recordedMonth
+            ? (state.currentLang === 'ar' ? `تم تسجيل سداد شهر ${insLabel(recordedMonth)} بنجاح!` : `Payment recorded for ${insLabel(recordedMonth)}!`)
+            : (state.currentLang === 'ar' ? 'تم تأكيد سداد قسط التأمين بنجاح!' : 'Insurance Payment Submitted & Verified!'), 'success');
         closeInsuranceModal();
         navigateTo('customer-dashboard');
     }
@@ -11350,6 +12092,7 @@ function botDismissNudge() {
         if (!modal) return;
         const sel = document.getElementById('insuranceLocation');
         if (sel) sel.innerHTML = getLocationOptionsHtml();
+        try { populateInsuranceMonths(); } catch (e) { console.warn('[Insurance] month list failed', e); }
         modal.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
         modal.onclick = function (e) { if (e.target === modal) closeInsuranceModal(); };
@@ -11470,4 +12213,20 @@ window.addEventListener('DOMContentLoaded', () => { syncHomeGalleryFromCloud(tru
     }
     function boot() { init(); headerDepth(); }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+
+
+// ================= VIDEOS: no download / no right-click save =================
+document.addEventListener('contextmenu', e => { if (e.target && e.target.closest && e.target.closest('video')) e.preventDefault(); });
+(function () {
+    function lock(root) {
+        (root || document).querySelectorAll('video:not([data-nodl])').forEach(v => {
+            v.setAttribute('controlsList', 'nodownload noremoteplayback');
+            v.setAttribute('disablePictureInPicture', '');
+            v.setAttribute('data-nodl', '1');
+        });
+    }
+    // covers videos added later (new cards, re-renders)
+    new MutationObserver(() => lock()).observe(document.documentElement, { childList: true, subtree: true });
+    lock();
 })();
