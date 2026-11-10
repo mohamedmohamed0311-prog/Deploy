@@ -970,19 +970,22 @@ function getTaskLocation(task) {
 // Done, so undoing "Done" also takes it out of the revenue.
 function getCollectedAmount(order) {
     return state.tasks
-        .filter(t => t.orderId === order.id && t.status === 'Done' && t.orderType === 'Tech Fix Service')
+        .filter(t => t.orderId === order.id && t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus !== 'rejected')
         .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
 }
 
 // Upfront payment + money the technician collected from the customer.
 function getOrderRevenue(order) {
+    // An insurance payment is only money in once the admin has approved it.
+    if (order.type === 'Insurance' && order.status !== 'Approved') return 0;
+    if (order.paymentStatus === 'rejected') return getCollectedAmount(order);
     return (Number(order.amount) || 0) + getCollectedAmount(order);
 }
 
 // Money collected on Arabi jobs. They have no order, so the money sits on the task itself.
 function getArabiCollectedAmount() {
     return state.tasks
-        .filter(t => t.source === 'arabi' && t.status === 'Done' && t.orderType === 'Tech Fix Service')
+        .filter(t => t.source === 'arabi' && t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus !== 'rejected')
         .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
 }
 
@@ -990,7 +993,7 @@ function getArabiCollectedAmount() {
 // Money collected on imported customer-sheet jobs (also no order, so it sits on the task).
 function getSheetCollectedAmount() {
     return state.tasks
-        .filter(t => t.source === 'sheet' && t.status === 'Done' && t.orderType === 'Tech Fix Service')
+        .filter(t => t.source === 'sheet' && t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus !== 'rejected')
         .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
 }
 
@@ -2602,7 +2605,7 @@ Object.assign(AR_UI, {
 
 // ----- extra coverage: chats, statuses, messages that had no Arabic yet -----
 Object.assign(AR_UI, {
-    'Approved': 'تمت الموافقة', 'Pending': 'قيد الانتظار', 'Cancelled': 'ملغي', 'Closed': 'مغلقة', 'Late': 'متأخر', 'Low': 'منخفضة',
+    'Approved': 'تمت الموافقة', 'Pending': 'قيد الانتظار', 'Rejected': 'مرفوض', 'Payments': 'المدفوعات', 'Cancelled': 'ملغي', 'Closed': 'مغلقة', 'Late': 'متأخر', 'Low': 'منخفضة',
     'Customer Chats': 'محادثات العملاء',
     'Current chats': 'المحادثات الحالية',
     'Chat history': 'سجل المحادثات',
@@ -2739,6 +2742,13 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
+    if (viewId === 'payments' && !(state.currentUser && isTopAdmin(state.currentUser.role))) {
+        showToast('Access restricted to administrators only.', 'error');
+        try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
+        navigateTo('home', true);
+        return;
+    }
+
     if (viewId === 'insurance' && !canImportCustomers()) {
         showToast('Access restricted to administrators only.', 'error');
         try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
@@ -2813,7 +2823,7 @@ function navigateTo(viewId, fromHistory = false) {
     // Remember the current view so a page refresh reopens it instead of bouncing to Home
     sessionStorage.setItem('ca_last_view', route);
 
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'insurance', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'insurance', 'payments', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
 
     views.forEach(v => {
         const el = document.getElementById(`view-${v}`);
@@ -2852,11 +2862,12 @@ function navigateTo(viewId, fromHistory = false) {
     if (viewId === 'arabi') renderArabiPage();
     if (viewId === 'map') renderMapPage();
     if (viewId === 'insurance') renderInsurancePage();
+    if (viewId === 'payments') renderPaymentsPage();
 }
 
 // Returns the id (without the "view-" prefix) of whichever section is currently visible
 function getCurrentViewId() {
-    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'insurance', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
+    const views = ['home', 'products', 'tech-fix', 'customer-log', 'arabi', 'map', 'insurance', 'payments', 'chats', 'admin-dashboard', 'tech-home', 'tech-dashboard', 'customer-dashboard', 'about', 'reviews', 'who-are-we', 'contact'];
     for (const v of views) {
         const el = document.getElementById(`view-${v}`);
         if (el && !el.classList.contains('hidden')) return v;
@@ -2872,6 +2883,7 @@ function refreshCurrentView() {
     if (current === 'arabi') renderArabiPage();
     if (current === 'map') renderMapPage();
     if (current === 'insurance') renderInsurancePage();
+    if (current === 'payments') renderPaymentsPage();
     if (current === 'admin-dashboard') renderAdminDashboard();
     if (current === 'tech-home') renderTechHome();
     if (current === 'tech-dashboard') renderTechDashboard();
@@ -4418,6 +4430,7 @@ function submitOrderCheckout(e) {
         type: pendingCheckoutOrder.type,
         insurancePaid: isRepair ? 'N/A' : 'Optional',
         gateway: gateway,
+        paymentStatus: (!isRepair && Number(amount) > 0) ? 'pending' : 'none', // admin approves it on the Payments page
         status: isRepair ? 'Inspection Requested' : 'Pending Dispatch'
     };
 
@@ -5863,6 +5876,9 @@ function renderAdminDashboard() {
         }
     }
 
+    // Admin-only: the reset-data card
+    renderDataResetSection(isHeadAdmin);
+
     // Team Accounts + Labor Dashboard now live on the Who Are We page (kept up to date from here too)
     renderManagePanel();
     renderCustomerFolders();
@@ -5907,6 +5923,8 @@ function renderAdminDashboard() {
             taskTable.innerHTML = visibleTasks.map(task => buildTaskRow(task, technicianUsers, canManageTasks)).join('');
         }
     }
+
+    renderDashSide(isHeadAdmin, canManageTasks);
 
     renderAdminChats();
     applyRoleBasedNav();
@@ -7003,7 +7021,7 @@ function insGoToday(folderId) {
 }
 
 
-// ---- Customer pays online -> the tracker is updated instantly, no admin approval ----
+// ---- Customer pays online -> the payment waits for an admin to approve it, then the tracker is updated ----
 // The customer's folder is found through their account phone (or created the same way the Customer Log does).
 function insFolderForUser(user) {
     const folders = loadCustomerFolders();
@@ -7043,14 +7061,16 @@ function populateInsuranceMonths() {
     if (!u || u.role !== 'customer') return;
     let info = null;
     try { info = insuranceInfo(insFolderForUser(u).f); } catch (e) { /* new customer: current month */ }
-    const months = insPayableMonths(info);
+    const pending = getPendingInsuranceOrders().filter(o => String(o.username || '').toLowerCase() === u.username.toLowerCase());
+    const pendingMonths = new Set(pending.map(o => o.insuranceMonth).filter(Boolean));
+    const months = insPayableMonths(info).filter(k => !pendingMonths.has(k));
     sel.innerHTML = months.length
         ? months.map((k, n) => `<option value="${k}">${escapeHtml(insLabel(k))}${info && insIdx(k) < info.nowIdx ? ' — ' + L('overdue', 'متأخر') : ''}${n === 0 ? '' : ''}</option>`).join('')
-        : `<option value="">${L('All months are already paid', 'كل الأشهر مدفوعة بالفعل')}</option>`;
+        : `<option value="">${pending.length ? L('Waiting for admin approval', 'بانتظار موافقة المسؤول') : L('All months are already paid', 'كل الأشهر مدفوعة بالفعل')}</option>`;
 }
 
-// Writes the payment into the customer's calendar as PAID right away. Returns the month recorded, or null.
-function insRecordCustomerPayment(user, monthKey, gateway, ref) {
+// Writes the payment into the customer's calendar as PAID (called when the admin approves it). Returns the month recorded, or null.
+function insRecordCustomerPayment(user, monthKey, gateway, ref, approvedBy) {
     if (!user || user.role !== 'customer') return null;
     const { folders, f } = insFolderForUser(user);
     const info = insuranceInfo(f);
@@ -7068,7 +7088,7 @@ function insRecordCustomerPayment(user, monthKey, gateway, ref) {
     const start = insIdx(f.insurance.startMonth);
     if (insIdx(key) < start) f.insurance.startMonth = key; // paying for an earlier month moves the start back
     f.insurance.payments = f.insurance.payments || {};
-    f.insurance.payments[key] = { paid: true, amount: Number(f.insurance.amount) || INSURANCE_FEE, paidAt: getLocalDateString(), method: gateway, ref: ref || '', by: user.username, via: 'customer', updatedAt: nowIso };
+    f.insurance.payments[key] = { paid: true, amount: Number(f.insurance.amount) || INSURANCE_FEE, paidAt: getLocalDateString(), method: gateway, ref: ref || '', by: user.username, via: 'customer', approvedBy: approvedBy || '', updatedAt: nowIso };
     f.insurance.updatedAt = nowIso;
     state.customerFolders = folders;
     saveState();
@@ -7076,6 +7096,349 @@ function insRecordCustomerPayment(user, monthKey, gateway, ref) {
 }
 
 Object.assign(window, { populateInsuranceMonths, insRecordCustomerPayment, insSelectMonth, insShiftYear, insToggleMissed, insStartPlan, insSavePayment, insRemovePlan, insSelectCustomer, insOpenCustomer, insSetFilter, insSearchInput, insGoToday, renderInsurancePage });
+
+// ================= ADMIN DASHBOARD SIDE MENU =================
+// The dashboard shows one panel at a time (Tasks / Overview / Insurance approvals), picked from the side menu.
+let dashPanel = (function () { try { return sessionStorage.getItem('ca_dash_panel') || 'tasks'; } catch (e) { return 'tasks'; } })();
+
+function setDashPanel(name) {
+    dashPanel = name;
+    try { sessionStorage.setItem('ca_dash_panel', name); } catch (e) { /* ignore */ }
+    renderAdminDashboard();
+}
+
+function renderDashSide(isHeadAdmin, canManageTasks) {
+    const side = document.getElementById('adminDashSide');
+    const layout = document.getElementById('adminDashLayout');
+    if (!side || !layout) return;
+    const me = state.currentUser;
+    const openTasks = state.tasks.filter(t => t.status !== 'Done' && (canManageTasks || (me && isTaskAssignedTo(t, me.username) && getDelayState(t) !== 'delayed'))).length;
+    const items = [{ key: 'tasks', icon: 'fa-list-check', en: 'Task board', ar: 'لوحة المهام', badge: openTasks }];
+    if (isHeadAdmin || canManageTasks) items.push({ key: 'overview', icon: 'fa-chart-line', en: 'Overview', ar: 'نظرة عامة', badge: 0 });
+    if (!items.some(i => i.key === dashPanel)) dashPanel = 'tasks';
+
+    document.querySelectorAll('[data-dash-panel]').forEach(p => p.classList.toggle('hidden', p.id !== 'dashPanel-' + dashPanel));
+    // Only one panel available (e.g. Customer Services without overview): no side menu needed.
+    side.classList.toggle('hidden', items.length < 2);
+    layout.classList.toggle('lg:grid-cols-[14rem_minmax(0,1fr)]', items.length > 1);
+    side.innerHTML = items.map(i => {
+        const on = i.key === dashPanel;
+        return `<button type="button" onclick="setDashPanel('${i.key}')" class="shrink-0 flex items-center gap-3 px-4 py-3 rounded-2xl border text-xs font-bold transition ${on ? 'bg-sky-600 border-sky-600 text-white shadow-md shadow-sky-500/20' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-sky-300 dark:hover:border-sky-700'}">
+            <i class="fa-solid ${i.icon} w-4 text-center"></i>
+            <span class="flex-1 text-start whitespace-nowrap">${L(i.en, i.ar)}</span>
+            ${i.badge ? `<span class="min-w-[22px] text-center text-[10px] font-extrabold rounded-full px-1.5 py-0.5 ${on ? 'bg-white/25 text-white' : (i.alert ? 'bg-red-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500')}">${i.badge}</span>` : ''}
+        </button>`;
+    }).join('');
+}
+window.setDashPanel = setDashPanel;
+
+// ================= INSURANCE APPROVAL (admin) =================
+// A customer's insurance payment is saved as an order with status 'Pending'. It does not touch the
+// customer's calendar or the revenue until an admin (Admin / Executive Director) approves it.
+function getPendingInsuranceOrders() {
+    return state.orders.filter(o => o.type === 'Insurance' && o.status === 'Pending');
+}
+
+function approveInsurance(orderId) {
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+        showToast(L('Only the admin can approve insurance payments.', 'المسؤول فقط يمكنه الموافقة على مدفوعات التأمين.'), 'error');
+        return;
+    }
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    const o = state.orders.find(x => x.id === orderId && x.type === 'Insurance');
+    if (!o || o.status !== 'Pending') { renderAdminDashboard(); return; }
+    const customer = state.users.find(u => String(u.username || '').toLowerCase() === String(o.username || '').toLowerCase());
+    if (!customer) {
+        showToast(L('The customer account no longer exists.', 'حساب العميل لم يعد موجوداً.'), 'error');
+        return;
+    }
+    let month = null;
+    try { month = insRecordCustomerPayment(customer, o.insuranceMonth, o.gateway, o.transactionRef, state.currentUser.username); }
+    catch (err) { console.warn('[Insurance] could not update the tracker', err); }
+    if (!month) {
+        showToast(L("This payment can't be added to the customer's insurance calendar (the month is outside the plan, or the transaction reference was already used). Reject it or check the calendar.", 'لا يمكن إضافة هذه الدفعة إلى تقويم تأمين العميل (الشهر خارج الخطة أو رقم العملية مستخدم من قبل). ارفضها أو راجع التقويم.'), 'error', 7000);
+        return;
+    }
+    o.status = 'Approved';
+    o.insurancePaid = 'Paid / Active';
+    o.approvedBy = state.currentUser.username;
+    o.approvedAt = new Date().toISOString();
+    saveState();
+    showToast(L(`Approved: ${insLabel(month)} for @${o.username}.`, `تمت الموافقة: ${insLabel(month)} للعميل @${o.username}.`), 'success');
+    renderAdminDashboard();
+    if (getCurrentViewId() === 'payments') renderPaymentsPage();
+}
+
+function rejectInsurance(orderId) {
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+        showToast(L('Only the admin can reject insurance payments.', 'المسؤول فقط يمكنه رفض مدفوعات التأمين.'), 'error');
+        return;
+    }
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    const o = state.orders.find(x => x.id === orderId && x.type === 'Insurance');
+    if (!o || o.status !== 'Pending') { renderAdminDashboard(); return; }
+    if (!window.confirm(L(`Reject this insurance payment from @${o.username}?`, `رفض دفعة التأمين من @${o.username}؟`))) return;
+    o.status = 'Rejected';
+    o.insurancePaid = 'Rejected';
+    o.rejectedBy = state.currentUser.username;
+    o.rejectedAt = new Date().toISOString();
+    saveState();
+    showToast(L('Insurance payment rejected.', 'تم رفض دفعة التأمين.'), 'info');
+    renderAdminDashboard();
+    if (getCurrentViewId() === 'payments') renderPaymentsPage();
+}
+
+// ================= RESET DASHBOARD DATA (admin) =================
+// Clears orders / tasks / the revenue counter. Customer accounts, team accounts, Customer Log folders
+// and the insurance calendars are never touched.
+function renderDataResetSection(isAdmin) {
+    const box = document.getElementById('adminDataResetSection');
+    if (!box) return;
+    box.classList.toggle('hidden', !isAdmin);
+    if (!isAdmin) { box.innerHTML = ''; return; }
+    box.innerHTML = `
+        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-red-200 dark:border-red-900/60 shadow-sm p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <span class="w-10 h-10 shrink-0 rounded-xl bg-red-100 dark:bg-red-950 text-red-500 flex items-center justify-center"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                <div>
+                    <h3 class="font-bold text-sm">${L('Reset dashboard data', 'إعادة ضبط بيانات لوحة التحكم')}</h3>
+                    <p class="text-[11px] text-slate-400">${L('Clear orders, tasks or the revenue counter. Accounts and customer folders are kept.', 'مسح الطلبات أو المهام أو عداد الإيرادات. الحسابات وملفات العملاء تبقى كما هي.')}</p>
+                </div>
+            </div>
+            <button type="button" onclick="openDataResetModal()" class="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs transition shadow-sm">${L('Reset data', 'إعادة ضبط البيانات')}</button>
+        </div>`;
+}
+
+function openDataResetModal() {
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+        showToast(L('Only the admin can reset dashboard data.', 'المسؤول فقط يمكنه إعادة ضبط بيانات لوحة التحكم.'), 'error');
+        return;
+    }
+    const modal = document.getElementById('dataResetModal');
+    if (!modal) return;
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    const opt = (id, title, sub) => `
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50">
+            <input type="checkbox" id="${id}" class="mt-1 accent-red-600">
+            <span class="text-start"><span class="block text-xs font-bold">${title}</span><span class="block text-[11px] text-slate-400">${sub}</span></span>
+        </label>`;
+    modal.innerHTML = `
+        <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div class="text-center">
+                <div class="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950/50 text-red-500 flex items-center justify-center text-xl mx-auto"><i class="fa-solid fa-trash-can"></i></div>
+                <h3 class="font-bold text-lg mt-3">${L('Reset dashboard data', 'إعادة ضبط بيانات لوحة التحكم')}</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">${L('This cannot be undone. Choose what to clear:', 'لا يمكن التراجع عن هذا الإجراء. اختر ما تريد مسحه:')}</p>
+            </div>
+            <div class="space-y-2">
+                ${opt('resetOptOrders', `${L('Orders & repair requests', 'الطلبات وطلبات الصيانة')} (${state.orders.length})`, L('Also removes the tasks that belong to these orders.', 'يحذف أيضاً المهام المرتبطة بهذه الطلبات.'))}
+                ${opt('resetOptTasks', `${L('All tasks', 'كل المهام')} (${state.tasks.length})`, L('Task board, including Arabi and imported customer tasks.', 'لوحة المهام، بما فيها مهام عربي والعملاء المستوردين.'))}
+                ${opt('resetOptRevenue', L('Revenue counter', 'عداد الإيرادات'), L('Restart the total from zero.', 'إعادة الإجمالي إلى الصفر.'))}
+            </div>
+            <div>
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">${L('Type RESET to confirm', 'اكتب RESET للتأكيد')}</label>
+                <input type="text" id="dataResetConfirm" autocomplete="off" dir="ltr" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+            </div>
+            <div class="grid grid-cols-2 gap-3 pt-1">
+                <button type="button" onclick="closeDataResetModal()" class="py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">${L('Cancel', 'إلغاء')}</button>
+                <button type="button" onclick="executeDataReset()" class="py-2.5 rounded-xl bg-red-600 hover:bg-red-700 font-bold text-xs text-white shadow-lg shadow-red-500/20 transition">${L('Reset', 'إعادة ضبط')}</button>
+            </div>
+        </div>`;
+    modal.classList.remove('hidden');
+}
+
+function closeDataResetModal() {
+    const modal = document.getElementById('dataResetModal');
+    if (modal) { modal.classList.add('hidden'); modal.innerHTML = ''; }
+}
+
+function executeDataReset() {
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+        showToast(L('Only the admin can reset dashboard data.', 'المسؤول فقط يمكنه إعادة ضبط بيانات لوحة التحكم.'), 'error');
+        return;
+    }
+    const checked = id => { const el = document.getElementById(id); return !!(el && el.checked); };
+    const doOrders = checked('resetOptOrders'), doTasks = checked('resetOptTasks'), doRevenue = checked('resetOptRevenue');
+    if (!doOrders && !doTasks && !doRevenue) {
+        showToast(L('Choose what to reset first.', 'اختر ما تريد إعادة ضبطه أولاً.'), 'error');
+        return;
+    }
+    const typed = (document.getElementById('dataResetConfirm') || {}).value || '';
+    if (typed.trim() !== 'RESET') {
+        showToast(L('Type RESET to confirm.', 'اكتب RESET للتأكيد.'), 'error');
+        const input = document.getElementById('dataResetConfirm');
+        if (input) input.focus();
+        return;
+    }
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    if (doOrders) {
+        state.orders = [];
+        state.tasks = state.tasks.filter(t => !t.orderId);
+    }
+    if (doTasks) state.tasks = [];
+    // Never keep a baseline bigger than the money that is left, or new revenue would stay hidden.
+    state.revenueResetBaseline = Math.min(Number(state.revenueResetBaseline) || 0, getAllRevenue());
+    if (doRevenue) state.revenueResetBaseline = getAllRevenue();
+    saveState();
+    closeDataResetModal();
+    showToast(L('Dashboard data has been reset.', 'تمت إعادة ضبط بيانات لوحة التحكم.'), 'success');
+    renderAdminDashboard();
+}
+
+Object.assign(window, { getPendingInsuranceOrders, approveInsurance, rejectInsurance, renderDataResetSection, openDataResetModal, closeDataResetModal, executeDataReset });
+
+// ================= PAYMENTS PAGE (admin) =================
+// Every payment that needs an admin's approval, split into Insurance / Fix (money collected on site) / Buy (unit orders).
+// Insurance uses order.status 'Pending'; buy orders and fix jobs use paymentStatus 'pending' | 'approved' | 'rejected'.
+let paymentsFilter = 'today'; // 'today' | 'all'
+
+function getPaymentItems() {
+    const fixTasks = state.tasks.filter(t => t.status === 'Done' && t.orderType === 'Tech Fix Service' && Number(t.amountReceived) > 0 && t.paymentStatus && t.paymentStatus !== 'none');
+    const custName = u => { const c = state.users.find(x => String(x.username || '').toLowerCase() === String(u || '').toLowerCase()); return (c && c.name) || u || ''; };
+    const insurance = state.orders.filter(o => o.type === 'Insurance').map(o => ({
+        kind: 'insurance', id: o.id, state: o.status === 'Pending' ? 'pending' : o.status === 'Approved' ? 'approved' : 'rejected',
+        customer: custName(o.username), sub: '@' + (o.username || ''), what: (o.insuranceMonth ? insLabel(o.insuranceMonth) : '') + (o.insuranceUnitRef ? ' · ' + o.insuranceUnitRef : ''),
+        method: o.gateway || '', ref: o.transactionRef || '', amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.approvedAt || o.rejectedAt || ''
+    }));
+    const buy = state.orders.filter(o => o.type !== 'Insurance' && o.type !== 'Tech Fix Service' && o.paymentStatus && o.paymentStatus !== 'none').map(o => ({
+        kind: 'buy', id: o.id, state: o.paymentStatus,
+        customer: o.customerName || custName(o.username), sub: '@' + (o.username || ''), what: o.itemTitle || '',
+        method: o.gateway || '', ref: '', amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.paymentDecidedAt || ''
+    }));
+    const fix = fixTasks.map(t => {
+        const o = t.orderId ? state.orders.find(x => x.id === t.orderId) : null;
+        return {
+            kind: 'fix', id: t.id, state: t.paymentStatus,
+            customer: t.customerName || (o && (o.customerName || custName(o.username))) || '', sub: t.assignedTo ? '@' + t.assignedTo : '', what: t.title || '',
+            method: t.paymentMethod === 'Cash' || !t.paymentMethod ? L('Cash', 'نقدي') : t.paymentMethod, ref: '', amount: Number(t.amountReceived) || 0,
+            date: t.completedDate || '', doneAt: t.paymentDecidedAt || ''
+        };
+    });
+    return { insurance, buy, fix };
+}
+
+function updatePaymentsBadge() {
+    const el = document.getElementById('paymentsBadge');
+    if (!el) return;
+    const all = getPaymentItems();
+    const n = [].concat(all.insurance, all.buy, all.fix).filter(i => i.state === 'pending').length;
+    el.textContent = n > 99 ? '99+' : String(n);
+    el.classList.toggle('hidden', !n || !state.currentUser || !isTopAdmin(state.currentUser.role));
+}
+
+function setPaymentsFilter(f) {
+    paymentsFilter = f === 'all' ? 'all' : 'today';
+    renderPaymentsPage();
+}
+
+function renderPaymentsPage() {
+    const body = document.getElementById('paymentsPageBody');
+    if (!body) return;
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { body.innerHTML = ''; return; }
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
+    const today = getLocalDateString();
+    const all = getPaymentItems();
+    const todayOnly = paymentsFilter === 'today';
+    const money = n => `${(Number(n) || 0).toLocaleString()} EGP`;
+    const sections = [
+        { key: 'insurance', icon: 'fa-shield-heart', tone: 'sky', en: 'Insurance', ar: 'التأمين', list: all.insurance },
+        { key: 'fix', icon: 'fa-screwdriver-wrench', tone: 'amber', en: 'Fix (collected on site)', ar: 'الصيانة (المحصّل في الموقع)', list: all.fix },
+        { key: 'buy', icon: 'fa-bag-shopping', tone: 'emerald', en: 'Buy (unit orders)', ar: 'الشراء (طلبات الوحدات)', list: all.buy }
+    ];
+    const pendingOf = s => s.list.filter(i => i.state === 'pending' && (!todayOnly || i.date === today));
+    const approvedToday = s => s.list.filter(i => i.state === 'approved' && String(i.doneAt || '').slice(0, 10) === today).length;
+    const totalPending = sections.reduce((n, s) => n + pendingOf(s).length, 0);
+    const totalAmount = sections.reduce((n, s) => n + pendingOf(s).reduce((a, i) => a + i.amount, 0), 0);
+
+    const chip = (key, en, ar) => `<button type="button" onclick="setPaymentsFilter('${key}')" class="px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${paymentsFilter === key ? 'bg-sky-600 text-white shadow-sm' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'}">${L(en, ar)}</button>`;
+    const stat = (label, value, cls) => `<div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 shadow-sm"><span class="block text-xs font-extrabold uppercase text-slate-500 dark:text-slate-300 tracking-wide">${label}</span><span class="block text-2xl font-extrabold mt-1 ${cls || ''}">${value}</span></div>`;
+
+    const rowHtml = i => `
+        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+            <td class="p-3"><span class="font-bold block" dir="auto">${escapeHtml(i.customer)}</span><span class="text-xs font-bold text-slate-400">${escapeHtml(i.sub)}</span></td>
+            <td class="p-3 text-sm font-bold text-slate-700 dark:text-slate-200 max-w-[260px]" dir="auto">${escapeHtml(i.what || '—')}</td>
+            <td class="p-3 text-sm"><span class="block font-extrabold">${escapeHtml(i.method || '—')}</span>${i.ref ? `<span class="font-mono text-xs font-bold text-slate-400" dir="ltr">${escapeHtml(i.ref)}</span>` : ''}</td>
+            <td class="p-3 text-base font-extrabold whitespace-nowrap">${money(i.amount)}</td>
+            <td class="p-3 text-xs font-bold text-slate-500 dark:text-slate-300 whitespace-nowrap">${escapeHtml(i.date)}</td>
+            <td class="p-3">
+                <div class="flex items-center gap-1.5">
+                    <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-check"></i>${L('Approve', 'موافقة')}</button>
+                    <button type="button" onclick="rejectPayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-950 dark:text-red-400 text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-xmark"></i>${L('Reject', 'رفض')}</button>
+                </div>
+            </td>
+        </tr>`;
+
+    const sectionHtml = s => {
+        const rows = pendingOf(s);
+        const sum = rows.reduce((a, i) => a + i.amount, 0);
+        const done = approvedToday(s);
+        return `
+        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+            <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 flex-wrap">
+                <div class="flex items-center gap-3">
+                    <span class="w-9 h-9 rounded-xl bg-${s.tone}-100 dark:bg-${s.tone}-950 text-${s.tone}-600 flex items-center justify-center"><i class="fa-solid ${s.icon}"></i></span>
+                    <div>
+                        <h3 class="font-extrabold text-base">${L(s.en, s.ar)}</h3>
+                        <p class="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-300">${rows.length} ${L('waiting', 'بالانتظار')} · ${money(sum)}${done ? ` · ${done} ${L('approved today', 'تمت الموافقة اليوم')}` : ''}</p>
+                    </div>
+                </div>
+                <span class="text-sm font-extrabold px-3 py-1 rounded-full ${rows.length ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}">${rows.length}</span>
+            </div>
+            ${rows.length ? `<div class="overflow-x-auto"><table class="w-full text-sm text-start">
+                <thead class="bg-slate-50 dark:bg-slate-800/60 text-xs uppercase text-slate-500 dark:text-slate-300 font-extrabold"><tr>
+                    <th class="p-3 text-start">${L('Customer', 'العميل')}</th><th class="p-3 text-start">${L('Details', 'التفاصيل')}</th><th class="p-3 text-start">${L('Payment', 'الدفع')}</th>
+                    <th class="p-3 text-start">${L('Amount', 'المبلغ')}</th><th class="p-3 text-start">${L('Date', 'التاريخ')}</th><th class="p-3 text-start"></th>
+                </tr></thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${rows.map(rowHtml).join('')}</tbody></table></div>`
+            : `<p class="p-6 text-center text-sm font-bold text-slate-500 dark:text-slate-300">${todayOnly ? L('No payments waiting for approval today.', 'لا توجد مدفوعات بانتظار الموافقة اليوم.') : L('No payments waiting for approval.', 'لا توجد مدفوعات بانتظار الموافقة.')}</p>`}
+        </div>`;
+    };
+
+    body.innerHTML = `
+        <div class="space-y-5">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-extrabold">${L('Payments', 'المدفوعات')}</h2>
+                    <p class="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-300">${L('Approve or reject every payment: insurance, fix and buy.', 'وافق على كل دفعة أو ارفضها: التأمين والصيانة والشراء.')}</p>
+                </div>
+                <div class="flex items-center gap-2">${chip('today', 'Today', 'اليوم')}${chip('all', 'All waiting', 'كل المنتظر')}</div>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                ${stat(L('Waiting', 'بالانتظار'), totalPending, totalPending ? 'text-amber-600' : '')}
+                ${stat(L('Amount waiting', 'المبلغ المنتظر'), money(totalAmount), 'text-sky-600')}
+                ${stat(L('Approved today', 'تمت الموافقة اليوم'), sections.reduce((n, s) => n + approvedToday(s), 0), 'text-emerald-600')}
+                ${stat(L('Date', 'التاريخ'), today)}
+            </div>
+            ${sections.map(sectionHtml).join('')}
+        </div>`;
+    updatePaymentsBadge();
+}
+
+function decidePayment(kind, id, decision) {
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
+        showToast(L('Only the admin can approve payments.', 'المسؤول فقط يمكنه الموافقة على المدفوعات.'), 'error');
+        return;
+    }
+    if (kind === 'insurance') { decision === 'approved' ? approveInsurance(id) : rejectInsurance(id); return; }
+    state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
+    state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
+    const item = kind === 'fix' ? state.tasks.find(t => t.id === id) : state.orders.find(o => o.id === id);
+    if (!item || item.paymentStatus !== 'pending') { renderPaymentsPage(); return; }
+    if (decision === 'rejected' && !window.confirm(L('Reject this payment? It will be taken out of the revenue.', 'رفض هذه الدفعة؟ سيتم استبعادها من الإيرادات.'))) return;
+    item.paymentStatus = decision;
+    item.paymentDecidedBy = state.currentUser.username;
+    item.paymentDecidedAt = new Date().toISOString();
+    saveState();
+    showToast(decision === 'approved' ? L('Payment approved.', 'تمت الموافقة على الدفعة.') : L('Payment rejected.', 'تم رفض الدفعة.'), decision === 'approved' ? 'success' : 'info');
+    renderPaymentsPage();
+}
+function approvePayment(kind, id) { decidePayment(kind, id, 'approved'); }
+function rejectPayment(kind, id) { decidePayment(kind, id, 'rejected'); }
+
+Object.assign(window, { renderPaymentsPage, setPaymentsFilter, approvePayment, rejectPayment, updatePaymentsBadge });
 
 function buildIntakeFolderHtml(folder) {
     const tasks = state.tasks.filter(t => t.folderId === folder.id);
@@ -10093,7 +10456,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             const doneNow = new Date();
             task.completedAt = doneNow.toISOString();
             task.completedDate = getLocalDateString(doneNow);
-            if (amountReceived !== undefined) task.amountReceived = Number(amountReceived) || 0;
+            if (amountReceived !== undefined) {
+                task.amountReceived = Number(amountReceived) || 0;
+                task.paymentStatus = task.amountReceived > 0 ? 'pending' : 'none'; // admin approves it on the Payments page
+            }
             if (paymentMethod) task.paymentMethod = paymentMethod;
         } else {
             task.completedAt = null;
@@ -10261,9 +10627,12 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
     }
 
     function getStatusBadge(status) {
-        const STATUS_AR = { 'Completed': 'مكتمل', 'Active / Verified': 'نشط / موثق', 'Delivered': 'تم التسليم', 'In Progress': 'قيد التنفيذ', 'On The Way': 'في الطريق', 'Pending Dispatch': 'قيد الإرسال', 'Open': 'مفتوح', 'Done': 'منجز' };
+        const STATUS_AR = { 'Completed': 'مكتمل', 'Active / Verified': 'نشط / موثق', 'Delivered': 'تم التسليم', 'In Progress': 'قيد التنفيذ', 'On The Way': 'في الطريق', 'Pending Dispatch': 'قيد الإرسال', 'Open': 'مفتوح', 'Done': 'منجز', 'Approved': 'تمت الموافقة', 'Pending': 'بانتظار الموافقة', 'Rejected': 'مرفوض' };
         const label = (state.currentLang === 'ar' && STATUS_AR[status]) ? STATUS_AR[status] : status;
-        if (status === 'Completed' || status === 'Active / Verified' || status === 'Delivered') {
+        if (status === 'Rejected') {
+            return `<span class="bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase">${label}</span>`;
+        }
+        if (status === 'Completed' || status === 'Active / Verified' || status === 'Delivered' || status === 'Approved') {
             return `<span class="bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase">${label}</span>`;
         }
         if (status === 'In Progress' || status === 'On The Way') {
@@ -10403,6 +10772,9 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (arabiNav) arabiNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (mapNav) mapNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (insuranceNav) insuranceNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
+        const paymentsNav = document.getElementById('nav-payments');
+        if (paymentsNav) paymentsNav.classList.toggle('hidden', !isTopAdmin(role));
+        updatePaymentsBadge();
         if (typeof updateChatsBadge === 'function') updateChatsBadge();
 
         // Technicians and assistants share their live position while they are logged in.
@@ -12046,11 +12418,23 @@ function botDismissNudge() {
 
         const monthEl = document.getElementById('insuranceMonth');
         const monthBox = document.getElementById('insuranceMonthBox');
+        const alreadyPending = getPendingInsuranceOrders().some(o => String(o.username || '').toLowerCase() === state.currentUser.username.toLowerCase());
         if (monthEl && monthBox && !monthBox.classList.contains('hidden') && !monthEl.value) {
-            showToast(state.currentLang === 'ar' ? 'كل الأشهر مدفوعة بالفعل.' : 'All months are already paid.', 'info');
+            showToast(alreadyPending
+                ? L('Your payment is already waiting for admin approval.', 'دفعتك بانتظار موافقة المسؤول بالفعل.')
+                : L('All months are already paid.', 'كل الأشهر مدفوعة بالفعل.'), 'info');
+            return;
+        }
+        const month = monthEl ? monthEl.value : '';
+        const duplicate = getPendingInsuranceOrders().some(o =>
+            String(o.username || '').toLowerCase() === state.currentUser.username.toLowerCase() &&
+            ((month && o.insuranceMonth === month) || o.transactionRef === txRef));
+        if (duplicate) {
+            showToast(L('This payment was already sent and is waiting for admin approval.', 'تم إرسال هذه الدفعة بالفعل وهي بانتظار موافقة المسؤول.'), 'info');
             return;
         }
 
+        // The payment is only a request until an admin approves it (see approveInsurance).
         const newOrder = {
             id: createDateBasedId('INS'),
             orderRef: 'INS-' + Math.floor(100000 + Math.random() * 900000),
@@ -12060,29 +12444,23 @@ function botDismissNudge() {
             amount: 100,
             gateway: selectedGw,
             transactionRef: txRef,
-            status: 'Approved',
+            status: 'Pending',
             date: getLocalDateString(),
+            createdAt: new Date().toISOString(),
             type: 'Insurance',
             location: location,
-            insurancePaid: 'Paid / Active'
+            insuranceMonth: month,
+            insuranceUnitRef: unitRef,
+            insurancePaid: 'Waiting for admin approval'
         };
 
         state.orders.unshift(newOrder);
         saveState();
 
-        // Mark the month as paid in the customer's insurance calendar immediately (no approval step)
-        let recordedMonth = null;
-        try {
-            const mSel = document.getElementById('insuranceMonth');
-            recordedMonth = insRecordCustomerPayment(state.currentUser, mSel ? mSel.value : '', selectedGw, txRef);
-        } catch (err) { console.warn('[Insurance] could not update the tracker', err); }
-
         if (document.getElementById('insuranceUnitRef')) document.getElementById('insuranceUnitRef').value = '';
         if (document.getElementById('insuranceTxRef')) document.getElementById('insuranceTxRef').value = '';
 
-        showToast(recordedMonth
-            ? (state.currentLang === 'ar' ? `تم تسجيل سداد شهر ${insLabel(recordedMonth)} بنجاح!` : `Payment recorded for ${insLabel(recordedMonth)}!`)
-            : (state.currentLang === 'ar' ? 'تم تأكيد سداد قسط التأمين بنجاح!' : 'Insurance Payment Submitted & Verified!'), 'success');
+        showToast(L('Payment sent. It will be added to your insurance once the admin approves it.', 'تم إرسال الدفعة. ستُضاف إلى تأمينك بعد موافقة المسؤول.'), 'success', 6000);
         closeInsuranceModal();
         navigateTo('customer-dashboard');
     }

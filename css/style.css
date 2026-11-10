@@ -848,3 +848,16 @@ main button.bg-sky-500:hover { filter: brightness(1.06); }
     .ins-hero *, .ins-card *, .ins-kpi, .ins-row, .ins-shield, .ins-tile, .ins-seg, .ins-tl-item, .ins-panel { animation: none !important; transition: none !important; }
 }
 .ins-panel .ins-banner-icon { background: var(--c); color: #fff; animation: none; }
+
+/* ================= TOP BAR: many links (admin) must never push the account / logout buttons off screen ================= */
+@media (min-width: 1024px) {
+    #siteHeader > div { max-width: none; }
+    #mainNav {
+        flex: 1 1 0%; min-width: 0;
+        justify-content: safe center;
+        overflow-x: auto; padding: .4rem .25rem;
+        scrollbar-width: none;
+    }
+    #mainNav::-webkit-scrollbar { display: none; }
+    #mainNav .nav-link { flex-shrink: 0; }
+}

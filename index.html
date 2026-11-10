@@ -131,6 +131,8 @@
                     class="nav-link hover:text-sky-500 hidden">Map</a>
                 <a href="javascript:void(0)" id="nav-insurance" onclick="navigateTo('insurance')"
                     class="nav-link hover:text-sky-500 hidden inline-flex items-center gap-1.5"><i class="fa-solid fa-shield-heart text-sky-500"></i><span data-i18n="nav_insurance">Insurance</span></a>
+                <a href="javascript:void(0)" id="nav-payments" onclick="navigateTo('payments')"
+                    class="nav-link hover:text-sky-500 hidden inline-flex items-center gap-1.5"><i class="fa-solid fa-wallet text-sky-500"></i><span>Payments</span><span id="paymentsBadge" class="hidden bg-red-600 text-white text-[10px] font-extrabold rounded-full px-1.5 min-w-[18px] text-center leading-[18px]">0</span></a>
             </nav>
 
             <!-- Actions & Utility -->
@@ -598,16 +600,11 @@
                 <div id="adminHeroStats" class="relative mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
             </div>
 
-            <!-- Business overview: revenue (wide) + customers + total tasks + negative ratings, one row of KPIs -->
-            <div id="dashOverviewSection" class="space-y-4">
-                <div id="dashHeadOverview"></div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                    <div class="contents" id="adminAnalyticsGrid"><!-- Injected via JS --></div>
-                    <div class="hidden contents" id="adminTopCountersGrid"></div>
-                </div>
-            </div>
-
-
+            <!-- Side menu + one panel at a time (Tasks / Overview / Insurance approvals) -->
+            <div id="adminDashLayout" class="grid grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)] gap-6 items-start">
+                <aside id="adminDashSide" class="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-visible lg:sticky lg:top-24 pb-1"></aside>
+                <div class="space-y-6 min-w-0">
+                    <div id="dashPanel-tasks" data-dash-panel>
             <div id="adminTasksSection" class="space-y-4">
                 <div id="dashHeadTasks"></div>
                 <div
@@ -631,7 +628,7 @@
                                 class="text-[11px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-white"><i
                                     class="fa-solid fa-xmark"></i> Close</button>
                         </div>
-                        <div class="overflow-x-auto overflow-y-auto max-h-[300px] custom-scrollbar p-2">
+                        <div class="overflow-x-auto overflow-y-auto max-h-[50vh] custom-scrollbar p-2">
                             <table class="w-full text-left border-collapse text-xs">
                                 <thead id="adminTaskFilterHead" class="sticky top-0 z-10"></thead>
                                 <tbody id="adminTaskFilterBody" class="divide-y divide-slate-100 dark:divide-slate-800">
@@ -639,7 +636,7 @@
                             </table>
                         </div>
                     </div>
-                    <div id="adminTaskMainWrap" class="overflow-x-auto overflow-y-auto max-h-[320px] custom-scrollbar">
+                    <div id="adminTaskMainWrap" class="overflow-x-auto overflow-y-auto max-h-[70vh] custom-scrollbar">
                         <table class="w-full text-left border-collapse text-xs">
                             <thead class="sticky top-0 z-10">
                                 <tr
@@ -655,6 +652,27 @@
                             </thead>
                             <tbody id="adminTasksTable" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+                    </div>
+                    <div id="dashPanel-overview" data-dash-panel class="hidden">
+            <!-- Business overview: revenue (wide) + customers + total tasks + negative ratings, one row of KPIs -->
+            <div id="dashOverviewSection" class="space-y-4">
+                <div id="dashHeadOverview"></div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                    <div class="contents" id="adminAnalyticsGrid"><!-- Injected via JS --></div>
+                    <div class="hidden contents" id="adminTopCountersGrid"></div>
+                </div>
+            </div>
+
+
+                    </div>
+                    <div id="dashPanel-insurance" data-dash-panel class="hidden">
+            <!-- Insurance payments waiting for admin approval (Admin / Executive Director only; filled by JS) -->
+            <div id="adminInsuranceApprovals" class="hidden"></div>
+
                     </div>
                 </div>
             </div>
@@ -778,6 +796,9 @@
                 </div>
                 <div id="adminOrdersFolders" class="p-4 space-y-3 overflow-y-auto max-h-[650px] min-h-[200px] custom-scrollbar"></div>
             </div>
+
+            <!-- Reset dashboard data (Admin / Executive Director only; filled by JS) -->
+            <div id="adminDataResetSection" class="hidden"></div>
         </section>
 
         <!-- ================= PAGE: CHATS (chatbot conversations) ================= -->
@@ -790,6 +811,11 @@
         <!-- ================= INSURANCE: monthly payment tracker (Head Admin, Executive & Customer Services) ================= -->
         <section id="view-insurance" class="hidden w-full">
             <div id="insurancePageBody"></div>
+        </section>
+
+        <!-- ================= PAYMENTS: payments waiting for approval (Head Admin & Executive) ================= -->
+        <section id="view-payments" class="hidden w-full">
+            <div id="paymentsPageBody"></div>
         </section>
 
         <section id="view-map" class="hidden space-y-6 w-full">
@@ -1308,6 +1334,10 @@
             </div>
         </div>
     </div>
+
+    <!-- RESET DASHBOARD DATA MODAL (content filled by JS) -->
+    <div id="dataResetModal"
+        class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4"></div>
 
     <!-- REVENUE RESET CONFIRMATION MODAL -->
     <div id="revenueResetModal"
