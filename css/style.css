@@ -861,3 +861,96 @@ main button.bg-sky-500:hover { filter: brightness(1.06); }
     #mainNav::-webkit-scrollbar { display: none; }
     #mainNav .nav-link { flex-shrink: 0; }
 }
+
+
+/* ===== Bigger + bolder data (dashboards, logs, payments, details) ===== */
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal,#paymentDetailsModal) {
+    font-weight: 600;
+}
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) :is(.text-xs,.text-\[11px\],.text-\[10px\],.text-\[9px\],td,th,label,p,span,li,input,select,textarea,button):not(.fa-solid):not(.fa-regular):not(i) {
+    font-weight: 700;
+}
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) .text-\[9px\] { font-size: .8125rem !important; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) .text-\[10px\] { font-size: .875rem !important; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) .text-\[11px\] { font-size: .9375rem !important; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) .text-xs { font-size: 1rem !important; line-height: 1.5rem; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) .text-sm { font-size: 1.125rem !important; line-height: 1.6rem; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats,#orderDetailsModal) .text-base { font-size: 1.25rem !important; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats) .text-xl { font-size: 1.6rem !important; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats) .text-2xl { font-size: 2rem !important; }
+:is(#view-admin-dashboard,#view-customer-dashboard,#view-customer-log,#view-tech-home,#view-tech-dashboard,#view-payments,#view-insurance,#view-arabi,#view-chats) .text-3xl { font-size: 2.4rem !important; }
+:is(#view-customer-dashboard,#view-admin-dashboard,#view-customer-log,#view-payments) :is(td,th) { padding: 1rem !important; }
+:is(#view-customer-dashboard,#view-admin-dashboard,#view-customer-log,#view-payments) td { color: inherit; }
+#view-customer-dashboard.max-w-3xl { max-width: 64rem; }
+
+/* bot: larger, bolder choices */
+#chatBotMenu .bot-chip { font-size: .95rem; font-weight: 800; }
+#chatBotMessages { font-size: .95rem; font-weight: 600; }
+
+
+/* ================= ADMIN DASHBOARD v2: wide, big text, tasks first ================= */
+#appMain:has(#view-admin-dashboard:not(.hidden)) { max-width: 1840px; padding-top: 1rem; }
+.dash-hero .dash-hero-chip { padding: .55rem .9rem; border-radius: .85rem; }
+.dash-tabs::-webkit-scrollbar { display: none; }
+
+#view-admin-dashboard #dashPanel-tasks .text-\[9px\],
+#view-admin-dashboard #dashPanel-tasks .text-\[10px\] { font-size: 12px !important; }
+#view-admin-dashboard #dashPanel-tasks .text-\[11px\] { font-size: 13.5px !important; }
+#view-admin-dashboard #dashPanel-tasks .text-xs,
+#view-admin-dashboard #dashPanel-tasks table { font-size: 14px; line-height: 1.6; }
+#view-admin-dashboard #dashPanel-tasks select { font-size: 14px !important; padding: .5rem .6rem !important; }
+#view-admin-dashboard #dashPanel-tasks th { font-size: 12.5px; padding: .85rem 1rem !important; }
+#view-admin-dashboard #dashPanel-tasks td { padding: 1rem !important; vertical-align: top; }
+#view-admin-dashboard #dashPanel-tasks td .font-semibold { font-size: 15.5px; }
+
+#adminTaskCounters .dash-counter { padding-block: .8rem !important; }
+#adminTaskCounters .dash-counter span.text-4xl, #adminTaskCounters .dash-counter span.text-3xl { font-size: 2.4rem; line-height: 1; margin-top: .35rem; }
+#adminTaskCounters .dash-counter .uppercase { text-transform: none; font-size: 13.5px !important; }
+
+#adminTasksSection table { table-layout: fixed; width: 100%; }
+#adminTasksSection th:nth-child(1) { width: 17%; }
+#adminTasksSection th:nth-child(2) { width: 30%; }
+#adminTasksSection th:nth-child(3) { width: 15%; }
+#adminTasksSection th:nth-child(4) { width: 19%; }
+#adminTasksSection th:nth-child(5) { width: 6%; }
+#adminTasksSection th:nth-child(6) { width: 6%; }
+#adminTasksSection th:nth-child(7) { width: 7%; }
+#adminTasksSection td { overflow-wrap: anywhere; }
+#adminTasksSection #adminTaskMainWrap { max-height: none; overflow: visible; }
+#adminTasksSection thead { position: sticky; top: 4.5rem; z-index: 5; }
+
+@media (max-width: 1279px) {
+    #adminTasksSection table, #adminTasksSection tbody { display: block; width: 100%; }
+    #adminTasksSection thead { display: none; }
+    #adminTasksSection tbody tr {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: .25rem 1.25rem;
+        padding: .75rem .5rem; border-bottom: 6px solid rgba(148, 163, 184, .12);
+    }
+    #adminTasksSection tbody tr > td { display: block; width: auto; padding: .6rem .75rem !important; }
+    #adminTasksSection tbody tr > td:nth-child(1),
+    #adminTasksSection tbody tr > td:nth-child(2) { grid-column: 1 / -1; }
+    #adminTasksSection tbody tr > td[data-label]::before {
+        content: attr(data-label); display: block; margin-bottom: .25rem;
+        font-size: 12.5px; font-weight: 800; color: #94a3b8;
+    }
+    #adminTasksSection #adminTaskFilterPanel > div:last-child { max-height: none; overflow: visible; }
+    #adminTasksSection select { min-width: 0; }
+    #adminTasksSection .min-w-\[170px\] { min-width: 0; }
+}
+@media (max-width: 640px) {
+    .dash-hero .dash-hero-chip { padding: .5rem .65rem; }
+    #adminTasksSection tbody tr { grid-template-columns: 1fr 1fr; }
+    #adminTasksSection tbody tr > td:nth-child(3),
+    #adminTasksSection tbody tr > td:nth-child(4) { grid-column: 1 / -1; }
+}
+
+/* ---- fixes: list opened from a counter, and the floating contact button ---- */
+/* the filtered list is a normal page section: no inner scroll box, header sits on top of its own table */
+#adminTaskFilterPanel .overflow-y-auto { max-height: none !important; overflow: visible !important; }
+#adminTaskFilterPanel thead { position: static !important; }
+#adminTaskFilterPanel { padding-bottom: .5rem; }
+/* main board header sticks right under the site header (5rem on desktop) */
+#adminTasksSection #adminTaskMainWrap thead { top: 5rem; }
+
+/* staff don't need the customer "Contact Us" bubble covering the task board */
+body:has(#view-admin-dashboard:not(.hidden)) #contactBotBtn { display: none !important; }

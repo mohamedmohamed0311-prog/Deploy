@@ -4430,6 +4430,7 @@ function submitOrderCheckout(e) {
         type: pendingCheckoutOrder.type,
         insurancePaid: isRepair ? 'N/A' : 'Optional',
         gateway: gateway,
+        transactionRef: isRepair ? '' : ((document.getElementById('orderCheckoutTxRef') || {}).value || '').trim(),
         paymentStatus: (!isRepair && Number(amount) > 0) ? 'pending' : 'none', // admin approves it on the Payments page
         status: isRepair ? 'Inspection Requested' : 'Pending Dispatch'
     };
@@ -5233,12 +5234,34 @@ function renderCustomerDashboard() {
                     <td class="p-4 font-bold text-sky-500">${acId(o.id)}</td>
                     <td class="p-4 font-semibold">${o.itemTitle}</td>
                     <td class="p-4 font-extrabold">${getOrderRevenue(o).toLocaleString()} EGP</td>
-                    <td class="p-4">${getStatusBadge(o.status)}${renderCustomerStageLine(o)}</td>
+                    <td class="p-4">${getStatusBadge(o.status)}${renderCustomerPaymentLine(o)}${renderCustomerStageLine(o)}</td>
                     <td class="p-4">${renderCustomerFeedbackCell(o)}</td>
                 </tr>
             `).join('');
         }
     }
+}
+
+// Payment state shown to the customer: Pending until the admin approves it, then Approved (or Rejected).
+function renderCustomerPaymentLine(o) {
+    let st = '', method = '';
+    if (o.type === 'Insurance') {
+        st = o.status === 'Approved' ? 'approved' : o.status === 'Rejected' ? 'rejected' : 'pending'; method = o.gateway;
+    } else if (o.type === 'Tech Fix Service') {
+        const t = getLinkedTaskForOrder(o.id);
+        if (!t || !(Number(t.amountReceived) > 0) || !t.paymentStatus || t.paymentStatus === 'none') return '';
+        st = t.paymentStatus; method = t.paymentMethod;
+    } else {
+        if (!o.paymentStatus || o.paymentStatus === 'none') return '';
+        st = o.paymentStatus; method = String(o.gateway || '').replace(/\s*\(Ref:.*\)\s*$/i, '');
+    }
+    const map = {
+        pending: ['bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400', 'fa-hourglass-half', L('Payment pending', 'الدفع بانتظار الموافقة')],
+        approved: ['bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400', 'fa-circle-check', L('Payment approved', 'تمت الموافقة على الدفع')],
+        rejected: ['bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400', 'fa-circle-xmark', L('Payment rejected', 'تم رفض الدفع')]
+    };
+    const m = map[st] || map.pending;
+    return `<span class="mt-1.5 inline-flex items-center gap-1.5 text-xs font-extrabold px-2.5 py-1 rounded-full ${m[0]}"><i class="fa-solid ${m[1]}"></i>${m[2]}${method ? ' · ' + escapeHtml(String(method)) : ''}</span>`;
 }
 
 // Small line under the status telling the customer which step of the repair they're at.
@@ -5454,7 +5477,7 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
             ${delayNote}
             ${isLate ? `<span class="block text-[10px] text-red-600 dark:text-red-400 mt-1"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار فني منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
         </td>
-        <td class="p-4 text-slate-500 text-[11px] space-y-1">
+        <td class="p-4 text-slate-500 text-[11px] space-y-1" data-label="${L('Details','التفاصيل')}">
             <span dir="auto" class="block leading-relaxed">${hasOwnCustomer ? `<i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(task.address || '')}` : stripOrderRef(task.description)}</span>
             ${task.source === 'sheet' && task.notes ? `<span dir="auto" class="block text-slate-500 dark:text-slate-400"><i class="fa-regular fa-note-sticky text-amber-400 me-1"></i>${escapeHtml(task.notes)}</span>` : ''}
             ${loc.label ? `<span class="block"><i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(getLocationLabel(loc.label))}</span>` : ''}
@@ -5463,11 +5486,11 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
             ${task.status === 'Open' && waitingSince && !isLate ? `<span class="block text-slate-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
             ${renderTechNoteView(task)}
         </td>
-        <td class="p-4"><span class="block">${sourceChip}</span>${customerCell}${folderLink}</td>
-        <td class="p-4">${assignedCell}</td>
-        <td class="p-4 text-slate-500 text-[11px]">${task.priority}</td>
-        <td class="p-4 text-slate-500 text-[11px]">${task.dueDate || 'N/A'}</td>
-        <td class="p-4">${renderTaskStatusBadge(task.status)}${(task.status === 'Done' && (task.completedAt || task.completedDate)) ? `<span class="block text-[10px] text-slate-400 mt-1">${escapeHtml(formatDateTime(task.completedAt || task.completedDate))}</span>` : ''}${renderReceivedLine(task)}${getRepairPhotoCount(task) ? `<span class="block mt-1.5">${renderRepairPhotosIcon(task)}</span>` : ''}</td>
+        <td class="p-4" data-label="${L('Customer','العميل')}"><span class="block">${sourceChip}</span>${customerCell}${folderLink}</td>
+        <td class="p-4" data-label="${L('Assigned To','المسند إليه')}">${assignedCell}</td>
+        <td class="p-4 text-slate-500 text-[11px]" data-label="${L('Priority','الأولوية')}">${task.priority}</td>
+        <td class="p-4 text-slate-500 text-[11px]" data-label="${L('Due Date','تاريخ الاستحقاق')}">${task.dueDate || 'N/A'}</td>
+        <td class="p-4" data-label="${L('Status','الحالة')}">${renderTaskStatusBadge(task.status)}${(task.status === 'Done' && (task.completedAt || task.completedDate)) ? `<span class="block text-[10px] text-slate-400 mt-1">${escapeHtml(formatDateTime(task.completedAt || task.completedDate))}</span>` : ''}${renderReceivedLine(task)}${getRepairPhotoCount(task) ? `<span class="block mt-1.5">${renderRepairPhotosIcon(task)}</span>` : ''}</td>
     </tr>
     `;
 }
@@ -5647,7 +5670,7 @@ function renderDashboardChrome(canManageTasks, isTechnician, isHeadAdmin) {
     const stat = (icon, n, label, tone) => `
         <div class="dash-hero-chip ${tone ? 'is-' + tone : ''}">
             <i class="fa-solid ${icon}"></i>
-            <div><span class="block text-xl font-extrabold leading-none">${n}</span><span class="block text-[10px] font-bold uppercase tracking-wide opacity-80 mt-1">${label}</span></div>
+            <div><span class="block text-2xl font-extrabold leading-none">${n}</span><span class="block text-xs font-bold opacity-90 mt-1">${label}</span></div>
         </div>`;
     const hero = document.getElementById('adminHeroStats');
     if (hero) {
@@ -7120,10 +7143,10 @@ function renderDashSide(isHeadAdmin, canManageTasks) {
     document.querySelectorAll('[data-dash-panel]').forEach(p => p.classList.toggle('hidden', p.id !== 'dashPanel-' + dashPanel));
     // Only one panel available (e.g. Customer Services without overview): no side menu needed.
     side.classList.toggle('hidden', items.length < 2);
-    layout.classList.toggle('lg:grid-cols-[14rem_minmax(0,1fr)]', items.length > 1);
+    
     side.innerHTML = items.map(i => {
         const on = i.key === dashPanel;
-        return `<button type="button" onclick="setDashPanel('${i.key}')" class="shrink-0 flex items-center gap-3 px-4 py-3 rounded-2xl border text-xs font-bold transition ${on ? 'bg-sky-600 border-sky-600 text-white shadow-md shadow-sky-500/20' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-sky-300 dark:hover:border-sky-700'}">
+        return `<button type="button" onclick="setDashPanel('${i.key}')" class="shrink-0 flex items-center gap-3 px-5 py-2.5 rounded-xl border text-sm font-bold transition ${on ? 'bg-sky-600 border-sky-600 text-white shadow-md shadow-sky-500/20' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-sky-300 dark:hover:border-sky-700'}">
             <i class="fa-solid ${i.icon} w-4 text-center"></i>
             <span class="flex-1 text-start whitespace-nowrap">${L(i.en, i.ar)}</span>
             ${i.badge ? `<span class="min-w-[22px] text-center text-[10px] font-extrabold rounded-full px-1.5 py-0.5 ${on ? 'bg-white/25 text-white' : (i.alert ? 'bg-red-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500')}">${i.badge}</span>` : ''}
@@ -7293,26 +7316,78 @@ Object.assign(window, { getPendingInsuranceOrders, approveInsurance, rejectInsur
 // Insurance uses order.status 'Pending'; buy orders and fix jobs use paymentStatus 'pending' | 'approved' | 'rejected'.
 let paymentsFilter = 'today'; // 'today' | 'all'
 
+function payPhoneOf(username) {
+    const c = state.users.find(x => String(x.username || '').toLowerCase() === String(username || '').toLowerCase());
+    return c ? (c.contactPhone || c.whatsapp || c.phone || '') : '';
+}
+
+// Full-screen details of one payment: number / reference, method, amount, customer, with Approve / Reject.
+function openPaymentDetails(kind, id) {
+    const i = [].concat(...Object.values(getPaymentItems())).find(x => x.kind === kind && String(x.id) === String(id));
+    if (!i) return;
+    closePaymentDetails();
+    const row = (k, v, mono) => `<div class="flex items-start justify-between gap-4 py-2.5 border-b border-slate-100 dark:border-slate-800"><span class="text-sm font-extrabold uppercase text-slate-500 dark:text-slate-300">${k}</span><span class="text-lg font-extrabold text-end break-all ${mono ? 'font-mono' : ''}" dir="auto">${escapeHtml(String(v || '—'))}</span></div>`;
+    const stateBadge = i.state === 'approved' ? 'bg-emerald-100 text-emerald-700' : i.state === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
+    const stateTxt = i.state === 'approved' ? L('Approved', 'تمت الموافقة') : i.state === 'rejected' ? L('Rejected', 'مرفوض') : L('Pending', 'بانتظار الموافقة');
+    const kindTxt = { insurance: L('Insurance', 'التأمين'), fix: L('Repair', 'الصيانة'), buy: L('Order', 'طلب شراء') }[i.kind];
+    const d = document.createElement('div');
+    d.id = 'paymentDetailsModal';
+    d.className = 'fixed inset-0 z-[70] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4';
+    d.onclick = e => { if (e.target === d) closePaymentDetails(); };
+    d.innerHTML = `<div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between gap-3">
+            <h3 class="text-xl font-extrabold"><i class="fa-solid fa-wallet text-sky-500 me-2"></i>${L('Payment details', 'تفاصيل الدفعة')}</h3>
+            <button type="button" onclick="closePaymentDetails()" class="w-9 h-9 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="rounded-2xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-900 p-4 text-center">
+            <span class="block text-sm font-extrabold uppercase text-sky-700 dark:text-sky-300">${escapeHtml(i.method || '—')} ${L('payment number / reference', 'رقم / مرجع الدفع')}</span>
+            <span class="block text-3xl font-extrabold font-mono mt-1 break-all" dir="ltr">${escapeHtml(i.ref || '—')}</span>
+            <span class="block text-2xl font-extrabold text-emerald-600 mt-2">${(Number(i.amount) || 0).toLocaleString()} EGP</span>
+        </div>
+        <div>
+            ${row(L('Type', 'النوع'), kindTxt)}
+            ${row(L('Status', 'الحالة'), '')}
+            ${row(L('Customer', 'العميل'), i.customer)}
+            ${row(L('Username', 'اسم المستخدم'), i.sub)}
+            ${row(L('Phone', 'الهاتف'), i.phone, true)}
+            ${row(L('Item / month', 'البند / الشهر'), i.what || i.title)}
+            ${row(L('Order ref', 'رقم الطلب'), i.orderId, true)}
+            ${row(L('Location', 'الموقع'), i.location)}
+            ${row(L('Date', 'التاريخ'), i.date)}
+        </div>
+        <div class="text-center"><span class="inline-block px-4 py-1.5 rounded-full text-sm font-extrabold uppercase ${stateBadge}">${stateTxt}</span></div>
+        ${i.state === 'pending' ? `<div class="grid grid-cols-2 gap-3">
+            <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(String(i.id))}');closePaymentDetails()" class="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-base font-extrabold uppercase"><i class="fa-solid fa-check me-1"></i>${L('Approve', 'موافقة')}</button>
+            <button type="button" onclick="rejectPayment('${i.kind}','${escapeHtml(String(i.id))}');closePaymentDetails()" class="py-3 rounded-xl bg-red-100 hover:bg-red-200 text-red-700 text-base font-extrabold uppercase"><i class="fa-solid fa-xmark me-1"></i>${L('Reject', 'رفض')}</button>
+        </div>` : ''}
+    </div>`;
+    document.body.appendChild(d);
+}
+function closePaymentDetails() { const d = document.getElementById('paymentDetailsModal'); if (d) d.remove(); }
+
 function getPaymentItems() {
     const fixTasks = state.tasks.filter(t => t.status === 'Done' && t.orderType === 'Tech Fix Service' && Number(t.amountReceived) > 0 && t.paymentStatus && t.paymentStatus !== 'none');
     const custName = u => { const c = state.users.find(x => String(x.username || '').toLowerCase() === String(u || '').toLowerCase()); return (c && c.name) || u || ''; };
     const insurance = state.orders.filter(o => o.type === 'Insurance').map(o => ({
         kind: 'insurance', id: o.id, state: o.status === 'Pending' ? 'pending' : o.status === 'Approved' ? 'approved' : 'rejected',
         customer: custName(o.username), sub: '@' + (o.username || ''), what: (o.insuranceMonth ? insLabel(o.insuranceMonth) : '') + (o.insuranceUnitRef ? ' · ' + o.insuranceUnitRef : ''),
-        method: o.gateway || '', ref: o.transactionRef || '', amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.approvedAt || o.rejectedAt || ''
+        method: o.gateway || '', ref: o.transactionRef || '', amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.approvedAt || o.rejectedAt || '',
+        orderId: o.id, phone: payPhoneOf(o.username), location: o.location || '', title: o.itemTitle || ''
     }));
     const buy = state.orders.filter(o => o.type !== 'Insurance' && o.type !== 'Tech Fix Service' && o.paymentStatus && o.paymentStatus !== 'none').map(o => ({
         kind: 'buy', id: o.id, state: o.paymentStatus,
         customer: o.customerName || custName(o.username), sub: '@' + (o.username || ''), what: o.itemTitle || '',
-        method: o.gateway || '', ref: '', amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.paymentDecidedAt || ''
+        method: String(o.gateway || '').replace(/\s*\(Ref:.*\)\s*$/i, ''), ref: o.transactionRef || ((String(o.gateway || '').match(/\(Ref:\s*(.+?)\)\s*$/i) || [])[1] || ''), amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.paymentDecidedAt || '',
+        orderId: o.id, phone: payPhoneOf(o.username), location: o.location || '', title: o.itemTitle || ''
     }));
     const fix = fixTasks.map(t => {
         const o = t.orderId ? state.orders.find(x => x.id === t.orderId) : null;
         return {
             kind: 'fix', id: t.id, state: t.paymentStatus,
             customer: t.customerName || (o && (o.customerName || custName(o.username))) || '', sub: t.assignedTo ? '@' + t.assignedTo : '', what: t.title || '',
-            method: t.paymentMethod === 'Cash' || !t.paymentMethod ? L('Cash', 'نقدي') : t.paymentMethod, ref: '', amount: Number(t.amountReceived) || 0,
-            date: t.completedDate || '', doneAt: t.paymentDecidedAt || ''
+            method: t.paymentMethod === 'Cash' || !t.paymentMethod ? L('Cash', 'نقدي') : t.paymentMethod, ref: t.paymentRef || '', amount: Number(t.amountReceived) || 0,
+            date: t.completedDate || '', doneAt: t.paymentDecidedAt || '',
+            orderId: t.orderId || '', phone: payPhoneOf(o && o.username), location: (o && o.location) || '', title: t.title || ''
         };
     });
     return { insurance, buy, fix };
@@ -7357,14 +7432,15 @@ function renderPaymentsPage() {
     const stat = (label, value, cls) => `<div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 shadow-sm"><span class="block text-xs font-extrabold uppercase text-slate-500 dark:text-slate-300 tracking-wide">${label}</span><span class="block text-2xl font-extrabold mt-1 ${cls || ''}">${value}</span></div>`;
 
     const rowHtml = i => `
-        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer" onclick="openPaymentDetails('${i.kind}','${escapeHtml(String(i.id))}')">
             <td class="p-3"><span class="font-bold block" dir="auto">${escapeHtml(i.customer)}</span><span class="text-xs font-bold text-slate-400">${escapeHtml(i.sub)}</span></td>
             <td class="p-3 text-sm font-bold text-slate-700 dark:text-slate-200 max-w-[260px]" dir="auto">${escapeHtml(i.what || '—')}</td>
             <td class="p-3 text-sm"><span class="block font-extrabold">${escapeHtml(i.method || '—')}</span>${i.ref ? `<span class="font-mono text-xs font-bold text-slate-400" dir="ltr">${escapeHtml(i.ref)}</span>` : ''}</td>
             <td class="p-3 text-base font-extrabold whitespace-nowrap">${money(i.amount)}</td>
             <td class="p-3 text-xs font-bold text-slate-500 dark:text-slate-300 whitespace-nowrap">${escapeHtml(i.date)}</td>
-            <td class="p-3">
+            <td class="p-3" onclick="event.stopPropagation()">
                 <div class="flex items-center gap-1.5">
+                    <button type="button" onclick="openPaymentDetails('${i.kind}','${escapeHtml(String(i.id))}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-100 hover:bg-sky-200 text-sky-700 dark:bg-sky-950 dark:text-sky-300 text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-eye"></i>${L('View', 'عرض')}</button>
                     <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-check"></i>${L('Approve', 'موافقة')}</button>
                     <button type="button" onclick="rejectPayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-950 dark:text-red-400 text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-xmark"></i>${L('Reject', 'رفض')}</button>
                 </div>
@@ -7438,7 +7514,7 @@ function decidePayment(kind, id, decision) {
 function approvePayment(kind, id) { decidePayment(kind, id, 'approved'); }
 function rejectPayment(kind, id) { decidePayment(kind, id, 'rejected'); }
 
-Object.assign(window, { renderPaymentsPage, setPaymentsFilter, approvePayment, rejectPayment, updatePaymentsBadge });
+Object.assign(window, { renderPaymentsPage, setPaymentsFilter, approvePayment, rejectPayment, updatePaymentsBadge, openPaymentDetails, closePaymentDetails });
 
 function buildIntakeFolderHtml(folder) {
     const tasks = state.tasks.filter(t => t.folderId === folder.id);
@@ -9344,6 +9420,10 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
             <select id="paymethod-${task.id}" class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                 ${['Cash', 'InstaPay', 'Vodafone Cash'].map(m => `<option value="${m}" ${(task.paymentMethod || 'Cash') === m ? 'selected' : ''}>${m === 'Cash' ? L('Cash', 'نقدي') : m}</option>`).join('')}
             </select>
+            <label class="block text-[10px] font-extrabold uppercase text-emerald-700 dark:text-emerald-400 pt-1.5">${L('InstaPay / Vodafone: payment number or reference *', 'انستا باي / فودافون: رقم العملية أو المرجع *')}</label>
+            <input type="text" id="payref-${task.id}" value="${escapeHtml(task.paymentRef || '')}" maxlength="40" dir="ltr"
+                placeholder="${L('Required if not cash', 'مطلوب إذا لم يكن نقداً')}"
+                class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500">
         </div>
     ` : '';
 
@@ -10366,6 +10446,14 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
             const methodEl = document.getElementById(`paymethod-${taskId}`);
             const paymentMethod = methodEl ? methodEl.value : (task.paymentMethod || 'Cash');
+            const refEl = document.getElementById(`payref-${taskId}`);
+            const payRef = refEl ? refEl.value.trim() : '';
+            if (amount > 0 && paymentMethod !== 'Cash' && !payRef) {
+                showToast(L('Enter the InstaPay / Vodafone payment number or reference.', 'اكتب رقم أو مرجع عملية انستا باي / فودافون.'), 'error');
+                if (refEl) refEl.focus();
+                return;
+            }
+            window.__payRefFor = { id: taskId, ref: paymentMethod === 'Cash' ? '' : payRef };
             updateTaskStatus(taskId, 'Done', amount, paymentMethod);
             return;
         }
@@ -10461,6 +10549,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
                 task.paymentStatus = task.amountReceived > 0 ? 'pending' : 'none'; // admin approves it on the Payments page
             }
             if (paymentMethod) task.paymentMethod = paymentMethod;
+            if (window.__payRefFor && window.__payRefFor.id === taskId) { task.paymentRef = window.__payRefFor.ref; window.__payRefFor = null; }
         } else {
             task.completedAt = null;
             task.completedDate = null;
@@ -11639,6 +11728,8 @@ function botDismissNudge() {
             botAddMessage('bot', L("You're welcome! 😊 Anything else I can help with?", 'على الرحب والسعة! 😊 هل تحتاج شيئاً آخر؟'));
             showBotMainMenu(); return;
         }
+        if (w(/instapay|insta pay|vodafone|فودافون|انستا|إنستا|pay|دفع|ادفع/) && !w(/insur|تأمين|تامين/)) { botFaq('pay'); return; }
+        if (w(/track|status|my order|طلباتي|حالة|تتبع/)) { botFaq('track'); return; }
         if (w(/insur|warrant|تأمين|تامين|ضمان/)) {
             botAddMessage('bot', `🛡️ ${L('Cooling Art Protection Insurance covers breakdowns, electrical failures and Freon leaks for <strong>100 EGP / month</strong>, paid by InstaPay or Vodafone Cash.', 'تأمين كولينج آرت يغطي الأعطال والمشاكل الكهربائية وتسريب الفريون مقابل <strong>100 جنيه شهرياً</strong> عبر إنستاباي أو فودافون كاش.')}`);
             botShowMenu([{ icon: 'fa-shield-heart', label: L('Open insurance plan', 'فتح خطة التأمين'), action: 'botOpenInsurance()' }, more, cs]); return;
@@ -11673,9 +11764,62 @@ function botDismissNudge() {
         botShowMenu([
             { icon: 'fa-box', label: L('Orders — browse AC units', 'الطلبات — تصفح أجهزة التكييف'), action: 'botTopic("orders")' },
             { icon: 'fa-screwdriver-wrench', label: L('Repairs — book a technical fix', 'الصيانة — حجز خدمة فنية'), action: 'botTopic("repairs")' },
+            { icon: 'fa-shield-heart', label: L('Insurance — plan & payment', 'التأمين — الخطة والدفع'), action: 'botFaq("ins")' },
+            { icon: 'fa-wallet', label: L('Payment — InstaPay / Vodafone', 'الدفع — انستا باي / فودافون'), action: 'botFaq("pay")' },
+            { icon: 'fa-location-dot', label: L('Track my orders & payments', 'تتبع طلباتي ومدفوعاتي'), action: 'botFaq("track")' },
+            { icon: 'fa-map', label: L('Service areas & contact', 'مناطق الخدمة والتواصل'), action: 'botFaq("areas")' },
             { icon: 'fa-headset', label: L('Talk to Customer Service', 'التحدث إلى خدمة العملاء'), action: 'botTopic("cs")' }
         ]);
     }
+
+    // Prepared answers: every answer ends with follow-up choices.
+    function botFaq(key) {
+        botHideMenu();
+        const egp = t('egp_symbol', 'EGP');
+        const back = { icon: 'fa-list', label: L('Main menu', 'القائمة الرئيسية'), action: 'showBotMainMenu()' };
+        const cs = { icon: 'fa-headset', label: L('Talk to Customer Service', 'التحدث إلى خدمة العملاء'), action: 'botTopic("cs")' };
+        const say = (en, ar) => botAddMessage('bot', L(en, ar));
+        const c = (icon, en, ar, action) => ({ icon, label: L(en, ar), action });
+        const insNum = 'coolingart@instapay', vfNum = '010 9876 5432';
+        const T = {
+            ins: () => { say('🛡️ Cooling Art Protection Insurance — what would you like to know?', '🛡️ تأمين كولينج آرت — عن ماذا تريد أن تسأل؟');
+                botShowMenu([c('fa-circle-check', 'What is covered?', 'ماذا يغطي؟', 'botFaq("ins_cover")'), c('fa-coins', 'Price & how to pay', 'السعر وطريقة الدفع', 'botFaq("ins_pay")'), c('fa-shield-heart', 'Pay my insurance now', 'ادفع تأميني الآن', 'botOpenInsurance()'), back]); },
+            ins_cover: () => { say('Covered: breakdowns, electrical failures and Freon leaks for your registered AC unit, as long as the monthly payment is approved.', 'يشمل: الأعطال والمشاكل الكهربائية وتسريب الفريون للوحدة المسجلة، طالما تمت الموافقة على الدفعة الشهرية.');
+                botShowMenu([c('fa-coins', 'Price & how to pay', 'السعر وطريقة الدفع', 'botFaq("ins_pay")'), c('fa-shield-heart', 'Pay my insurance now', 'ادفع تأميني الآن', 'botOpenInsurance()'), back]); },
+            ins_pay: () => { say(`Insurance costs <strong>100 ${egp} / month</strong>. Pay by InstaPay (<strong>${insNum}</strong>) or Vodafone Cash (<strong>${vfNum}</strong>), then enter the transaction reference. It shows as <strong>Pending</strong> in your dashboard until the admin approves it.`, `التأمين <strong>100 جنيه / شهر</strong>. ادفع عبر انستا باي (<strong>${insNum}</strong>) أو فودافون كاش (<strong>${vfNum}</strong>) ثم اكتب رقم العملية. تظهر <strong>بانتظار الموافقة</strong> في لوحتك حتى يوافق المسؤول.`);
+                botShowMenu([c('fa-shield-heart', 'Pay my insurance now', 'ادفع تأميني الآن', 'botOpenInsurance()'), c('fa-clock', 'How long is approval?', 'كم تستغرق الموافقة؟', 'botFaq("pay_time")'), back]); },
+            pay: () => { say('💳 Which payment method do you need help with?', '💳 أي طريقة دفع تريد المساعدة بها؟');
+                botShowMenu([c('fa-building-columns', 'InstaPay steps', 'خطوات انستا باي', 'botFaq("pay_insta")'), c('fa-mobile-screen', 'Vodafone Cash steps', 'خطوات فودافون كاش', 'botFaq("pay_voda")'), c('fa-clock', 'How long is approval?', 'كم تستغرق الموافقة؟', 'botFaq("pay_time")'), c('fa-money-bill-wave', 'Pay the technician (repair)', 'الدفع للفني (الصيانة)', 'botFaq("pay_tech")'), back]); },
+            pay_insta: () => { say(`1) Transfer the amount to <strong>${insNum}</strong>.<br>2) Copy the transaction reference.<br>3) Paste it in the order / insurance form and submit.<br>Status stays <strong>Pending</strong> until approved.`, `1) حوّل المبلغ إلى <strong>${insNum}</strong>.<br>2) انسخ رقم العملية.<br>3) ألصقه في نموذج الطلب / التأمين وأرسل.<br>تبقى الحالة <strong>بانتظار الموافقة</strong> حتى تتم الموافقة.`);
+                botShowMenu([c('fa-location-dot', 'Track my payments', 'تتبع مدفوعاتي', 'botFaq("track")'), c('fa-wallet', 'Other payment help', 'مساعدة أخرى في الدفع', 'botFaq("pay")'), back]); },
+            pay_voda: () => { say(`1) Send the amount to <strong>${vfNum}</strong>.<br>2) Enter your 11-digit sender phone number in the form.<br>3) Submit — status is <strong>Pending</strong> until approved.`, `1) أرسل المبلغ إلى <strong>${vfNum}</strong>.<br>2) اكتب رقم هاتفك المرسل (11 رقماً) في النموذج.<br>3) أرسل — الحالة <strong>بانتظار الموافقة</strong> حتى تتم الموافقة.`);
+                botShowMenu([c('fa-location-dot', 'Track my payments', 'تتبع مدفوعاتي', 'botFaq("track")'), c('fa-wallet', 'Other payment help', 'مساعدة أخرى في الدفع', 'botFaq("pay")'), back]); },
+            pay_time: () => { say('Every InstaPay / Vodafone payment is checked by the admin team. Once approved, your dashboard changes from <strong>Pending</strong> to <strong>Approved</strong>. Need it faster? Talk to Customer Service.', 'يراجع فريق الإدارة كل دفعة انستا باي / فودافون. بعد الموافقة تتغير حالتها في لوحتك من <strong>بانتظار الموافقة</strong> إلى <strong>تمت الموافقة</strong>. تحتاج أسرع؟ تحدث مع خدمة العملاء.');
+                botShowMenu([c('fa-location-dot', 'Track my payments', 'تتبع مدفوعاتي', 'botFaq("track")'), cs, back]); },
+            pay_tech: () => { say('For repairs you pay the technician after the job: Cash, InstaPay or Vodafone Cash. For InstaPay / Vodafone the technician records the payment number, and it appears in your dashboard as <strong>Pending</strong> until approved.', 'في الصيانة تدفع للفني بعد إنجاز العمل: نقداً أو انستا باي أو فودافون كاش. عند انستا باي / فودافون يسجل الفني رقم العملية وتظهر في لوحتك <strong>بانتظار الموافقة</strong> حتى تتم الموافقة.');
+                botShowMenu([c('fa-screwdriver-wrench', 'Book a repair', 'احجز صيانة', 'botNavigate("tech-fix")'), back]); },
+            track: () => {
+                if (!state.currentUser) { say('Please log in first to see your orders and payments.', 'يرجى تسجيل الدخول أولاً لعرض طلباتك ومدفوعاتك.'); botShowMenu([back, cs]); return; }
+                const mine = (state.orders || []).filter(o => String(o.username || '').toLowerCase() === state.currentUser.username.toLowerCase()).slice(0, 5);
+                if (!mine.length) { say('You have no orders yet.', 'ليس لديك طلبات بعد.'); botShowMenu([c('fa-box', 'Browse AC units', 'تصفح الأجهزة', 'botNavigate("products")'), c('fa-screwdriver-wrench', 'Book a repair', 'احجز صيانة', 'botNavigate("tech-fix")'), back]); return; }
+                const payTxt = o => { let st = ''; if (o.type === 'Insurance') st = o.status === 'Approved' ? 'approved' : o.status === 'Rejected' ? 'rejected' : 'pending'; else if (o.type === 'Tech Fix Service') { const k = getLinkedTaskForOrder(o.id); st = k && Number(k.amountReceived) > 0 ? k.paymentStatus : ''; } else st = o.paymentStatus; if (!st || st === 'none') return ''; return ' · ' + ({ pending: L('Payment pending', 'الدفع بانتظار الموافقة'), approved: L('Payment approved', 'تمت الموافقة على الدفع'), rejected: L('Payment rejected', 'تم رفض الدفع') }[st] || ''); };
+                botAddMessage('bot', `${L('Your latest orders:', 'آخر طلباتك:')}<br>` + mine.map(o => `• <strong>${escapeHtml(o.id)}</strong> — ${escapeHtml(o.itemTitle || '')}<br>&nbsp;&nbsp;${escapeHtml(o.status || '—')}${payTxt(o)}`).join('<br>'));
+                botShowMenu([c('fa-id-card', 'Open my dashboard', 'افتح لوحتي', 'botNavigate("customer-dashboard")'), back, cs]); },
+            areas: () => { const names = (state.areas || []).map(a => escapeHtml(state.currentLang === 'ar' && a.nameAr ? a.nameAr : a.name)).join('، ');
+                const ct = (typeof loadContactInfo === 'function') ? loadContactInfo() : { email: '', phone: '', whatsapp: '' };
+                botAddMessage('bot', `${names ? '📍 ' + L('We serve:', 'نخدم:') + ' ' + names + '<br><br>' : ''}📞 <strong>${escapeHtml(ct.phone)}</strong><br>💬 WhatsApp: <strong>${escapeHtml(ct.whatsapp)}</strong><br>✉️ ${escapeHtml(ct.email)}`);
+                botShowMenu([c('fa-address-book', 'Open Contact page', 'افتح صفحة التواصل', 'botNavigate("contact")'), cs, back]); },
+            rep_book: () => { say('Booking a repair: 1) open Repairs, 2) pick the service, 3) choose your area and the unit to check, 4) confirm. A technician is dispatched, and you pay after the job.', 'حجز صيانة: 1) افتح الصيانة، 2) اختر الخدمة، 3) اختر منطقتك والوحدة المطلوب فحصها، 4) أكّد. يتم إرسال فني وتدفع بعد إنجاز العمل.');
+                botShowMenu([c('fa-screwdriver-wrench', 'Open Repairs page', 'افتح صفحة الصيانة', 'botNavigate("tech-fix")'), c('fa-wallet', 'Payment help', 'مساعدة الدفع', 'botFaq("pay")'), back]); },
+            rep_prices: () => { const items = state.services.slice(0, 5).map(x => `• ${escapeHtml(x.name)} — <strong>${Number(x.price).toLocaleString()} ${egp}</strong>`).join('<br>');
+                botAddMessage('bot', `${L('Repair prices:', 'أسعار الصيانة:')}<br>${items}`);
+                botShowMenu([c('fa-screwdriver-wrench', 'Book a repair', 'احجز صيانة', 'botNavigate("tech-fix")'), back]); },
+            ord_how: () => { say('Buying a unit: 1) open Products, 2) tap Order, 3) pay by InstaPay or Vodafone Cash and paste the reference, 4) choose location. Your order shows <strong>Pending</strong> payment until approved.', 'شراء وحدة: 1) افتح المنتجات، 2) اضغط طلب، 3) ادفع بانستا باي أو فودافون كاش والصق رقم العملية، 4) اختر موقعك. يظهر طلبك بدفع <strong>بانتظار الموافقة</strong> حتى تتم الموافقة.');
+                botShowMenu([c('fa-box', 'Open Products page', 'افتح صفحة المنتجات', 'botNavigate("products")'), c('fa-wallet', 'Payment help', 'مساعدة الدفع', 'botFaq("pay")'), back]); }
+        };
+        (T[key] || T.pay)();
+    }
+    window.botFaq = botFaq;
 
     // Shows (or hides) the two-field credential form inside the bot panel.
     // When show=true (default), renders name + phone inputs with a Submit button
@@ -11775,6 +11919,8 @@ function botDismissNudge() {
             botAddMessage('bot', `${L('Here are some of our best-selling units:', 'إليك بعض أكثر الوحدات مبيعاً:')}<br>${items}<br><br>${L('Tap below to see the full catalog and place an order:', 'اضغط بالأسفل لعرض كامل المنتجات وتقديم طلب:')}`);
             botShowMenu([
                 { icon: 'fa-arrow-right', label: L('Open Products page', 'فتح صفحة المنتجات'), action: 'botNavigate("products")' },
+                { icon: 'fa-circle-question', label: L('How do I order & pay?', 'كيف أطلب وأدفع؟'), action: 'botFaq("ord_how")' },
+                { icon: 'fa-list', label: L('Main menu', 'القائمة الرئيسية'), action: 'showBotMainMenu()' },
                 { icon: 'fa-headset', label: L('Talk to Customer Service', 'التحدث إلى خدمة العملاء'), action: 'botTopic("cs")' }
             ]);
         } else if (topic === 'repairs') {
@@ -11782,7 +11928,10 @@ function botDismissNudge() {
             botAddMessage('bot', `${L('Our repair services:', 'خدمات الصيانة لدينا:')}<br>${items}<br><br>${L('Tap below to book a certified technician:', 'اضغط بالأسفل لحجز فني معتمد:')}`);
             botShowMenu([
                 { icon: 'fa-arrow-right', label: L('Open Repairs page', 'فتح صفحة الصيانة'), action: 'botNavigate("tech-fix")' },
-                { icon: 'fa-headset', label: L('Talk to Customer Service', 'التحدث إلى خدمة العملاء'), action: 'botTopic("cs")' }
+                { icon: 'fa-circle-question', label: L('How does booking work?', 'كيف يتم الحجز؟'), action: 'botFaq("rep_book")' },
+                { icon: 'fa-tags', label: L('Repair prices', 'أسعار الصيانة'), action: 'botFaq("rep_prices")' },
+                { icon: 'fa-wallet', label: L('How do I pay?', 'كيف أدفع؟'), action: 'botFaq("pay_tech")' },
+                { icon: 'fa-list', label: L('Main menu', 'القائمة الرئيسية'), action: 'showBotMainMenu()' }
             ]);
         } else if (topic === 'cs') {
             const csUsers = state.users.filter(u => u.role === 'hr');
@@ -11879,8 +12028,8 @@ function botDismissNudge() {
         let agent = '';
         if (from === 'cs') {
             const u = state.currentUser;
-            if (!u || u.role !== 'hr' || chat.status !== 'open') {
-                showToast(L('Only Customer Services agents can reply to an open chat.', 'فقط موظفو خدمة العملاء يمكنهم الرد على محادثة مفتوحة.'), 'error');
+            if (!u || !(u.role === 'hr' || isTopAdmin(u.role)) || chat.status !== 'open') {
+                showToast(L('Only Customer Services or the admin can reply to an open chat.', 'فقط خدمة العملاء أو المسؤول يمكنهم الرد على محادثة مفتوحة.'), 'error');
                 return;
             }
             agent = u.username;
@@ -11899,7 +12048,7 @@ function botDismissNudge() {
     }
 
     // ================= CS CHATS PAGE: conversation list + chat window + history =================
-    // Head admin: sees every chat (open + history) but is READ-ONLY (no reply, no close).
+    // Admin / Executive Director: sees every chat and can reply and close, the same as Customer Services.
     // Customer Services: sees every chat; any agent can open one, reply and close it.
     let csChatsTab = 'active';      // 'active' | 'history'
     let csFilters = { q: '', rating: 'all', agent: 'all', closer: 'all', from: '', to: '' };
@@ -11911,7 +12060,7 @@ function botDismissNudge() {
         return !!u && (isTopAdmin(u.role) || u.role === 'hr');
     }
     function csCanReply() {
-        return !!state.currentUser && state.currentUser.role === 'hr';
+        return !!state.currentUser && (state.currentUser.role === 'hr' || isTopAdmin(state.currentUser.role));   // Customer Services + Admin / Executive Director
     }
     function csVisibleChats() {
         return csIsStaff() ? loadCsChats() : [];
@@ -12312,7 +12461,7 @@ function botDismissNudge() {
     }
 
     function closeCsChat(chatId) {
-        // Any Customer Services agent can close a chat — the head admin is view-only.
+        // Any Customer Services agent or admin can close a chat.
         if (!csCanReply()) return;
         const chats = loadCsChats();
         const chat = chats.find(c => c.id === chatId);
