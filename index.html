@@ -124,15 +124,15 @@
                 <a href="javascript:void(0)" id="nav-contact" onclick="navigateTo('contact')"
                     class="nav-link hover:text-sky-500" data-i18n="nav_contact">Contact Us</a>
                 <a href="javascript:void(0)" id="nav-customer-log" onclick="navigateTo('customer-log')"
-                    class="nav-link hover:text-sky-500 hidden">Customer Log</a>
+                    class="nav-link hover:text-sky-500 hidden" data-i18n="global_orders_title">Finished Tasks</a>
+                <a href="javascript:void(0)" id="nav-payments" onclick="navigateTo('payments')"
+                    class="nav-link hover:text-sky-500 hidden inline-flex items-center gap-1.5"><i class="fa-solid fa-wallet text-sky-500"></i><span data-i18n="nav_payments">Payments</span><span id="paymentsBadge" class="hidden bg-red-600 text-white text-[10px] font-extrabold rounded-full px-1.5 min-w-[18px] text-center leading-[18px]">0</span></a>
                 <a href="javascript:void(0)" id="nav-arabi" onclick="navigateTo('arabi')"
                     class="nav-link hover:text-sky-500 hidden">Arabi Extraction</a>
                 <a href="javascript:void(0)" id="nav-map" onclick="navigateTo('map')"
                     class="nav-link hover:text-sky-500 hidden">Map</a>
                 <a href="javascript:void(0)" id="nav-insurance" onclick="navigateTo('insurance')"
                     class="nav-link hover:text-sky-500 hidden inline-flex items-center gap-1.5"><i class="fa-solid fa-shield-heart text-sky-500"></i><span data-i18n="nav_insurance">Insurance</span></a>
-                <a href="javascript:void(0)" id="nav-payments" onclick="navigateTo('payments')"
-                    class="nav-link hover:text-sky-500 hidden inline-flex items-center gap-1.5"><i class="fa-solid fa-wallet text-sky-500"></i><span>Payments</span><span id="paymentsBadge" class="hidden bg-red-600 text-white text-[10px] font-extrabold rounded-full px-1.5 min-w-[18px] text-center leading-[18px]">0</span></a>
             </nav>
 
             <!-- Actions & Utility -->
@@ -609,6 +609,23 @@
                             the head admin to the admin
                             team</p>
                     </div>
+                    <div id="adminTaskSearchBar" class="hidden border-b border-slate-100 dark:border-slate-800">
+                        <div class="flex flex-wrap items-center gap-3 px-5 py-3">
+                            <label id="adminTaskSearchLabel" for="adminTaskSearchBy" class="text-xs font-bold">Search by</label>
+                            <select id="adminTaskSearchBy" onchange="renderAdminDashboard()"
+                                class="py-2 px-3 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
+                                <option value="name">Name</option>
+                                <option value="phone">Phone</option>
+                                <option value="area">Area code</option>
+                            </select>
+                            <div class="relative flex-1 min-w-[200px] max-w-md">
+                                <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                                <input type="search" id="adminTaskSearch" oninput="renderAdminDashboard()" autocomplete="off"
+                                    placeholder="Type a customer name..."
+                                    class="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
+                            </div>
+                        </div>
+                    </div>
                     <div id="adminTaskCounters"
                         class="hidden space-y-5 p-4 border-b border-slate-100 dark:border-slate-800">
                     </div>
@@ -655,7 +672,7 @@
             <!-- Business overview: revenue (wide) + customers + total tasks + negative ratings, one row of KPIs -->
             <div id="dashOverviewSection" class="space-y-4">
                 <div id="dashHeadOverview"></div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
                     <div class="contents" id="adminAnalyticsGrid"><!-- Injected via JS --></div>
                     <div class="hidden contents" id="adminTopCountersGrid"></div>
                 </div>
@@ -680,103 +697,37 @@
         <!-- ================= PAGE: CUSTOMER LOG (orders + registered customers) ================= -->
         <section id="view-customer-log" class="hidden space-y-8 w-full">
             <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
-                <h1 class="text-2xl font-bold">Customer Log</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400">Registered customers and every order &amp; repair
-                    request in the system.</p>
+                <h1 class="text-2xl font-bold" data-i18n="global_orders_title">Finished Tasks</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400" data-i18n="global_orders_subtitle">Manage Cooling Art and Arabi purchases and repair requests</p>
             </div>
 
-            <!-- Customer Files: Excel import + one folder (profile + history log) per customer -->
-            <div id="customerIntakeSection"
-                class="hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
-                <div id="customerIntakeHead" class="p-5 border-b border-slate-100 dark:border-slate-800"></div>
-                <div id="intakeResult"
-                    class="hidden px-5 py-3 border-b border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
-                </div>
-                <div class="px-5 pt-4 flex items-center gap-3">
-                    <div class="relative flex-1 sm:max-w-sm">
-                        <i
-                            class="fa-solid fa-magnifying-glass absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
-                        <input type="search" id="folderSearch" oninput="renderCustomerFolders()"
-                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl ps-9 pe-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                    <div id="folderSourceTabs" class="flex items-center gap-2 flex-wrap"></div>
-                    <span id="customerFoldersCount"
-                        class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">0</span>
-                </div>
-                <div id="customerFoldersList"
-                    class="p-5 space-y-3 max-h-[680px] overflow-y-auto custom-scrollbar"></div>
-            </div>
-
-            <!-- Registered Customers Section (Head Admin & Customer Services) - compact, sits on top -->
-            <div id="adminUsersSection"
-                class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
-                <div
-                    class="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                    <h3 class="font-bold text-xs" data-i18n="registered_customers_title">Registered Customers</h3>
-                    <div class="relative w-full sm:w-60">
-                        <i
-                            class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]"></i>
-                        <input type="text" id="adminUserSearch" oninput="renderAdminDashboard()"
-                            placeholder="Search by name, username, phone..."
-                            data-i18n-placeholder="search_users_placeholder"
-                            class="w-full pl-8 pr-3 py-1.5 text-[11px] bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500">
-                    </div>
-                </div>
-                <div class="overflow-x-auto overflow-y-auto max-h-[130px] custom-scrollbar">
-                    <table class="w-full text-left border-collapse text-[11px]">
-                        <thead class="sticky top-0 z-10">
-                            <tr
-                                class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase text-[10px]">
-                                <th class="px-3 py-2" data-i18n="th_user_id">User ID</th>
-                                <th class="px-3 py-2" data-i18n="th_username">Username</th>
-                                <th class="px-3 py-2" data-i18n="th_fullname">Full Name</th>
-                                <th class="px-3 py-2" data-i18n="th_whatsapp">WhatsApp</th>
-                                <th class="px-3 py-2" data-i18n="th_contact_phone">Contact Phone</th>
-                                <th class="px-3 py-2" data-i18n="th_total_orders">Total Orders</th>
-                                <th class="px-3 py-2 text-center" data-i18n="th_action">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="adminUsersTable" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <!-- Injected via JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         <!-- Global Orders & Repairs (Head Admin & Customer Services) -->
             <div id="adminOrdersSection"
                 class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
                 <div
-                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                    <div>
-                        <h3 class="font-bold text-sm" data-i18n="global_orders_title">Global System Orders & Repair
-                            Requests</h3>
+                    class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+                    <div class="shrink-0">
+                        <h3 class="font-bold text-sm" data-i18n="global_orders_title">Finished Tasks</h3>
                         <p class="text-[11px] text-slate-400" data-i18n="global_orders_subtitle">Manage Cooling Art and Arabi purchases and repair requests
                         </p>
                     </div>
-                    <!-- USER FILTER & BACKUP TO SUPABASE BUTTON -->
-                    <div class="flex items-center gap-3 flex-wrap">
-                        <div class="relative w-full sm:w-64">
+                    <!-- USER FILTER -->
+                    <div class="flex items-center gap-3 flex-wrap lg:flex-nowrap w-full lg:w-auto lg:flex-1 lg:justify-end">
+                        <select id="adminOrderSearchBy" onchange="renderAdminDashboard()" title="Search by"
+                            class="py-1.5 px-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
+                            <option value="all">All</option>
+                            <option value="name">Name</option>
+                            <option value="phone">Phone</option>
+                            <option value="area">Area code</option>
+                        </select>
+                        <div class="relative flex-1 min-w-[160px] lg:max-w-xs">
                             <i
                                 class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                             <input type="text" id="adminOrderSearch" oninput="renderAdminDashboard()"
                                 placeholder="Search by name, phone, order ref..."
                                 class="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500">
                         </div>
-                        <button type="button" id="adminBackupBtn" onclick="syncOrdersToSupabase(true)"
-                            class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition shadow-sm hover:scale-105"
-                            title="Sync and backup all orders to Supabase Database">
-                            <i class="fa-solid fa-cloud-arrow-up"></i> <span>Backup to Supabase</span>
-                        </button>
-                        <label id="adminImportOrderExcelBtn" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition shadow-sm cursor-pointer" title="Import Arabi requests; only new rows are added">
-                            <i class="fa-solid fa-file-arrow-up"></i> <span>Import Arabi Excel</span>
-                            <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
-                        </label>
-                        <button type="button" id="adminDownloadExcelBtn" onclick="downloadOrdersExcel()"
-                            class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition shadow-sm hover:scale-105"
-                            title="Download all orders as an Excel sheet">
-                            <i class="fa-solid fa-file-excel"></i> <span>Download Excel</span>
-                        </button>
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-2 shrink-0">
                             <label for="adminOrderUserFilter"
                                 class="text-xs font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap"
                                 data-i18n="filter_by_customer">Filter by
@@ -790,6 +741,29 @@
                 </div>
                 <div id="adminOrdersFolders" class="p-4 space-y-3 overflow-y-auto max-h-[650px] min-h-[200px] custom-scrollbar"></div>
             </div>
+
+            <!-- Secondary customer-folder directory: collapsed under Finished Tasks by default. -->
+            <details id="customerIntakeSection"
+                class="hidden customer-folder-details bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+                <summary id="customerIntakeHead"
+                    class="customer-folder-summary p-4 sm:p-5 cursor-pointer select-none hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors list-none"
+                    aria-label="Toggle customer folders">
+                </summary>
+                <div class="border-t border-slate-100 dark:border-slate-800">
+                    <div id="intakeResult"
+                        class="hidden px-5 py-3 border-b border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+                    </div>
+                    <div class="px-5 pt-4 flex flex-wrap items-center gap-3">
+                        <div class="relative flex-1 min-w-[200px] sm:max-w-sm">
+                            <i class="fa-solid fa-magnifying-glass absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                            <input type="search" id="folderSearch" oninput="renderCustomerFolders()"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl ps-9 pe-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        </div>
+                        <div id="folderSourceTabs" class="flex items-center gap-2 flex-wrap"></div>
+                    </div>
+                    <div id="customerFoldersList" class="p-3 max-h-[420px] overflow-auto custom-scrollbar"></div>
+                </div>
+            </details>
 
             <!-- Reset dashboard data (Admin / Executive Director only; filled by JS) -->
             <div id="adminDataResetSection" class="hidden"></div>

@@ -954,3 +954,167 @@ main button.bg-sky-500:hover { filter: brightness(1.06); }
 
 /* staff don't need the customer "Contact Us" bubble covering the task board */
 body:has(#view-admin-dashboard:not(.hidden)) #contactBotBtn { display: none !important; }
+
+
+/* ================= BIGGER SMALL TEXT, WHITE INSTEAD OF GREY ================= */
+/* Tiny sizes are raised everywhere (views that already had larger sizes keep them). */
+.text-\[9px\]  { font-size: 13px !important; }
+.text-\[10px\] { font-size: 14px !important; }
+.text-\[11px\] { font-size: 15px !important; }
+.text-xs      { font-size: 15px !important; line-height: 1.5rem; }
+
+/* the task board used 12px for its tiny labels: raise them too */
+#view-admin-dashboard #dashPanel-tasks .text-\[9px\],
+#view-admin-dashboard #dashPanel-tasks .text-\[10px\] { font-size: 13.5px !important; }
+#view-admin-dashboard #dashPanel-tasks .text-\[11px\] { font-size: 14.5px !important; }
+#view-admin-dashboard #dashPanel-tasks .text-xs,
+#view-admin-dashboard #dashPanel-tasks table { font-size: 15px; }
+#view-admin-dashboard #dashPanel-tasks th { font-size: 13.5px; }
+#adminTaskCounters .dash-counter .uppercase { font-size: 14px !important; }
+
+/* Dark mode: grey text becomes white */
+.dark .text-slate-300, .dark .text-slate-400, .dark .text-slate-500,
+.dark .text-gray-300, .dark .text-gray-400, .dark .text-gray-500,
+.dark .dark\:text-slate-300, .dark .dark\:text-slate-400, .dark .dark\:text-slate-500 { color: #ffffff !important; }
+.dark .bg-slate-100.text-slate-500 { color: #334155 !important; } /* grey chip on a light background keeps dark text */
+.dark ::placeholder { color: rgba(255, 255, 255, .72) !important; opacity: 1; }
+/* Light mode: the faint greys are made dark enough to read */
+html:not(.dark) .text-slate-400, html:not(.dark) .text-slate-500 { color: #334155; }
+html:not(.dark) ::placeholder { color: #64748b; opacity: 1; }
+
+/* ================= MONEY / NUMBER FIELDS: no up / down roller ================= */
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; margin: 0; display: none; }
+
+/* Finished Tasks: secondary customer folders, tucked away until requested. */
+#customerIntakeSection > summary { display: block; }
+#customerIntakeSection > summary::-webkit-details-marker { display: none; }
+#customerIntakeSection .customer-folder-chevron { transition: transform .2s ease; }
+#customerIntakeSection[open] .customer-folder-chevron { transform: rotate(180deg); }
+#customerIntakeSection > summary:focus-visible { outline: 2px solid #38bdf8; outline-offset: -3px; }
+
+/* Payments stays reachable in both languages even when the desktop nav is crowded. */
+@media (min-width: 1024px) {
+    #siteHeader > div { max-width: 100% !important; }
+    #mainNav { min-width: 0; flex: 1 1 auto; gap: clamp(.35rem, .7vw, .9rem) !important; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    #mainNav::-webkit-scrollbar { display: none; }
+    #mainNav .nav-link { font-size: clamp(11px, .75vw, 13px) !important; flex-shrink: 0; }
+}
+/* Technician collections folder disclosure. */
+#paymentTechSection .pay-tech-summary { list-style: none; }
+#paymentTechSection .pay-tech-summary::-webkit-details-marker { display: none; }
+#paymentTechSection .pay-tech-chevron { transition: transform .18s ease; }
+#paymentTechSection details[open] .pay-tech-chevron { transform: rotate(180deg); }
+
+/* Dashboard shortcuts: every KPI and icon opens its relevant page. */
+.dashboard-kpi-link { cursor: pointer; text-align: start; }
+button.dash-card { color: inherit; font: inherit; }
+.dashboard-kpi-link:focus-visible, .dash-hero-chip:focus-visible {
+    outline: 3px solid #38bdf8; outline-offset: 3px;
+}
+.dashboard-kpi-link:hover .dash-icon, .dash-hero-chip:hover > i { transform: translateY(-2px) scale(1.06); }
+.dashboard-kpi-link .dash-icon, .dash-hero-chip > i { transition: transform .18s ease; }
+
+/* ================= COOLING ART: LIGHTWEIGHT MOTION & POLISH ================= */
+/* All decorative layers are behind the UI and never capture clicks. */
+#ambientBg::before, #ambientBg::after {
+    content: ""; position: absolute; z-index: 0; pointer-events: none;
+    width: min(65vw, 850px); height: min(65vw, 850px); border-radius: 50%;
+    filter: blur(40px); opacity: .45; will-change: transform;
+}
+#ambientBg::before {
+    top: -32%; left: -12%;
+    background: radial-gradient(circle, rgba(14,165,233,.23) 0%, rgba(6,182,212,.09) 40%, transparent 70%);
+    animation: ca-aurora-a 28s ease-in-out infinite alternate;
+}
+#ambientBg::after {
+    bottom: -42%; right: -10%;
+    background: radial-gradient(circle, rgba(34,211,238,.21) 0%, rgba(99,102,241,.07) 43%, transparent 71%);
+    animation: ca-aurora-b 35s ease-in-out infinite alternate;
+}
+.dark #ambientBg::before { opacity: .72; }
+.dark #ambientBg::after { opacity: .6; }
+@keyframes ca-aurora-a {
+    from { transform: translate3d(-6vw,-3vh,0) scale(.82); }
+    to { transform: translate3d(18vw,21vh,0) scale(1.16); }
+}
+@keyframes ca-aurora-b {
+    from { transform: translate3d(5vw,5vh,0) scale(.9); }
+    to { transform: translate3d(-16vw,-20vh,0) scale(1.14); }
+}
+/* A slender travelling highlight under the sticky navigation. */
+#siteHeader::after {
+    content: ""; pointer-events: none; position: absolute;
+    inset-inline: 0; bottom: -1px; height: 2px;
+    background: linear-gradient(90deg, transparent 0%, rgba(56,189,248,.18) 26%, rgba(34,211,238,.86) 50%, rgba(56,189,248,.18) 74%, transparent 100%);
+    background-size: 200% 100%; animation: ca-header-flow 14s ease-in-out infinite alternate;
+    opacity: .7;
+}
+@keyframes ca-header-flow { from { background-position: 0 0; } to { background-position: 100% 0; } }
+/* Each route feels responsive rather than appearing abruptly. */
+#appMain > section[id^="view-"]:not(.hidden) {
+    animation: ca-view-enter .35s cubic-bezier(.22,.82,.28,1) both;
+}
+@keyframes ca-view-enter {
+    from { opacity: .6; transform: translate3d(0,9px,0); }
+    to { opacity: 1; transform: translate3d(0,0,0); }
+}
+/* Gentle staggered entrance on dashboard tiles; does not run continuously. */
+#adminAnalyticsGrid .dash-card, #adminTopCountersGrid .dash-card,
+#view-payments .pay-tech-card, #view-payments .cs-receipts-card {
+    animation: ca-tile-rise .4s cubic-bezier(.18,.78,.25,1) backwards;
+}
+#adminAnalyticsGrid .dash-card:nth-child(2), #adminTopCountersGrid .dash-card:nth-child(2),
+#view-payments .pay-tech-card:nth-child(2) { animation-delay: 55ms; }
+#adminAnalyticsGrid .dash-card:nth-child(3), #adminTopCountersGrid .dash-card:nth-child(3),
+#view-payments .pay-tech-card:nth-child(3) { animation-delay: 100ms; }
+@keyframes ca-tile-rise {
+    from { opacity: .35; transform: translate3d(0,9px,0); }
+    to { opacity: 1; transform: translate3d(0,0,0); }
+}
+/* Subtle cursor and focus feedback, no animation on typing and data tables. */
+#view-payments .pay-tech-card,
+#view-payments .cs-receipts-card,
+#adminAnalyticsGrid .dash-card,
+#adminTopCountersGrid .dash-card {
+    transition: border-color .22s ease, box-shadow .25s ease, transform .25s ease;
+}
+#view-payments .pay-tech-card:hover, #view-payments .cs-receipts-card:hover,
+#adminAnalyticsGrid .dash-card:hover, #adminTopCountersGrid .dash-card:hover {
+    border-color: rgba(56,189,248,.5);
+    box-shadow: 0 15px 35px -21px rgba(14,165,233,.4);
+}
+#view-payments .cs-receipts-card > summary { list-style: none; }
+#view-payments .cs-receipts-card > summary::-webkit-details-marker { display: none; }
+#view-payments .cs-receipts-card > summary > i:last-child { transition: transform .2s ease; }
+#view-payments .cs-receipts-card[open] > summary > i:last-child { transform: rotate(180deg); }
+#view-payments .cs-receipts-card > summary:hover { background: rgba(14,165,233,.045); }
+#view-payments .cs-receipts-card > summary:focus-visible { outline: 2px solid #38bdf8; outline-offset: -3px; }
+/* Frosted hero with a slow, non-distracting cool gleam. */
+#view-admin-dashboard > div:first-child { position: relative; isolation: isolate; overflow: hidden; }
+#view-admin-dashboard > div:first-child::before {
+    content: ""; position: absolute; z-index: -1; pointer-events: none;
+    top: -190%; right: -12%; width: 48%; height: 420%;
+    transform: rotate(21deg);
+    background: linear-gradient(90deg, transparent, rgba(125,211,252,.11), transparent);
+    animation: ca-hero-gleam 16s ease-in-out infinite alternate;
+}
+@keyframes ca-hero-gleam {
+    from { translate: -32% 0; opacity: .3; }
+    to { translate: 32% 0; opacity: 1; }
+}
+#view-payments button:active, #view-admin-dashboard button:active { filter: brightness(.97); }
+/* Gracefully disable nonessential animation on small devices and reduced-motion systems. */
+@media (max-width: 640px) {
+    #ambientBg::before, #ambientBg::after { width: 55vw; height: 55vw; filter: blur(24px); opacity: .35; }
+}
+@media (prefers-reduced-motion: reduce) {
+    #ambientBg::before, #ambientBg::after, #siteHeader::after,
+    #appMain > section[id^="view-"]:not(.hidden),
+    #adminAnalyticsGrid .dash-card, #adminTopCountersGrid .dash-card,
+    #view-payments .pay-tech-card, #view-payments .cs-receipts-card,
+    #view-admin-dashboard > div:first-child::before { animation: none !important; }
+    #view-payments .pay-tech-card, #view-payments .cs-receipts-card,
+    #adminAnalyticsGrid .dash-card, #adminTopCountersGrid .dash-card { transition: none !important; }
+}

@@ -966,39 +966,97 @@ function getTaskLocation(task) {
     };
 }
 
-// Money the technician collected on site (repairs only). It only counts while the job is
-// Done, so undoing "Done" also takes it out of the revenue.
+// Finance: only explicitly accepted payments contribute to the dashboard revenue.
+// A recorded repair amount is NOT revenue until it has been approved in Payments.
+function getApprovedRepairAmount(task) {
+    return task && task.status === 'Done' && task.orderType === 'Tech Fix Service' && task.paymentStatus === 'approved'
+        ? Math.max(0, Number(task.amountReceived) || 0) : 0;
+}
+
 function getCollectedAmount(order) {
     return state.tasks
-        .filter(t => t.orderId === order.id && t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus !== 'rejected')
-        .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
+        .filter(t => t.orderId === order.id)
+        .reduce((sum, t) => sum + getApprovedRepairAmount(t), 0);
 }
 
-// Upfront payment + money the technician collected from the customer.
 function getOrderRevenue(order) {
-    // An insurance payment is only money in once the admin has approved it.
-    if (order.type === 'Insurance' && order.status !== 'Approved') return 0;
-    if (order.paymentStatus === 'rejected') return getCollectedAmount(order);
-    return (Number(order.amount) || 0) + getCollectedAmount(order);
+    if (order.type === 'Insurance') return order.status === 'Approved' ? Math.max(0, Number(order.amount) || 0) : 0;
+    // Repairs are represented by their approved task payments. A separate order payment
+    // only counts when that order itself has an explicit approval.
+    const approvedOrderPayment = order.paymentStatus === 'approved' ? Math.max(0, Number(order.amount) || 0) : 0;
+    return approvedOrderPayment + (order.type === 'Tech Fix Service' ? getCollectedAmount(order) : 0);
 }
 
-// Money collected on Arabi jobs. They have no order, so the money sits on the task itself.
 function getArabiCollectedAmount() {
     return state.tasks
-        .filter(t => t.source === 'arabi' && t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus !== 'rejected')
-        .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
+        .filter(t => t.source === 'arabi')
+        .reduce((sum, t) => sum + getApprovedRepairAmount(t), 0);
 }
 
-// Everything the company took in: our customers' orders + Arabi jobs.
-// Money collected on imported customer-sheet jobs (also no order, so it sits on the task).
 function getSheetCollectedAmount() {
     return state.tasks
-        .filter(t => t.source === 'sheet' && t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus !== 'rejected')
-        .reduce((sum, t) => sum + (Number(t.amountReceived) || 0), 0);
+        .filter(t => t.source === 'sheet')
+        .reduce((sum, t) => sum + getApprovedRepairAmount(t), 0);
+}
+
+// Staff manually confirming an insurance month as paid is also an acceptance event.
+// Exclude calendar entries created from customer-submitted insurance orders: the
+// related Approved order is already counted above, so it must never count twice.
+function getManualInsurancePayments() {
+    const folders = Array.isArray(state.customerFolders) ? state.customerFolders : [];
+    const users = new Map(state.users.map(u => [String(u.username || '').toLowerCase(), u]));
+    const entries = [];
+    folders.forEach(folder => {
+        Object.entries((folder.insurance && folder.insurance.payments) || {}).forEach(([month, p]) => {
+            if (!p || p.paid !== true || p.via === 'customer') return;
+            const staff = users.get(String(p.by || '').toLowerCase());
+            // Entries without an identifiable staff acceptance are not silently
+            // classified as approved money.
+            if (!staff || !isStaffRole(staff.role)) return;
+            entries.push({ month, by: p.by, role: staff.role, folderId: folder.id, customer: folder.name || folder.phone || '', paidAt: p.paidAt || p.updatedAt || '', amount: Math.max(0, Number(p.amount) || Number(folder.insurance.amount) || 0) });
+        });
+    });
+    return entries;
+}
+
+// Auditable, already-approved receipts handled by Customer Services. The source of
+// truth remains the orders/tasks/insurance calendar; no duplicate cash ledger is created.
+// A customer insurance order generates a calendar marker via='customer', which is NOT
+// counted again as a manual insurance receipt.
+function getCSAcceptedReceipts() {
+    const cs = new Set(state.users.filter(u => u.role === 'hr').map(u => String(u.username || '').toLowerCase()));
+    const who = username => cs.has(String(username || '').toLowerCase());
+    const amount = item => Math.max(0, Number(item && item.amount) || 0);
+    const receipts = [];
+    state.orders.forEach(o => {
+        if (o.type === 'Insurance' && o.status === 'Approved' && who(o.approvedBy)) {
+            receipts.push({ id: 'insurance:' + o.id, by: o.approvedBy, kind: 'insurance', customer: o.username || o.customerName || '',
+                amount: amount(o), at: o.approvedAt || o.date || '', note: o.insuranceMonth || o.itemTitle || '' });
+        } else if (o.type !== 'Insurance' && o.type !== 'Tech Fix Service' && o.paymentStatus === 'approved' && who(o.paymentDecidedBy)) {
+            receipts.push({ id: 'buy:' + o.id, by: o.paymentDecidedBy, kind: 'buy', customer: o.customerName || o.username || '',
+                amount: amount(o), at: o.paymentDecidedAt || o.date || '', note: o.itemTitle || '' });
+        }
+    });
+    state.tasks.forEach(t => {
+        if (t.status === 'Done' && t.orderType === 'Tech Fix Service' && t.paymentStatus === 'approved' && who(t.paymentDecidedBy)) {
+            receipts.push({ id: 'fix:' + t.id, by: t.paymentDecidedBy, kind: 'fix', customer: t.customerName || '',
+                amount: Math.max(0, Number(t.amountReceived) || 0), at: t.paymentDecidedAt || t.completedDate || '', note: t.title || '' });
+        }
+    });
+    getManualInsurancePayments().filter(p => p.role === 'hr').forEach(p => {
+        receipts.push({ id: 'manual-insurance:' + p.folderId + ':' + p.month, by: p.by, kind: 'manual-insurance',
+            customer: p.customer || '', amount: p.amount, at: p.paidAt || '', note: p.month });
+    });
+    return receipts.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+function getCSAcceptedMoney() {
+    return getCSAcceptedReceipts().reduce((sum, p) => sum + p.amount, 0);
 }
 
 function getAllRevenue() {
-    return state.orders.reduce((sum, o) => sum + getOrderRevenue(o), 0) + getArabiCollectedAmount() + getSheetCollectedAmount();
+    return state.orders.reduce((sum, o) => sum + getOrderRevenue(o), 0)
+        + getArabiCollectedAmount() + getSheetCollectedAmount()
+        + getManualInsurancePayments().reduce((sum, p) => sum + p.amount, 0);
 }
 
 // "Received from customer" line for a finished repair (unit orders don't collect money on site).
@@ -1059,6 +1117,11 @@ function getHierarchyJobTitle(role) {
 // Any account that is part of the internal staff/management structure
 function isStaffRole(role) {
     return role === 'head-admin' || role === 'executive' || role === 'admin' || role === 'hr' || role === 'technician';
+}
+
+// Payments can also be accepted by Customer Services ('hr'), with staff attribution.
+function canAcceptPayments() {
+    return !!state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
 }
 
 // Top-level management: the Admin (head-admin) and the Executive Director work side by side and
@@ -1581,17 +1644,17 @@ function buildOrderRecords() {
 // One documented, language-independent column order for download AND re-import.
 // Do not localize these titles: the next spreadsheet must have exactly the same headers.
 const SYSTEM_EXCEL_HEADERS = [
-    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Product Type',
+    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Area Code', 'Product Type',
     'Customer Complain', 'Date', 'Office Notes', 'Call Center Notes',
     'Services Type', 'Has Issue', 'SAP Number', 'Reporting Entity', 'Technician Assigned'
 ];
 // Arabic version of the same 14 columns (same order). Building number has its own column. The importers recognise these titles too.
 const SYSTEM_EXCEL_HEADERS_AR = [
-    'رقم الطلب', 'اسم العميل', 'رقم العقار', 'العنوان', 'نوع المنتج',
+    'رقم الطلب', 'اسم العميل', 'رقم العقار', 'العنوان', 'كود المنطقة', 'نوع المنتج',
     'شكوى العميل', 'التاريخ', 'ملاحظات المكتب', 'ملاحظات الكول سنتر',
     'نوع الخدمة', 'هل توجد مشكلة', 'رقم ساب', 'الجهة المبلغة', 'الفني المكلف'
 ];
-const SYSTEM_EXCEL_WIDTHS = [22, 25, 14, 44, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
+const SYSTEM_EXCEL_WIDTHS = [22, 25, 14, 44, 14, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
 
 // Building number and address are separate columns. If no building number was saved,
 // a leading number in the address ("12 Street name") is split off into the building column.
@@ -1619,6 +1682,7 @@ function systemOrderExcelRow(o) {
         isArabi ? o.customerName : ((user && user.name) || o.customerName || o.username || ''),
         buildingNo,
         addressOnly,
+        o.areaCode || '',
         isArabi ? (o.productType || '') : (o.productType || (o.type === 'Product' ? o.itemTitle : '')),
         isArabi ? (o.customerComplain || o.itemTitle || '') : (o.customerComplain || o.notes || (o.type === 'Tech Fix Service' ? o.itemTitle : '')),
         isArabi ? (o.arabiDate || o.date || '') : (o.date || ''),
@@ -1641,7 +1705,7 @@ function makeSystemOrdersWorkbook(orders, filename, lang) {
     const isAr = lang !== 'en'; // Arabic by default
     const ws = XLSX.utils.aoa_to_sheet([(isAr ? SYSTEM_EXCEL_HEADERS_AR : SYSTEM_EXCEL_HEADERS)].concat(rows));
     ws['!cols'] = SYSTEM_EXCEL_WIDTHS.map(wch => ({ wch }));
-    ws['!autofilter'] = { ref: `A1:N${rows.length + 1}` };
+    ws['!autofilter'] = { ref: `A1:O${rows.length + 1}` };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, isAr ? 'الطلبات والصيانة' : 'Orders & Repairs');
     if (isAr) wb.Workbook = { Views: [{ RTL: true }] }; // Arabic sheet opens right-to-left
@@ -1661,6 +1725,7 @@ function makeArabiOrder(task) {
         status: current.status === 'Done' ? 'Delivered' : current.status === 'In Progress' ? 'In Progress' : 'Pending',
         date: task.arabiDate || task.createdDate || '', createdAt: task.createdAt || '',
         buildingNumber: task.buildingNumber || '',
+        areaCode: task.areaCode || '',
         arabiAddress: task.arabiAddress !== undefined ? task.arabiAddress : task.address || '',
         customerAddress: task.address || '', productType: task.productType || '',
         officeNotes: task.officeNotes || '', callCenterNotes: task.callCenterNotes || task.notes || '',
@@ -1719,6 +1784,7 @@ const TRANSLATIONS = {
         nav_products: "Products",
         nav_tech_fix: "Repairs",
         nav_insurance: "Insurance",
+        nav_payments: "Payments",
         nav_about: "Policies",
         nav_reviews: "Ratings",
         reviews_title: "Ratings & Videos",
@@ -1809,7 +1875,7 @@ const TRANSLATIONS = {
         active_repairs: "Active Repairs",
         registered_customers_title: "Registered Customers",
         search_users_placeholder: "Search by name, username, phone...",
-        global_orders_title: "Global System Orders & Repair Requests",
+        global_orders_title: "Finished Tasks",
         filter_by_customer: "Filter by Customer:",
         global_orders_subtitle: "Manage Cooling Art and Arabi purchases and repair requests",
         filter_by_user: "Filter by User:",
@@ -1951,6 +2017,7 @@ const TRANSLATIONS = {
         nav_products: "المنتجات",
         nav_tech_fix: "الصيانة",
         nav_insurance: "التأمين",
+        nav_payments: "المدفوعات",
         nav_about: "السياسات",
         nav_reviews: "التقييمات",
         reviews_title: "التقييمات والفيديوهات",
@@ -2041,7 +2108,7 @@ const TRANSLATIONS = {
         active_repairs: "الصيانة النشطة",
         registered_customers_title: "العملاء المسجلون",
         search_users_placeholder: "البحث بالاسم، اسم المستخدم، الهاتف...",
-        global_orders_title: "جميع الطلبات وبلاغات الصيانة",
+        global_orders_title: "المهام المنتهية",
         filter_by_customer: "تصفية حسب العميل:",
         global_orders_subtitle: "إدارة وتصفية مشتريات العملاء وحجوزات الصيانة",
         filter_by_user: "تصفية حسب العميل:",
@@ -2742,7 +2809,7 @@ function navigateTo(viewId, fromHistory = false) {
         return;
     }
 
-    if (viewId === 'payments' && !(state.currentUser && isTopAdmin(state.currentUser.role))) {
+    if (viewId === 'payments' && !canAcceptPayments()) {
         showToast('Access restricted to administrators only.', 'error');
         try { history.replaceState({ view: 'home' }, '', '#home'); } catch (e) { }
         navigateTo('home', true);
@@ -4499,7 +4566,18 @@ function getLinkedTaskForOrder(orderId) {
     return arabiRoot ? getArabiCurrentTask(arabiRoot) : undefined;
 }
 
-function renderOrderTaskBadge(orderId) {
+// Who assigned a task: "Sara (Customer Services)" / "Ahmed (Admin)"
+function assignerRoleName(r) { return isTopAdmin(r) ? L('Admin', 'الأدمن') : r === 'hr' ? L('Customer Services', 'خدمة العملاء') : ''; }
+function assignerText(meta) {
+    if (!meta) return '';
+    const role = assignerRoleName(meta.role);
+    return `${meta.name || meta.username || ''}${role ? ` (${role})` : ''}`;
+}
+function viewerSeesAssigner() {
+    return !!state.currentUser && (isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr');
+}
+
+function renderOrderTaskBadgeBase(orderId) {
     const task = getLinkedTaskForOrder(orderId);
     if (!task) return '';
     const phase = getTaskPhase(task);
@@ -4540,6 +4618,16 @@ function renderOrderTaskBadge(orderId) {
     return `${phaseLine}<span class="block mt-1 text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide"><i class="fa-solid fa-check"></i> ${formatTaskAssignees(task)}</span>`;
 }
 
+// Task badge + a small "assigned by" line (staff only)
+function renderOrderTaskBadge(orderId) {
+    const base = renderOrderTaskBadgeBase(orderId);
+    const task = getLinkedTaskForOrder(orderId);
+    if (!base || !task || !viewerSeesAssigner()) return base;
+    const line = (meta, who, label) => (who && meta)
+        ? `<span class="block mt-1 text-[10px] text-slate-400" dir="auto"><i class="fa-solid fa-user-check text-emerald-400 me-1"></i>${label} ${L('assigned by', 'أسندها')} <b>${escapeHtml(assignerText(meta))}</b></span>` : '';
+    return base + line(task.assignedBy, task.assignedTo, L('Technician', 'الفني')) + line(task.assistantBy, task.assistantTo, L('Assistant', 'المساعد'));
+}
+
 // Sends a finished (Done) task back to Open so it can be worked again, from
 // the Global Orders list. newAssignee lets the admin/CS pick a different
 // technician right here instead of always returning to whoever finished it;
@@ -4558,7 +4646,7 @@ function returnTaskToTechnician(taskId, newAssignee) {
     if (!task || task.status !== 'Done') return;
 
     const validTech = newAssignee && state.users.some(u => u.username === newAssignee && u.role === 'technician');
-    if (validTech) task.assignedTo = newAssignee;
+    if (validTech) { task.assignedTo = newAssignee; task.assignedBy = makeAssignerInfo(); }
 
     task.status = 'Open';
     task.completedAt = null;
@@ -5414,6 +5502,25 @@ function getTaskDescription(task) {
     return `${L('Customer', 'العميل')} ${task.customerName || '—'} — ${L('Address:', 'العنوان:')} ${task.address || '—'}.${rest}`;
 }
 
+// Wrap Latin/digit runs (AC34, CAS2026..., 450) so they don't scramble Arabic text order
+// Repairs imported Arabic: strips invisible bidi/format marks that break word order and spacing,
+// converts legacy "presentation form" letters (visual-order text from PDF/old systems) to normal letters.
+function cleanArabicText(v) {
+    let t = String(v == null ? '' : v);
+    if (!t) return t;
+    t = t.replace(/[\u200B\u200E\u200F\u202A-\u202E\u2066-\u2069\u061C\uFEFF\u00AD]/g, '')
+         .replace(/[\u00A0\u2007\u202F\u3000]/g, ' ');
+    if (/[\uFB50-\uFDFF\uFE70-\uFEFF]/.test(t)) {
+        t = t.split('\n').map(line => /[\uFB50-\uFDFF\uFE70-\uFEFF]/.test(line)
+            ? Array.from(line.normalize('NFKC')).reverse().join('') : line).join('\n');
+    }
+    return t.replace(/[ \t]+/g, ' ').trim();
+}
+
+function isolateLatin(html) {
+    return String(html).replace(/([A-Za-z][A-Za-z0-9_\-\/\.]*|\d[\d\/\.,:\-]*)/g, '<bdi dir="ltr">$1</bdi>');
+}
+
 function buildTaskRow(task, technicianUsers, canManageTasks) {
     const needsAssignment = isTaskUnassigned(task);
     const isLate = isTaskLate(task);
@@ -5433,7 +5540,7 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
     const assignedCell = (canManageTasks && task.status !== 'Done') ? `
         <div class="space-y-1.5 min-w-[170px]">
             ${assignSelect('technician', techOptions, task.assignedTo, L('Assign Technician', 'تعيين فني'), techWarn)}
-            ${assignSelect('assistant', assistantOptions, task.assistantTo, L('Assign Assistant', 'تعيين مساعد'), '')}
+            ${(task.assignedTo || task.assistantTo) ? assignSelect('assistant', assistantOptions, task.assistantTo, L('Assign Assistant', 'تعيين مساعد'), '') : ''}
         </div>
     ` : `<span class="font-bold">${formatTaskAssignees(task) || '—'}</span>`;
     const linkedOrder = task.orderId ? state.orders.find(o => o.id === task.orderId) : null;
@@ -5443,7 +5550,7 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
         ? `<button type="button" onclick="openCustomerFolder('${task.folderId}')" class="mt-1 inline-flex items-center gap-1 text-[10px] font-extrabold text-amber-600 hover:text-amber-700"><i class="fa-solid fa-folder-open"></i>${L('Customer folder', 'ملف العميل')}</button>`
         : '';
     const customerCell = hasOwnCustomer
-        ? `<span class="font-bold text-slate-700 dark:text-slate-200">${escapeHtml(task.customerName || '')}</span>${task.phone ? `<span class="block text-[10px] text-slate-400 font-mono">${escapeHtml(task.phone)}</span>` : ''}`
+        ? `<span dir="auto" class="font-bold text-slate-700 dark:text-slate-200">${escapeHtml(cleanArabicText(task.customerName || ''))}</span>${task.phone ? `<span class="block text-[10px] text-slate-400 font-mono">${escapeHtml(task.phone)}</span>` : ''}`
         : linkedOrder
         ? `<span class="font-bold text-slate-700 dark:text-slate-200">@${linkedOrder.username}</span><span class="block text-[10px] text-slate-400">${escapeHtml(linkedOrder.customerName || '')}</span>`
         : `<span class="text-slate-300 dark:text-slate-600 text-[11px]">N/A</span>`;
@@ -5472,23 +5579,25 @@ function buildTaskRow(task, technicianUsers, canManageTasks) {
     return `
     <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40 ${isLate ? 'bg-red-50 dark:bg-red-950/30 border-l-4 border-l-red-500' : needsAssignment ? 'bg-yellow-50/50 dark:bg-yellow-950/10' : delayState === 'returned' ? 'bg-teal-50/60 dark:bg-teal-950/20' : ''}">
         <td class="p-4">
-            <span class="font-semibold block leading-snug">${escapeHtml(task.title)}</span>
+            <span dir="auto" class="font-semibold block leading-snug" style="unicode-bidi:plaintext">${isolateLatin(escapeHtml(cleanArabicText(task.title)))}</span>
             <span class="mt-1.5 flex flex-wrap items-center gap-1">${phaseChip}${stateChip}${delayChip}</span>
             ${delayNote}
             ${isLate ? `<span class="block text-[10px] text-red-600 dark:text-red-400 mt-1"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار فني منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
         </td>
         <td class="p-4 text-slate-500 text-[11px] space-y-1" data-label="${L('Details','التفاصيل')}">
-            <span dir="auto" class="block leading-relaxed">${hasOwnCustomer ? `<i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(task.address || '')}` : stripOrderRef(task.description)}</span>
+            <span dir="auto" class="block leading-relaxed">${hasOwnCustomer ? `<i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(cleanArabicText(task.address || ''))}` : stripOrderRef(task.description)}</span>
+            ${task.areaCode ? `<span class="block"><i class="fa-solid fa-hashtag text-sky-400 me-1"></i>${L('Area code', 'كود المنطقة')}: <span dir="ltr" class="font-bold">${escapeHtml(task.areaCode)}</span></span>` : ''}
             ${task.source === 'sheet' && task.notes ? `<span dir="auto" class="block text-slate-500 dark:text-slate-400"><i class="fa-regular fa-note-sticky text-amber-400 me-1"></i>${escapeHtml(task.notes)}</span>` : ''}
             ${loc.label ? `<span class="block"><i class="fa-solid fa-location-dot text-sky-400 me-1"></i>${escapeHtml(getLocationLabel(loc.label))}</span>` : ''}
             ${loc.coords ? `<span class="block">${renderMapLink(loc.coords)}</span>` : ''}
-            <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy ? ` · ${escapeHtml(task.createdBy === 'Arabi Sheet' ? L('Arabi Sheet', 'ملف عربي') : task.createdBy === 'Customer Sheet' ? L('Customer Sheet', 'شيت العملاء') : task.createdBy)}` : ''}</span>
-            ${task.status === 'Open' && waitingSince && !isLate ? `<span class="block text-slate-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
+            <span class="block text-slate-400">${L('Created', 'أُنشئت')} ${escapeHtml(formatDateTime(task.createdAt || task.createdDate))}${task.createdBy && task.createdBy !== 'Customer Sheet' ? ` · ${escapeHtml(task.createdBy === 'Arabi Sheet' ? L('Arabi Sheet', 'ملف عربي') : task.createdBy)}` : ''}</span>
+            ${task.status === 'Open' && waitingSince && !isLate && false ? `<span class="block text-slate-400"><i class="fa-regular fa-clock me-1"></i>${L('Waiting since', 'بانتظار منذ')} ${escapeHtml(formatDateTime(waitingSince))}</span>` : ''}
+            ${renderAssignedByDetails(task)}
             ${renderTechNoteView(task)}
         </td>
         <td class="p-4" data-label="${L('Customer','العميل')}"><span class="block">${sourceChip}</span>${customerCell}${folderLink}</td>
         <td class="p-4" data-label="${L('Assigned To','المسند إليه')}">${assignedCell}</td>
-        <td class="p-4 text-slate-500 text-[11px]" data-label="${L('Priority','الأولوية')}">${task.priority}</td>
+        <td class="p-4 text-slate-500 text-[11px]" data-label="${L('Priority','الأولوية')}">${task.priority && task.priority !== 'Normal' ? task.priority : '<span class="text-slate-300">—</span>'}</td>
         <td class="p-4 text-slate-500 text-[11px]" data-label="${L('Due Date','تاريخ الاستحقاق')}">${task.dueDate || 'N/A'}</td>
         <td class="p-4" data-label="${L('Status','الحالة')}">${renderTaskStatusBadge(task.status)}${(task.status === 'Done' && (task.completedAt || task.completedDate)) ? `<span class="block text-[10px] text-slate-400 mt-1">${escapeHtml(formatDateTime(task.completedAt || task.completedDate))}</span>` : ''}${renderReceivedLine(task)}${getRepairPhotoCount(task) ? `<span class="block mt-1.5">${renderRepairPhotosIcon(task)}</span>` : ''}</td>
     </tr>
@@ -5521,11 +5630,11 @@ function buildOrderHistoryHtml(order) {
     const events = [];
     events.push({ icon: 'fa-cart-shopping', label: L('Order placed', 'تم إنشاء الطلب'), when: order.createdAt || order.date });
     if (task && task.assignedTo && task.assignedAt) {
-        events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${tech ? tech.name : '@' + task.assignedTo}`, when: task.assignedAt });
+        events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${tech ? tech.name : '@' + task.assignedTo}${task.assignedBy ? ` ${L('by', 'بواسطة')} ${assignerText(task.assignedBy)}` : ''}`, when: task.assignedAt });
     }
     if (task && task.assistantTo) {
         const assistant = state.users.find(u => u.username === task.assistantTo);
-        events.push({ icon: 'fa-user-group', label: `${L('Assistant', 'المساعد')}: ${assistant ? assistant.name : '@' + task.assistantTo}`, when: task.assignedAt });
+        events.push({ icon: 'fa-user-group', label: `${L('Assistant', 'المساعد')}: ${assistant ? assistant.name : '@' + task.assistantTo}${task.assistantBy ? ` ${L('by', 'بواسطة')} ${assignerText(task.assistantBy)}` : ''}`, when: (task.assistantBy && task.assistantBy.at) || task.assignedAt });
     }
     if (task && task.acceptedAt) events.push({ icon: 'fa-hand', label: L('Technician accepted', 'قبل الفني المهمة'), when: task.acceptedAt });
     const doneAt = task && (task.completedAt || task.completedDate);
@@ -5553,7 +5662,6 @@ function buildOrderHistoryHtml(order) {
                 ${info(L('Amount:', 'المبلغ:'), order.amount > 0 ? `${order.amount.toLocaleString()} ${t('egp_symbol', 'EGP')}` : L('On-Site Quote', 'فحص ميداني'))}
                 ${info(L('Location:', 'الموقع:'), escapeHtml(getLocationLabel(order.location) || ''))}
                 ${info(L('Address:', 'العنوان:'), escapeHtml(order.customerAddress || ''))}
-                ${info(L('Technician:', 'الفني:'), tech ? escapeHtml(tech.name) + ` (@${escapeHtml(tech.username)})` : L('Unassigned', 'غير معين'))}
                 ${info(L('Specs:', 'المواصفات:'), escapeHtml(order.specs || ''))}
                 ${info(L('Notes:', 'ملاحظات:'), escapeHtml(order.notes || ''))}
                 <div class="pt-1">${renderOrderFeedbackCell(order)}</div>
@@ -5571,6 +5679,7 @@ function buildArabiHistoryHtml(order, task) {
         ${d(L('Customer name','اسم العميل'), order.customerName)}
         ${d(L('Building number','رقم العقار'), order.buildingNumber)}
         ${d(L('Address','العنوان'), order.arabiAddress || order.customerAddress)}
+        ${d(L('Area code','كود المنطقة'), order.areaCode)}
         ${d(L('Product type','نوع المنتج'), order.productType)}
         ${d(L('Customer complain','شكوى العميل'), order.customerComplain)}
         ${d(L('Date','التاريخ'), order.arabiDate || order.date)}
@@ -5581,6 +5690,8 @@ function buildArabiHistoryHtml(order, task) {
         ${d('SAP Number', order.sapNumber)}
         ${d(L('Reporting entity','الجهة المبلغة'), order.reportingEntity)}
         ${d(L('Technician assigned','الفني المكلف'), assigned)}
+        ${current && current.assignedTo && current.assignedBy ? d(L('Assigned by','أسندها'), assignerText(current.assignedBy)) : ''}
+        ${current && current.assistantTo ? d(L('Assistant','المساعد'), ((state.users.find(u => u.username === current.assistantTo) || {}).name || current.assistantTo) + (current.assistantBy ? ` — ${L('assigned by','أسندها')} ${assignerText(current.assistantBy)}` : '')) : ''}
         <div class="sm:col-span-2 lg:col-span-3 flex gap-3 items-center flex-wrap">
             ${current ? renderTaskStatusBadge(current.status) : ''}
             ${current && current.status === 'Done' ? renderRepairPhotosIcon(current, true) : ''}
@@ -5661,24 +5772,39 @@ function buildCustomerFolderHtml(key, list, isHeadAdmin) {
         </div>`;
 }
 
+// Dashboard KPIs are real navigation controls, including their icons.
+function dashboardNavigate(page, counter) {
+    if (page === 'tasks') {
+        activeTaskCounter = counter || null;
+        dashPanel = 'tasks';
+        try { sessionStorage.setItem('ca_dash_panel', 'tasks'); } catch (e) { /* ignore */ }
+        if (getCurrentViewId() === 'admin-dashboard') renderAdminDashboard();
+        else navigateTo('admin-dashboard');
+    } else {
+        navigateTo(page);
+    }
+}
+window.dashboardNavigate = dashboardNavigate;
+
 // Hero numbers + the section headings that give the dashboard its hierarchy
 // (Today at a glance -> Business overview -> Task board).
 function renderDashboardChrome(canManageTasks, isTechnician, isHeadAdmin) {
     const mine = canManageTasks ? state.tasks : state.tasks.filter(t => state.currentUser && isTaskAssignedTo(t, state.currentUser.username));
     const today = getLocalDateString();
     const open = mine.filter(t => t.status !== 'Done');
-    const stat = (icon, n, label, tone) => `
-        <div class="dash-hero-chip ${tone ? 'is-' + tone : ''}">
+    const stat = (icon, n, label, page, counter, tone) => `
+        <button type="button" onclick="dashboardNavigate('${page}'${counter ? ",'" + counter + "'" : ''})"
+            title="${label}" aria-label="${label}" class="dash-hero-chip text-start w-full cursor-pointer ${tone ? 'is-' + tone : ''}">
             <i class="fa-solid ${icon}"></i>
-            <div><span class="block text-2xl font-extrabold leading-none">${n}</span><span class="block text-xs font-bold opacity-90 mt-1">${label}</span></div>
-        </div>`;
+            <span><span class="block text-2xl font-extrabold leading-none">${n}</span><span class="block text-xs font-bold opacity-90 mt-1">${label}</span></span>
+        </button>`;
     const hero = document.getElementById('adminHeroStats');
     if (hero) {
         hero.innerHTML =
-            stat('fa-list-check', open.length, L('Open tasks', 'مهام مفتوحة')) +
-            stat('fa-triangle-exclamation', open.filter(isTaskLate).length, L('Late', 'متأخرة'), open.some(isTaskLate) ? 'alert' : '') +
-            stat('fa-user-clock', open.filter(isTaskUnassigned).length, L('Not assigned', 'غير معينة')) +
-            stat('fa-circle-check', mine.filter(t => t.status === 'Done' && (t.completedDate || '') === today).length, L('Done today', 'منجزة اليوم'));
+            stat('fa-list-check', open.length, L('Open tasks', 'مهام مفتوحة'), 'tasks') +
+            stat('fa-triangle-exclamation', open.filter(isTaskLate).length, L('Late', 'متأخرة'), 'tasks', 'late', open.some(isTaskLate) ? 'alert' : '') +
+            stat('fa-user-clock', open.filter(isTaskUnassigned).length, L('Not assigned', 'غير معينة'), 'tasks', 'unassigned') +
+            stat('fa-circle-check', mine.filter(t => t.status === 'Done' && (t.completedDate || '') === today).length, L('Done today', 'منجزة اليوم'), 'customer-log');
     }
     const dateEl = document.getElementById('adminHeroDate');
     if (dateEl) dateEl.textContent = new Date().toLocaleDateString(state.currentLang === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'long', month: 'long', day: 'numeric' });
@@ -5690,6 +5816,95 @@ function renderDashboardChrome(canManageTasks, isTechnician, isHeadAdmin) {
     head('dashHeadTasks', 'fa-list-check', 'Task board', 'لوحة المهام', 'What needs action now, and where every job stands', 'ما يحتاج إجراءً الآن وأين وصلت كل مهمة');
     const ov = document.getElementById('dashOverviewSection');
     if (ov) ov.classList.toggle('hidden', !(isHeadAdmin || canManageTasks));
+}
+
+// ---- Who assigned the task (shown in the task details for admin / Customer Services) ----
+function makeAssignerInfo() {
+    const u = state.currentUser;
+    if (!u) return null;
+    return { username: u.username, name: u.name || u.username, role: u.role, at: new Date().toISOString() };
+}
+
+function renderAssignedByCompact(task) {
+    const one = (meta, who) => (who && meta)
+        ? `<span class="block text-[10px] text-slate-400 mt-1" dir="auto">${L('By', 'بواسطة')} <b>${escapeHtml(meta.name || meta.username || '')}</b>${meta.at ? ` · ${escapeHtml(formatDateTime(meta.at))}` : ''}</span>` : '';
+    const out = one(task.assignedBy, task.assignedTo) + one(task.assistantBy, task.assistantTo);
+    if (out) return out;
+    return (task.assignedTo && task.assignedAt)
+        ? `<span class="block text-[10px] text-slate-400 mt-1">${L('By', 'بواسطة')} —</span>` : '';
+}
+
+// Task Details column: who assigned the task to the technician (Admin / Customer Services), shown to everyone
+function renderAssignedByDetails(task) {
+    const roleName = r => isTopAdmin(r) ? L('Admin', 'الأدمن') : r === 'hr' ? L('Customer Services', 'خدمة العملاء') : '';
+    const line = (meta, who, label) => (who && meta)
+        ? `<span class="block"><i class="fa-solid fa-user-check text-emerald-400 me-1"></i>${label} ${L('assigned by', 'أسندها')} <span class="font-bold text-slate-600 dark:text-slate-300">${escapeHtml(meta.name || meta.username || '')}</span>${roleName(meta.role) ? ` (${escapeHtml(roleName(meta.role))})` : ''}${meta.at ? ` · ${escapeHtml(formatDateTime(meta.at))}` : ''}</span>`
+        : '';
+    return line(task.assignedBy, task.assignedTo, L('Technician', 'الفني')) + line(task.assistantBy, task.assistantTo, L('Assistant', 'المساعد'));
+}
+
+function renderAssignedByLines(task) {
+    if (!state.currentUser || !(isTopAdmin(state.currentUser.role) || state.currentUser.role === 'hr')) return '';
+    const roleLabel = r => isTopAdmin(r) ? L('Admin', 'الأدمن') : r === 'hr' ? L('Customer Services', 'خدمة العملاء') : String(r || '');
+    const line = (meta, assignee, label) => (assignee && meta)
+        ? `<span class="block"><i class="fa-solid fa-user-check text-emerald-400 me-1"></i>${label} @${escapeHtml(assignee)} ${L('assigned by', 'أسندها')} <span class="font-bold">${escapeHtml(meta.name || meta.username || '')}</span> (${escapeHtml(roleLabel(meta.role))})${meta.at ? ` · ${escapeHtml(formatDateTime(meta.at))}` : ''}</span>`
+        : '';
+    return line(task.assignedBy, task.assignedTo, L('Technician', 'الفني')) + line(task.assistantBy, task.assistantTo, L('Assistant', 'المساعد'));
+}
+
+// ---- Search by name / phone / area code (Task Board + Global Orders) ----
+function searchFieldMatches(values, by, rawTerm) {
+    const term = String(rawTerm || '').trim();
+    if (!term) return true;
+    const list = (values || []).filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (by === 'name') {
+        const t = normalizeIntakeText(term);
+        return list.some(v => normalizeIntakeText(v).includes(t));
+    }
+    if (by === 'phone') {
+        const digits = toAsciiDigits(term).replace(/\D/g, '');
+        return list.some(v => digits
+            ? toAsciiDigits(v).replace(/\D/g, '').includes(digits)
+            : String(v).toLowerCase().includes(term.toLowerCase()));
+    }
+    const t = toAsciiDigits(term).toLowerCase().replace(/\s+/g, '');
+    return list.some(v => toAsciiDigits(v).toLowerCase().replace(/\s+/g, '').includes(t));
+}
+
+function getTaskSearchFields(task) {
+    const order = task.orderId ? state.orders.find(o => o.id === task.orderId) : null;
+    const cust = order ? state.users.find(u => String(u.username || '').toLowerCase() === String(order.username || '').toLowerCase()) : null;
+    return {
+        name: [task.customerName, order && order.customerName, order && order.username, cust && cust.name, cust && cust.username],
+        phone: [task.phone, order && order.customerContactPhone, order && order.customerWhatsApp, cust && cust.contactPhone, cust && cust.whatsapp],
+        area: [task.areaCode, order && order.areaCode]
+    };
+}
+
+function getOrderSearchFields(o) {
+    const cust = state.users.find(u => String(u.username || '').toLowerCase() === String(o.username || '').toLowerCase());
+    return {
+        name: [o.customerName, o.username, cust && cust.name, cust && cust.username],
+        phone: [o.customerContactPhone, o.customerWhatsApp, cust && cust.contactPhone, cust && cust.whatsapp],
+        area: [o.areaCode]
+    };
+}
+
+// Fills the "Search by" drop-downs in the current language
+function refreshSearchByLabels() {
+    const names = { all: L('All', 'الكل'), name: L('Name', 'الاسم'), phone: L('Phone', 'الهاتف'), area: L('Area code', 'كود المنطقة') };
+    ['adminTaskSearchBy', 'adminOrderSearchBy'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (sel) Array.from(sel.options).forEach(opt => { opt.textContent = names[opt.value] || opt.value; });
+    });
+    const lbl = document.getElementById('adminTaskSearchLabel');
+    if (lbl) lbl.textContent = L('Search by', 'ابحث بـ');
+}
+
+function getTaskSearchState() {
+    const by = (document.getElementById('adminTaskSearchBy') || {}).value || 'name';
+    const term = ((document.getElementById('adminTaskSearch') || {}).value || '').trim();
+    return { by, term };
 }
 
 function renderAdminDashboard() {
@@ -5716,26 +5931,41 @@ function renderAdminDashboard() {
         const totalRev = Math.max(0, getAllRevenue() - state.revenueResetBaseline);
 
         grid.innerHTML = `
-            <div class="dash-card dash-accent-sky p-6 space-y-3 xl:col-span-2">
+            <div role="link" tabindex="0" aria-label="${L('View approved payments', 'عرض المدفوعات المعتمدة')}"
+                onclick="dashboardNavigate('payments')" onkeydown="if(event.target===this && (event.key==='Enter'||event.key===' ')){event.preventDefault();dashboardNavigate('payments')}"
+                class="dash-card dash-accent-sky p-6 space-y-3 xl:col-span-2 cursor-pointer dashboard-kpi-link">
                 <div class="flex items-start justify-between gap-3">
                     <div class="flex items-center gap-3">
                         <span class="dash-icon bg-sky-100 dark:bg-sky-950 text-sky-500"><i class="fa-solid fa-sack-dollar"></i></span>
-                        <span class="text-xs font-bold text-slate-400 uppercase tracking-wide">Total Revenue</span>
+                        <span class="text-xs font-bold text-slate-400 uppercase tracking-wide">${L('Approved Revenue', 'الإيرادات المعتمدة')}</span>
                     </div>
-                    <button onclick="confirmResetTotalRevenue()" class="text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition">Reset</button>
+                    <button type="button" onclick="event.stopPropagation();confirmResetTotalRevenue()" class="text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition">Reset</button>
                 </div>
                 <h3 class="text-3xl font-extrabold text-sky-600 dark:text-sky-400">${totalRev.toLocaleString()} <span class="text-sm font-bold text-slate-400">EGP</span></h3>
                 <div class="flex flex-wrap gap-2 pt-1">
                     <span class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">${L('Arabi customers', 'عملاء عربي')}: ${getArabiCollectedAmount().toLocaleString()} EGP</span>
                     <span class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">${L('Imported customers', 'العملاء المستوردين')}: ${getSheetCollectedAmount().toLocaleString()} EGP</span>
                 </div>
-                ${state.revenueResetBaseline ? '<p class="text-[10px] text-slate-400">Revenue is currently counted from the last reset.</p>' : ''}
+                ${state.revenueResetBaseline ? `<p class="text-[10px] text-slate-400">${L('Revenue counted since the last reset.', 'الإيرادات محسوبة منذ آخر إعادة ضبط.')}</p>` : ''}
+                <p class="text-[10px] font-bold text-slate-400"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i>${L('Approved payments only · Open Payments', 'المدفوعات المعتمدة فقط · فتح المدفوعات')}</p>
             </div>
-            <div class="dash-card dash-accent-emerald p-6 flex items-center gap-4">
+            <div role="link" tabindex="0" aria-label="${L('Open customer files', 'فتح ملفات العملاء')}"
+                onclick="dashboardNavigate('customer-log')" onkeydown="if(event.target===this && (event.key==='Enter'||event.key===' ')){event.preventDefault();dashboardNavigate('customer-log')}"
+                class="dash-card dash-accent-emerald p-6 flex items-center gap-4 cursor-pointer dashboard-kpi-link">
                 <span class="dash-icon dash-icon-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-500"><i class="fa-solid fa-users"></i></span>
                 <div>
                     <span class="text-xs font-bold text-slate-400 uppercase tracking-wide">${t('customers', 'Customers')}</span>
                     <h3 class="text-3xl font-extrabold mt-0.5">${state.users.filter(u => u.role === 'customer').length}</h3>
+                </div>
+            </div>
+            <div role="link" tabindex="0" aria-label="${L('Open payments accepted by Customer Service', 'فتح المدفوعات المقبولة بواسطة خدمة العملاء')}"
+                onclick="dashboardNavigate('payments')" onkeydown="if(event.target===this && (event.key==='Enter'||event.key===' ')){event.preventDefault();dashboardNavigate('payments')}"
+                class="dash-card dash-accent-emerald p-6 flex items-center gap-4 cursor-pointer dashboard-kpi-link">
+                <span class="dash-icon dash-icon-lg bg-teal-100 dark:bg-teal-950 text-teal-600"><i class="fa-solid fa-hand-holding-dollar"></i></span>
+                <div>
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wide">${L('Accepted Money by CS', 'المبالغ المسجلة بواسطة خدمة العملاء')}</span>
+                    <h3 class="text-2xl font-extrabold mt-0.5 text-emerald-600">${getCSAcceptedMoney().toLocaleString()} <span class="text-xs text-slate-400">EGP</span></h3>
+                    <span class="text-[10px] font-bold text-slate-400">${L('Approved receipts handled by CS', 'المدفوعات المعتمدة بواسطة خدمة العملاء')}</span>
                 </div>
             </div>
         `;
@@ -5755,20 +5985,27 @@ function renderAdminDashboard() {
                 o.customerFeedback && typeof o.customerFeedback.rating === 'number' && o.customerFeedback.rating <= 2
             ).length;
             topCounters.innerHTML = `
-                <div class="dash-card dash-accent-sky p-6 flex items-center gap-4">
+                <button type="button" onclick="dashboardNavigate('tasks')" title="${L('Open task board', 'فتح لوحة المهام')}" class="dash-card dash-accent-sky p-6 flex items-center gap-4 text-start w-full cursor-pointer dashboard-kpi-link">
                     <div class="dash-icon dash-icon-lg bg-sky-100 dark:bg-sky-950 text-sky-500"><i class="fa-solid fa-list-check"></i></div>
                     <div>
                         <span class="text-xs font-bold text-slate-400 uppercase">${t('total_tasks')}</span>
                         <h3 class="text-2xl font-extrabold mt-0.5">${totalTasksCount}</h3>
                     </div>
-                </div>
-                <div class="dash-card dash-accent-red p-6 flex items-center gap-4">
+                </button>
+                <button type="button" onclick="dashboardNavigate('reviews')" title="${L('Open ratings', 'فتح التقييمات')}" class="dash-card dash-accent-red p-6 flex items-center gap-4 text-start w-full cursor-pointer dashboard-kpi-link">
                     <div class="dash-icon dash-icon-lg bg-red-100 dark:bg-red-950 text-red-500"><i class="fa-solid fa-star-half-stroke"></i></div>
                     <div>
                         <span class="text-xs font-bold text-slate-400 uppercase">${t('negative_ratings')}</span>
                         <h3 class="text-2xl font-extrabold text-red-500 mt-0.5">${negativeRatingsCount}</h3>
                     </div>
-                </div>`;
+                </button>
+                ${isHR ? `<button type="button" onclick="dashboardNavigate('payments')" title="${L('Open Payments', 'فتح المدفوعات')}" class="dash-card dash-accent-emerald p-6 flex items-center gap-4 text-start w-full cursor-pointer dashboard-kpi-link">
+                    <div class="dash-icon dash-icon-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-600"><i class="fa-solid fa-hand-holding-dollar"></i></div>
+                    <div><span class="text-xs font-bold text-slate-400 uppercase">${L('Accepted Money by CS', 'المدفوعات المقبولة بواسطة خدمة العملاء')}</span>
+                        <h3 class="text-2xl font-extrabold mt-0.5 text-emerald-600">${getCSAcceptedMoney().toLocaleString()} EGP</h3>
+                        <span class="text-[10px] text-slate-400 font-bold">${L('Open payments / accept new payments', 'عرض المدفوعات / قبول دفعات جديدة')}</span>
+                    </div>
+                </button>` : ''}`;
         } else {
             topCounters.classList.add('hidden');
             topCounters.innerHTML = '';
@@ -5782,58 +6019,10 @@ function renderAdminDashboard() {
         tasksSection.classList.toggle('hidden', !canManageTasks && !isTechnician);
     }
 
-    // ---- Registered Customers section: visible to head admin & Customer Services only.
-    // Only customer accounts are listed here — staff accounts live in "Who Are We". ----
-    const usersSection = document.getElementById('adminUsersSection');
-    const seesCustomers = !isTechnician && state.currentUser.role !== 'admin';
-    if (usersSection) usersSection.classList.toggle('hidden', !seesCustomers);
-
-    if (seesCustomers) {
-        const usersTbody = document.getElementById('adminUsersTable');
-        const userSearchInput = document.getElementById('adminUserSearch');
-        const userSearchTerm = userSearchInput ? userSearchInput.value.trim().toLowerCase() : '';
-        const customerUsers = state.users.filter(u => !isStaffRole(u.role));
-        const filteredUsers = !userSearchTerm ? customerUsers : customerUsers.filter(u => {
-            return [u.id, acId(u.id), u.username, u.name, u.whatsapp, u.contactPhone]
-                .filter(Boolean)
-                .some(field => String(field).toLowerCase().includes(userSearchTerm));
-        });
-
-        if (filteredUsers.length === 0) {
-            usersTbody.innerHTML = `<tr><td colspan="7" class="text-center p-3 text-slate-400 font-bold">No customers match your search.</td></tr>`;
-        } else {
-            usersTbody.innerHTML = filteredUsers.map(u => {
-                const count = state.orders.filter(o => o.username.toLowerCase() === u.username.toLowerCase()).length;
-                const canDelete = isHeadAdmin;
-                return `
-                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        <td class="px-3 py-1.5 font-mono text-slate-400 text-[10px]">${acId(u.id)}</td>
-                        <td class="px-3 py-1.5 font-bold text-sky-500">@${u.username}</td>
-                        <td class="px-3 py-1.5 font-semibold">${u.name || 'N/A'}</td>
-                        <td class="px-3 py-1.5 text-slate-500 font-mono">${u.whatsapp || 'N/A'}</td>
-                        <td class="px-3 py-1.5 text-slate-500 font-mono">${u.contactPhone || 'N/A'}</td>
-                        <td class="px-3 py-1.5 font-bold">${count}</td>
-                        <td class="px-3 py-1.5 text-center">
-                            ${canDelete ? `
-                                <button onclick="openDeleteUserModal('${u.id}', '${u.username}')" class="text-xs font-bold text-red-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="Delete User">
-                                    <i class="fa-solid fa-trash-can"></i>
-                                </button>
-                            ` : ''}
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
-    }
-
     // ---- Global Orders & Repairs section: head admin only ----
     const ordersSection = document.getElementById('adminOrdersSection');
     const canSeeOrders = isHeadAdmin || isHR;
     if (ordersSection) ordersSection.classList.toggle('hidden', !canSeeOrders);
-    const backupBtn = document.getElementById('adminBackupBtn');
-    if (backupBtn) backupBtn.classList.toggle('hidden', !isHeadAdmin);
-    const importBtn = document.getElementById('adminImportOrderExcelBtn');
-    if (importBtn) importBtn.classList.toggle('hidden', !canUseArabi());
 
     if (canSeeOrders) {
         // Only customers ever place orders — staff accounts (admin/Customer Services/
@@ -5867,9 +6056,11 @@ function renderAdminDashboard() {
         const orderSearchInput = document.getElementById('adminOrderSearch');
         const orderSearchTerm = orderSearchInput ? orderSearchInput.value.trim().toLowerCase() : '';
         const orderSearchDigits = orderSearchTerm.replace(/\D/g, '');
+        const orderSearchBy = (document.getElementById('adminOrderSearchBy') || {}).value || 'all';
         const filteredOrders = !orderSearchTerm ? byUser : byUser.filter(o => {
+            if (orderSearchBy !== 'all') return searchFieldMatches(getOrderSearchFields(o)[orderSearchBy], orderSearchBy, orderSearchTerm);
             const cust = state.users.find(u => u.username.toLowerCase() === String(o.username || '').toLowerCase());
-            const texts = [o.id, o.arabiOrderId, o.username, o.customerName, o.customerAddress, o.sapNumber, o.customerComplain, cust && cust.name, cust && cust.username];
+            const texts = [o.id, o.arabiOrderId, o.username, o.customerName, o.customerAddress, o.areaCode, o.sapNumber, o.customerComplain, cust && cust.name, cust && cust.username];
             const phones = [o.customerWhatsApp, o.customerContactPhone, cust && cust.whatsapp, cust && cust.contactPhone];
             if (texts.filter(Boolean).some(t => String(t).toLowerCase().includes(orderSearchTerm))) return true;
             return phones.filter(Boolean).some(p => {
@@ -5880,7 +6071,7 @@ function renderAdminDashboard() {
         });
 
         // Customer folders (grouped by customer, newest activity first)
-        if (orderSearchInput) orderSearchInput.placeholder = L('Search by name, order ID, SAP or phone...', 'ابحث بالاسم أو رقم الطلب أو SAP أو الهاتف...');
+        if (orderSearchInput) orderSearchInput.placeholder = L('Search by name, order ID, SAP, phone or area code...', 'ابحث بالاسم أو رقم الطلب أو SAP أو الهاتف أو كود المنطقة...');
         const foldersBox = document.getElementById('adminOrdersFolders');
         const orderTime = o => new Date(o.createdAt || o.date || 0).getTime();
         const groups = new Map();
@@ -5914,6 +6105,16 @@ function renderAdminDashboard() {
         if (canManageTasks) countersBox.innerHTML = renderTaskCounters();
     }
 
+    // Search the Task Board by name / phone / area code
+    refreshSearchByLabels();
+    const taskSearch = getTaskSearchState();
+    const taskSearchInput = document.getElementById('adminTaskSearch');
+    if (taskSearchInput) taskSearchInput.placeholder = taskSearch.by === 'phone' ? L('Type a phone number...', 'اكتب رقم الهاتف...')
+        : taskSearch.by === 'area' ? L('Type an area code...', 'اكتب كود المنطقة...') : L('Type a customer name...', 'اكتب اسم العميل...');
+    const taskSearchBar = document.getElementById('adminTaskSearchBar');
+    if (taskSearchBar) taskSearchBar.classList.toggle('hidden', !canManageTasks);
+    const taskMatches = task => !canManageTasks || !taskSearch.term || searchFieldMatches(getTaskSearchFields(task)[taskSearch.by], taskSearch.by, taskSearch.term);
+
     // List of the clicked counter, shown right under the counters.
     const filterPanel = document.getElementById('adminTaskFilterPanel');
     if (filterPanel) {
@@ -5921,7 +6122,7 @@ function renderAdminDashboard() {
         const showPanel = canManageTasks && !!def;
         filterPanel.classList.toggle('hidden', !showPanel);
         if (showPanel) {
-            const list = getTasksForCounter(def.key);
+            const list = getTasksForCounter(def.key).filter(taskMatches);
             document.getElementById('adminTaskFilterTitle').textContent = `${L(def.en, def.ar)} (${list.length})`;
             const mainHead = document.getElementById('adminTasksTable').parentElement.querySelector('thead');
             document.getElementById('adminTaskFilterHead').innerHTML = mainHead ? mainHead.innerHTML : '';
@@ -5939,9 +6140,9 @@ function renderAdminDashboard() {
     if (taskTable) {
         // Done tasks leave the board — they live on the customer's row in the Global Orders list.
         const activeTasks = state.tasks.filter(task => task.status !== 'Done');
-        const visibleTasks = canManageTasks ? activeTasks : activeTasks.filter(task => isTaskAssignedTo(task, state.currentUser.username) && getDelayState(task) !== 'delayed');
+        const visibleTasks = (canManageTasks ? activeTasks : activeTasks.filter(task => isTaskAssignedTo(task, state.currentUser.username) && getDelayState(task) !== 'delayed')).filter(taskMatches);
         if (visibleTasks.length === 0) {
-            taskTable.innerHTML = `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">No active tasks.</td></tr>`;
+            taskTable.innerHTML = `<tr><td colspan="7" class="text-center p-6 text-slate-400 font-bold">${canManageTasks && taskSearch.term ? L('No tasks match your search.', 'لا توجد مهام مطابقة للبحث.') : 'No active tasks.'}</td></tr>`;
         } else {
             taskTable.innerHTML = visibleTasks.map(task => buildTaskRow(task, technicianUsers, canManageTasks)).join('');
         }
@@ -6014,7 +6215,7 @@ function syncCustomerLogSources() {
             if (f) { byKey.delete(f.key); f.key = keys[0]; f.phone = row.phone; byKey.set(f.key, f); foldersChanged = true; }
         }
         if (!f) {
-            f = { id: folderIdForKey(keys[0]), key: keys[0], name: row.name, phone: row.phone, address: row.address, source, createdAt: createdAt || new Date().toISOString(), history: [], tags: [tag] };
+            f = { id: folderIdForKey(keys[0]), key: keys[0], name: row.name, phone: row.phone, address: row.address, areaCode: row.areaCode || '', source, createdAt: createdAt || new Date().toISOString(), history: [], tags: [tag] };
             folders.push(f);
             byKey.set(keys[0], f);
             foldersChanged = true;
@@ -6024,13 +6225,14 @@ function syncCustomerLogSources() {
             if (!f.name && row.name) { f.name = row.name; foldersChanged = true; }
             if (!f.phone && row.phone) { f.phone = row.phone; foldersChanged = true; }
             if (!f.address && row.address) { f.address = row.address; foldersChanged = true; }
+            if (!f.areaCode && row.areaCode) { f.areaCode = row.areaCode; foldersChanged = true; }
         }
         return f;
     };
 
     tasks.forEach(t => {
         if (t.source !== 'arabi' || t.parentTaskId) return;
-        const f = ensureFolder({ name: t.customerName || '', phone: t.phone || '', address: t.address || '' }, 'arabi', 'arabi', t.createdAt);
+        const f = ensureFolder({ name: t.customerName || '', phone: t.phone || '', address: t.address || '', areaCode: t.areaCode || '' }, 'arabi', 'arabi', t.createdAt);
         if (t.folderId !== f.id) { t.folderId = f.id; tasksChanged = true; }
         f.history = f.history || [];
         const issueText = normalizeIntakeText(t.fix || t.title);
@@ -6110,6 +6312,7 @@ function cleanIntakePhone(value) {
 
 // First match wins, and one column is used for one field only (so "Building Number" is not mistaken for the phone)
 const INTAKE_HEADERS = [
+    ['areaCode', /area\s*code|\u0643\u0648\u062F\s*(\u0627\u0644)?\u0645\u0646\u0637\u0642\u0629|\u0631\u0645\u0632\s*(\u0627\u0644)?\u0645\u0646\u0637\u0642\u0629/i],
     ['bridge', /bridge|\u0628\u0631\u064A\u062F\u062C|\u0627\u0644\u062C\u0633\u0631|\u062C\u0633\u0631/i],
     ['building', /building|bldg|\u0628\u0646\u0627\u064A\u0629|\u0639\u0645\u0627\u0631\u0629|\u0645\u0628\u0646\u0649|\u0631\u0642\u0645 \u0627\u0644\u0639\u0645\u0627\u0631|\u0631\u0642\u0645 \u0627\u0644\u0645\u0628\u0646/i],
     ['notes', /note|remark|comment|\u0645\u0644\u0627\u062D\u0638|\u0643\u0648\u0644 \u0633\u0646\u062A\u0631/i],
@@ -6129,7 +6332,7 @@ function parseIntakeRows(matrix) {
     if (isEnglishTemplate || isArabicTemplate) {
         return parseArabiRows(matrix).map(r => ({
             orderId: r.orderId, name: r.name, phone: r.phone,
-            building: r.building, rawAddress: r.address,
+            building: r.building, rawAddress: r.address, areaCode: r.areaCode,
             address: [r.building, r.address].filter(Boolean).join(' '),
             issue: r.fix, notes: r.callCenterNotes, productType: r.productType,
             date: r.date, officeNotes: r.officeNotes, servicesType: r.servicesType,
@@ -6166,11 +6369,12 @@ function parseIntakeRows(matrix) {
         order.forEach((key, i) => { map[key] = i; });
     }
 
-    const pick = (r, key) => (map[key] === undefined ? '' : (r[map[key]] || ''));
+    const pick = (r, key) => (map[key] === undefined ? '' : cleanArabicText(r[map[key]] || ''));
     return body.map(r => ({
         name: pick(r, 'name'),
         phone: cleanIntakePhone(pick(r, 'bridge') || pick(r, 'phone')),
         address: [pick(r, 'building'), pick(r, 'address')].filter(Boolean).join(' '),
+        areaCode: pick(r, 'areaCode'),
         issue: pick(r, 'issue'),
         notes: pick(r, 'notes')
     }));
@@ -6289,7 +6493,7 @@ function importCustomerRows(rows, fileName) {
         const key = intakeFolderKey(r);
         let folder = state.customerFolders.find(f => f.key === key);
         if (!folder) {
-            folder = { id: createDateBasedId('CF'), key, name: r.name, phone: r.phone, address: r.address, source: 'excel', createdAt: now.toISOString(), history: [] };
+            folder = { id: createDateBasedId('CF'), key, name: r.name, phone: r.phone, address: r.address, areaCode: r.areaCode || '', source: 'excel', createdAt: now.toISOString(), history: [] };
             state.customerFolders.push(folder);
             result.newCustomers++;
         } else {
@@ -6297,6 +6501,7 @@ function importCustomerRows(rows, fileName) {
             if (!folder.name && r.name) folder.name = r.name;
             if (!folder.phone && r.phone) folder.phone = r.phone;
             if (!folder.address && r.address) folder.address = r.address;
+            if (!folder.areaCode && r.areaCode) folder.areaCode = r.areaCode;
         }
 
         let id = createDateBasedId('TSK');
@@ -6323,6 +6528,7 @@ function importCustomerRows(rows, fileName) {
             customerName: r.name,
             phone: r.phone,
             address: r.address,
+            areaCode: r.areaCode || '',
             fix: r.issue,
             notes: r.notes,
             importedOrderId: r.orderId || '', buildingNumber: r.building || '',
@@ -6333,7 +6539,7 @@ function importCustomerRows(rows, fileName) {
             reportingEntity: r.reportingEntity || '', importedTechnicianAssigned: r.assigned || ''
         });
         folder.history = folder.history || [];
-        folder.history.push({ id: `${createDateBasedId('H')}-${result.added}`, type: 'issue', at: now.toISOString(), issue: r.issue, notes: r.notes, address: r.address, rowKey, taskId: id, file: fileName });
+        folder.history.push({ id: `${createDateBasedId('H')}-${result.added}`, type: 'issue', at: now.toISOString(), issue: r.issue, notes: r.notes, address: r.address, areaCode: r.areaCode || '', rowKey, taskId: id, file: fileName });
         result.added++;
     });
 
@@ -6367,9 +6573,11 @@ function openCustomerFolder(id) {
     const search = document.getElementById('folderSearch');
     if (search) search.value = '';
     navigateTo('customer-log');
+    const folderDirectory = document.getElementById('customerIntakeSection');
+    if (folderDirectory) folderDirectory.open = true;
     setTimeout(() => {
         const el = document.getElementById('folder-' + id);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bg-amber-50', 'dark:bg-amber-950/30'); setTimeout(() => el.classList.remove('bg-amber-50', 'dark:bg-amber-950/30'), 2500); }
     }, 200);
 }
 
@@ -6400,17 +6608,20 @@ function buildFolderEvents(folder, tasks, profile) {
     (folder.history || []).forEach(h => {
         events.push({
             icon: 'fa-circle-exclamation', tone: 'bg-amber-100 text-amber-600 dark:bg-amber-950 dark:text-amber-400',
-            label: `${L('Issue', 'العطل')}: ${h.issue}`,
+            label: `${L('Issue', 'العطل')}: ${cleanArabicText(h.issue)}`,
             detail: h.notes ? `${L('Call center notes', 'ملاحظات الكول سنتر')}: ${h.notes}` : '',
-            sub: [h.address, h.file].filter(Boolean).join(' · '),
+            sub: [h.address, h.areaCode ? `${L('Area code', 'كود المنطقة')} ${h.areaCode}` : '', h.file].filter(Boolean).join(' · '),
             when: h.at
         });
     });
+    const roleName = r => isTopAdmin(r) ? L('Admin', 'الأدمن') : r === 'hr' ? L('Customer Services', 'خدمة العملاء') : '';
+    const byLine = meta => meta ? `${L('by', 'بواسطة')} ${meta.name || meta.username || ''}${roleName(meta.role) ? ' (' + roleName(meta.role) + ')' : ''}` : '';
+    // Task title only shown when the folder has several tasks (otherwise it repeats the issue above)
     tasks.forEach(t => {
-        const sub = t.title;
+        const sub = tasks.length > 1 ? t.title : '';
         if (t.parentTaskId) events.push({ icon: 'fa-arrow-right', label: `${L('Next step', 'المرحلة التالية')}: ${getPhaseLabel(getTaskPhase(t))}`, sub, when: t.createdAt });
-        if (t.assignedTo && t.assignedAt) events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${person(t.assignedTo)}`, sub, when: t.assignedAt });
-        if (t.assistantTo) events.push({ icon: 'fa-user-group', label: `${L('Assistant', 'المساعد')}: ${person(t.assistantTo)}`, sub, when: t.assignedAt });
+        if (t.assignedTo && t.assignedAt) events.push({ icon: 'fa-user-gear', label: `${L('Assigned to', 'تم التكليف إلى')} ${person(t.assignedTo)}`, detail: byLine(t.assignedBy), sub, when: t.assignedAt });
+        if (t.assistantTo) events.push({ icon: 'fa-user-group', label: `${L('Assistant', 'المساعد')}: ${person(t.assistantTo)}`, detail: byLine(t.assistantBy), sub, when: (t.assistantBy && t.assistantBy.at) || t.assignedAt });
         if (t.acceptedAt) events.push({ icon: 'fa-hand', label: L('Technician accepted', 'قبل الفني المهمة'), sub, when: t.acceptedAt });
         if (t.delay && t.delay.at) events.push({ icon: 'fa-calendar-xmark', label: `${L('Delayed until', 'مؤجل حتى')} ${t.delay.until}`, detail: t.delay.reason, sub, when: t.delay.at });
         const doneAt = t.completedAt || t.completedDate;
@@ -6844,6 +7055,7 @@ function insDetailHtml(f) {
                 <p class="text-xs text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5">
                     ${f.phone ? `<span dir="ltr" class="font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(f.phone)}</span>` : ''}
                     ${f.address ? `<span dir="auto" class="truncate"><i class="fa-solid fa-location-dot me-1 text-[10px]"></i>${escapeHtml(f.address)}</span>` : ''}
+                    ${f.areaCode ? `<span dir="ltr" class="font-mono"><i class="fa-solid fa-hashtag me-1 text-[10px]"></i>${escapeHtml(f.areaCode)}</span>` : ''}
                 </p>
             </div>
             ${info ? `<span class="ins-pill ins-pill-slate !text-[11px]"><i class="fa-regular fa-calendar"></i>${escapeHtml(insLabel(info.ins.startMonth, 'short'))} → ${escapeHtml(insLabel(insKey(info.end), 'short'))}</span>` : ''}
@@ -7163,13 +7375,16 @@ function getPendingInsuranceOrders() {
 }
 
 function approveInsurance(orderId) {
-    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
-        showToast(L('Only the admin can approve insurance payments.', 'المسؤول فقط يمكنه الموافقة على مدفوعات التأمين.'), 'error');
+    if (!canAcceptPayments()) {
+        showToast(L('Only the admin or Customer Services can accept insurance payments.', 'يسمح للمسؤول أو خدمة العملاء فقط بقبول مدفوعات التأمين.'), 'error');
         return;
     }
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
     const o = state.orders.find(x => x.id === orderId && x.type === 'Insurance');
     if (!o || o.status !== 'Pending') { renderAdminDashboard(); return; }
+    if (state.currentUser.role === 'hr' && !window.confirm(L(
+        `Confirm received / verified ${Number(o.amount || 0).toLocaleString()} EGP from @${o.username}?`,
+        `تأكيد استلام / التحقق من مبلغ ${Number(o.amount || 0).toLocaleString()} جنيه من @${o.username}؟`))) return;
     const customer = state.users.find(u => String(u.username || '').toLowerCase() === String(o.username || '').toLowerCase());
     if (!customer) {
         showToast(L('The customer account no longer exists.', 'حساب العميل لم يعد موجوداً.'), 'error');
@@ -7193,8 +7408,8 @@ function approveInsurance(orderId) {
 }
 
 function rejectInsurance(orderId) {
-    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
-        showToast(L('Only the admin can reject insurance payments.', 'المسؤول فقط يمكنه رفض مدفوعات التأمين.'), 'error');
+    if (!canAcceptPayments()) {
+        showToast(L('Only the admin or Customer Services can reject insurance payments.', 'يسمح للمسؤول أو خدمة العملاء فقط برفض مدفوعات التأمين.'), 'error');
         return;
     }
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
@@ -7315,6 +7530,13 @@ Object.assign(window, { getPendingInsuranceOrders, approveInsurance, rejectInsur
 // Every payment that needs an admin's approval, split into Insurance / Fix (money collected on site) / Buy (unit orders).
 // Insurance uses order.status 'Pending'; buy orders and fix jobs use paymentStatus 'pending' | 'approved' | 'rejected'.
 let paymentsFilter = 'today'; // 'today' | 'all'
+let paymentTechPeriod = 'all'; // 'all' (history) | 'today'
+let paymentTechSearch = '';
+let paymentTechAssignee = '';
+
+function paymentAcceptLabel() {
+    return state.currentUser && state.currentUser.role === 'hr' ? L('Accept money', 'استلام المبلغ') : L('Approve', 'موافقة');
+}
 
 function payPhoneOf(username) {
     const c = state.users.find(x => String(x.username || '').toLowerCase() === String(username || '').toLowerCase());
@@ -7346,7 +7568,8 @@ function openPaymentDetails(kind, id) {
         </div>
         <div>
             ${row(L('Type', 'النوع'), kindTxt)}
-            ${row(L('Status', 'الحالة'), '')}
+            ${row(L('Status', 'الحالة'), stateTxt)}
+            ${i.acceptedBy ? row(L('Handled by', 'تم بواسطة'), '@' + i.acceptedBy) : ''}
             ${row(L('Customer', 'العميل'), i.customer)}
             ${row(L('Username', 'اسم المستخدم'), i.sub)}
             ${row(L('Phone', 'الهاتف'), i.phone, true)}
@@ -7357,7 +7580,7 @@ function openPaymentDetails(kind, id) {
         </div>
         <div class="text-center"><span class="inline-block px-4 py-1.5 rounded-full text-sm font-extrabold uppercase ${stateBadge}">${stateTxt}</span></div>
         ${i.state === 'pending' ? `<div class="grid grid-cols-2 gap-3">
-            <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(String(i.id))}');closePaymentDetails()" class="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-base font-extrabold uppercase"><i class="fa-solid fa-check me-1"></i>${L('Approve', 'موافقة')}</button>
+            <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(String(i.id))}');closePaymentDetails()" class="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-base font-extrabold uppercase"><i class="fa-solid fa-check me-1"></i>${paymentAcceptLabel()}</button>
             <button type="button" onclick="rejectPayment('${i.kind}','${escapeHtml(String(i.id))}');closePaymentDetails()" class="py-3 rounded-xl bg-red-100 hover:bg-red-200 text-red-700 text-base font-extrabold uppercase"><i class="fa-solid fa-xmark me-1"></i>${L('Reject', 'رفض')}</button>
         </div>` : ''}
     </div>`;
@@ -7372,7 +7595,7 @@ function getPaymentItems() {
         kind: 'insurance', id: o.id, state: o.status === 'Pending' ? 'pending' : o.status === 'Approved' ? 'approved' : 'rejected',
         customer: custName(o.username), sub: '@' + (o.username || ''), what: (o.insuranceMonth ? insLabel(o.insuranceMonth) : '') + (o.insuranceUnitRef ? ' · ' + o.insuranceUnitRef : ''),
         method: o.gateway || '', ref: o.transactionRef || '', amount: Number(o.amount) || 0, date: o.date || '', doneAt: o.approvedAt || o.rejectedAt || '',
-        orderId: o.id, phone: payPhoneOf(o.username), location: o.location || '', title: o.itemTitle || ''
+        orderId: o.id, phone: payPhoneOf(o.username), location: o.location || '', title: o.itemTitle || '', acceptedBy: o.paymentDecidedBy || '', acceptedBy: o.approvedBy || ''
     }));
     const buy = state.orders.filter(o => o.type !== 'Insurance' && o.type !== 'Tech Fix Service' && o.paymentStatus && o.paymentStatus !== 'none').map(o => ({
         kind: 'buy', id: o.id, state: o.paymentStatus,
@@ -7385,9 +7608,10 @@ function getPaymentItems() {
         return {
             kind: 'fix', id: t.id, state: t.paymentStatus,
             customer: t.customerName || (o && (o.customerName || custName(o.username))) || '', sub: t.assignedTo ? '@' + t.assignedTo : '', what: t.title || '',
+            technician: t.assignedTo || t.importedTechnicianAssigned || t.acceptedBy || '',
             method: t.paymentMethod === 'Cash' || !t.paymentMethod ? L('Cash', 'نقدي') : t.paymentMethod, ref: t.paymentRef || '', amount: Number(t.amountReceived) || 0,
             date: t.completedDate || '', doneAt: t.paymentDecidedAt || '',
-            orderId: t.orderId || '', phone: payPhoneOf(o && o.username), location: (o && o.location) || '', title: t.title || ''
+            orderId: t.orderId || '', phone: payPhoneOf(o && o.username), location: (o && o.location) || '', title: t.title || '', acceptedBy: t.paymentDecidedBy || ''
         };
     });
     return { insurance, buy, fix };
@@ -7399,7 +7623,7 @@ function updatePaymentsBadge() {
     const all = getPaymentItems();
     const n = [].concat(all.insurance, all.buy, all.fix).filter(i => i.state === 'pending').length;
     el.textContent = n > 99 ? '99+' : String(n);
-    el.classList.toggle('hidden', !n || !state.currentUser || !isTopAdmin(state.currentUser.role));
+    el.classList.toggle('hidden', !n || !canAcceptPayments());
 }
 
 function setPaymentsFilter(f) {
@@ -7407,10 +7631,126 @@ function setPaymentsFilter(f) {
     renderPaymentsPage();
 }
 
+// Repair collections, grouped by the technician assigned to the finished task.
+// Collected = approved + pending. Rejected payments are visible in the history but never counted.
+function setPaymentTechPeriod(period) {
+    paymentTechPeriod = period === 'today' ? 'today' : 'all';
+    renderPaymentsPage();
+}
+
+function setPaymentTechSearch(query) {
+    paymentTechSearch = String(query || '');
+    renderTechCollections(); // only update the results; don't remove focus from the search box
+}
+
+function setPaymentTechAssignee(username) {
+    paymentTechAssignee = String(username || '');
+    renderTechCollections();
+}
+
+function renderTechCollections() {
+    const stats = document.getElementById('paymentTechStats');
+    const list = document.getElementById('paymentTechList');
+    if (!stats || !list) return;
+
+    const today = getLocalDateString();
+    const money = n => `${(Number(n) || 0).toLocaleString()} EGP`;
+    const source = getPaymentItems().fix.filter(i => paymentTechPeriod === 'all' || i.date === today);
+    const q = paymentTechSearch.trim().toLowerCase();
+    const staff = state.users.filter(u => isPlainTechnician(u));
+    const staffByName = new Map(state.users.map(u => [String(u.username || '').toLowerCase(), u]));
+
+    // Keep all registered technicians in the overview, even if they have collected zero.
+    const keys = new Set(staff.map(u => String(u.username)));
+    source.forEach(i => keys.add(i.technician || '__unassigned__'));
+    const selected = paymentTechAssignee;
+    const groups = Array.from(keys).map(key => {
+        const u = staffByName.get(String(key).toLowerCase());
+        const name = key === '__unassigned__' ? L('Unassigned technician', 'فني غير محدد') : ((u && u.name) || key);
+        const username = key === '__unassigned__' ? '' : key;
+        if (selected && key !== selected) return null;
+        const allRows = source.filter(i => (i.technician || '__unassigned__') === key);
+        const matchStaff = !q || `${name} ${username}`.toLowerCase().includes(q);
+        const rows = matchStaff ? allRows : allRows.filter(i => [i.customer, i.sub, i.what, i.orderId, i.id, i.method, i.date].some(v => String(v || '').toLowerCase().includes(q)));
+        // A search for a customer/order narrows both displayed records and sums.
+        if (q && !matchStaff && !rows.length) return null;
+        const approved = rows.filter(i => i.state === 'approved').reduce((sum, i) => sum + i.amount, 0);
+        const pending = rows.filter(i => i.state === 'pending').reduce((sum, i) => sum + i.amount, 0);
+        const rejected = rows.filter(i => i.state === 'rejected').length;
+        return { key, name, username, rows, approved, pending, rejected, total: approved + pending };
+    }).filter(Boolean).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+
+    const overall = groups.reduce((acc, g) => {
+        acc.approved += g.approved;
+        acc.pending += g.pending;
+        acc.jobs += g.rows.filter(i => i.state !== 'rejected').length;
+        return acc;
+    }, { approved: 0, pending: 0, jobs: 0 });
+
+    const stat = (label, value, icon, color) => `<div class="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-3.5 min-w-0">
+        <div class="text-[11px] font-bold text-slate-500 dark:text-slate-300"><i class="fa-solid ${icon} ${color} me-1"></i>${label}</div>
+        <div class="font-extrabold text-lg sm:text-xl mt-1 tabular-nums break-words">${value}</div>
+    </div>`;
+    stats.innerHTML = [
+        stat(L('Reported collected', 'إجمالي التحصيل المسجل'), money(overall.approved + overall.pending), 'fa-money-bill-wave', 'text-sky-500'),
+        stat(L('Approved collections', 'التحصيل المعتمد'), money(overall.approved), 'fa-circle-check', 'text-emerald-500'),
+        stat(L('Awaiting approval', 'بانتظار الموافقة'), money(overall.pending), 'fa-clock', 'text-amber-500'),
+        stat(L('Paid repair jobs', 'عمليات الصيانة المدفوعة'), overall.jobs, 'fa-screwdriver-wrench', 'text-slate-500')
+    ].join('');
+
+    // Preserve manually expanded folders as search/filters change.
+    const openKeys = new Set(Array.from(list.querySelectorAll('details[open][data-tech]')).map(d => d.dataset.tech));
+    const stateBadge = i => i.state === 'approved'
+        ? `<span class="inline-flex rounded-lg px-2 py-1 bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 font-bold">${L('Approved', 'معتمد')}</span>`
+        : i.state === 'rejected'
+        ? `<span class="inline-flex rounded-lg px-2 py-1 bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 font-bold">${L('Rejected', 'مرفوض')}</span>`
+        : `<span class="inline-flex rounded-lg px-2 py-1 bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 font-bold">${L('Pending', 'قيد المراجعة')}</span>`;
+
+    const paymentRow = i => `<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+        <td class="px-3 py-3"><span class="block font-bold" dir="auto">${escapeHtml(i.customer || '—')}</span>${i.orderId ? `<span class="block text-[11px] text-slate-500" dir="ltr">${escapeHtml(i.orderId)}</span>` : ''}</td>
+        <td class="px-3 py-3 max-w-[220px]" dir="auto">${escapeHtml(i.what || '—')}</td>
+        <td class="px-3 py-3 whitespace-nowrap">${escapeHtml(i.date || '—')}</td>
+        <td class="px-3 py-3">${escapeHtml(i.method || '—')}</td>
+        <td class="px-3 py-3">${stateBadge(i)}</td>
+        <td class="px-3 py-3 whitespace-nowrap font-extrabold ${i.state === 'rejected' ? 'text-slate-400 line-through' : ''}">${money(i.amount)}</td>
+        <td class="px-3 py-3 whitespace-nowrap">
+            <div class="flex flex-wrap items-center gap-1.5">
+                <button type="button" onclick="openPaymentDetails('fix','${escapeHtml(String(i.id))}')" class="px-2.5 py-1.5 rounded-lg bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 font-bold hover:opacity-80">${L('View', 'عرض')}</button>
+                ${i.state === 'pending' ? `<button type="button" onclick="approvePayment('fix','${escapeHtml(String(i.id))}')" class="px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700">${paymentAcceptLabel()}</button><button type="button" onclick="rejectPayment('fix','${escapeHtml(String(i.id))}')" class="px-2.5 py-1.5 rounded-lg bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 font-bold hover:opacity-80">${L('Reject', 'رفض')}</button>` : ''}
+            </div>
+        </td>
+    </tr>`;
+
+    list.innerHTML = groups.length ? groups.map(g => {
+        const initiallyOpen = openKeys.has(g.key) || !!q;
+        return `<details data-tech="${escapeHtml(g.key)}" class="pay-tech-card rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden" ${initiallyOpen ? 'open' : ''}>
+            <summary class="pay-tech-summary px-4 py-3.5 flex flex-wrap items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                <span class="w-10 h-10 shrink-0 rounded-xl bg-sky-100 dark:bg-sky-950 flex items-center justify-center text-sky-600 dark:text-sky-300"><i class="fa-solid fa-user-gear"></i></span>
+                <span class="flex-1 min-w-[140px]"><strong class="block text-sm" dir="auto">${escapeHtml(g.name)}</strong><span class="block text-[11px] text-slate-500 dark:text-slate-300" dir="ltr">${g.username ? '@' + escapeHtml(g.username) : L('No technician assigned', 'لم يتم تعيين فني')}</span></span>
+                <span class="text-xs text-slate-500 dark:text-slate-300 font-bold">${g.rows.length} ${L('payments', 'دفعات')}</span>
+                <span class="text-end min-w-[140px]"><strong class="block text-lg font-extrabold tabular-nums text-sky-600 dark:text-sky-400">${money(g.total)}</strong><span class="block text-[11px] font-bold text-slate-500 dark:text-slate-300">${L('Reported collected', 'التحصيل المسجل')}</span></span>
+                <i class="fa-solid fa-chevron-down pay-tech-chevron text-slate-400 ms-1"></i>
+            </summary>
+            <div class="border-t border-slate-200 dark:border-slate-800">
+                <div class="px-4 py-2.5 flex flex-wrap items-center gap-3 text-[11px] font-bold bg-slate-50 dark:bg-slate-800/40">
+                    <span class="text-emerald-600 dark:text-emerald-400">${L('Approved', 'معتمد')}: ${money(g.approved)}</span>
+                    <span class="text-amber-600 dark:text-amber-400">${L('Pending', 'قيد المراجعة')}: ${money(g.pending)}</span>
+                    ${g.rejected ? `<span class="text-red-500">${g.rejected} ${L('rejected (excluded)', 'مرفوضة (غير محسوبة)')}</span>` : ''}
+                </div>
+                ${g.rows.length ? `<div class="overflow-x-auto"><table class="w-full min-w-[760px] text-xs text-start">
+                    <thead class="bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-200"><tr>
+                        <th class="p-3 text-start">${L('Customer / Order', 'العميل / الطلب')}</th><th class="p-3 text-start">${L('Job', 'المهمة')}</th><th class="p-3 text-start">${L('Date', 'التاريخ')}</th><th class="p-3 text-start">${L('Method', 'الطريقة')}</th><th class="p-3 text-start">${L('Status', 'الحالة')}</th><th class="p-3 text-start">${L('Amount', 'المبلغ')}</th><th class="p-3 text-start">${L('Actions', 'الإجراءات')}</th>
+                    </tr></thead><tbody class="divide-y divide-slate-100 dark:divide-slate-800">${g.rows.slice().sort((a,b) => String(b.date).localeCompare(String(a.date))).map(paymentRow).join('')}</tbody>
+                </table></div>` : `<p class="p-4 text-sm text-slate-500 dark:text-slate-300">${L('No recorded repair collections for this technician in the selected period.', 'لا توجد مبالغ تحصيل مسجلة لهذا الفني في الفترة المحددة.')}</p>`}
+            </div>
+        </details>`;
+    }).join('') : `<p class="px-4 py-6 text-center text-sm font-bold text-slate-500 dark:text-slate-300">${L('No technicians or payments match your filters.', 'لا يوجد فنيون أو دفعات مطابقة للبحث.')}</p>`;
+}
+
 function renderPaymentsPage() {
     const body = document.getElementById('paymentsPageBody');
     if (!body) return;
-    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { body.innerHTML = ''; return; }
+    if (!canAcceptPayments()) { body.innerHTML = ''; return; }
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
     state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
     state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
@@ -7418,15 +7758,35 @@ function renderPaymentsPage() {
     const all = getPaymentItems();
     const todayOnly = paymentsFilter === 'today';
     const money = n => `${(Number(n) || 0).toLocaleString()} EGP`;
+    const csReceipts = getCSAcceptedReceipts();
+    const csMoney = csReceipts.reduce((sum, row) => sum + row.amount, 0);
+    const csByName = new Map(state.users.map(u => [String(u.username || '').toLowerCase(), u]));
+    const csAcceptedHtml = `<details class="cs-receipts-card rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <summary class="flex items-center flex-wrap gap-3 p-4 sm:p-5 cursor-pointer">
+            <span class="w-11 h-11 rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-600 flex items-center justify-center"><i class="fa-solid fa-hand-holding-dollar"></i></span>
+            <div class="flex-1 min-w-[170px]"><h3 class="font-extrabold">${L('Accepted by Customer Service', 'المدفوعات المقبولة بواسطة خدمة العملاء')}</h3><p class="text-xs text-slate-500 dark:text-slate-300">${L('Approved receipts only · tap to see who accepted each payment', 'المدفوعات المعتمدة فقط · افتح لمعرفة من استلم كل دفعة')}</p></div>
+            <strong class="text-xl font-extrabold text-emerald-600 tabular-nums">${money(csMoney)}</strong>
+            <span class="text-xs font-bold text-slate-500">${csReceipts.length} ${L('receipts', 'دفعات')}</span>
+            <i class="fa-solid fa-chevron-down text-slate-400"></i>
+        </summary>
+        <div class="px-4 pb-5 border-t border-slate-200 dark:border-slate-800">
+            ${csReceipts.length ? `<div class="overflow-x-auto"><table class="w-full min-w-[630px] text-start text-xs">
+                <thead><tr class="text-slate-500 dark:text-slate-300"><th class="p-3 text-start">${L('Accepted by', 'تم بواسطة')}</th><th class="p-3 text-start">${L('Customer', 'العميل')}</th><th class="p-3 text-start">${L('Type', 'النوع')}</th><th class="p-3 text-start">${L('Amount', 'المبلغ')}</th><th class="p-3 text-start">${L('Date', 'التاريخ')}</th></tr></thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${csReceipts.map(r => { const u = csByName.get(String(r.by).toLowerCase()); return `<tr><td class="p-3 font-bold">${escapeHtml((u && u.name) || r.by)}<small class="block text-slate-500">@${escapeHtml(r.by)}</small></td><td class="p-3" dir="auto">${escapeHtml(r.customer || '—')}</td><td class="p-3">${escapeHtml(({ insurance: L('Insurance','تأمين'), 'manual-insurance': L('Insurance','تأمين'), buy: L('Purchase','شراء'), fix: L('Repair','صيانة') })[r.kind] || r.kind)}</td><td class="p-3 font-extrabold text-emerald-600 whitespace-nowrap">${money(r.amount)}</td><td class="p-3 whitespace-nowrap">${escapeHtml(String(r.at).slice(0, 10) || '—')}</td></tr>`; }).join('')}</tbody>
+                </table></div>` : `<p class="p-4 text-center text-slate-500">${L('No CS-accepted payments yet.', 'لا توجد مدفوعات مقبولة بواسطة خدمة العملاء بعد.')}</p>`}
+        </div>
+    </details>`;
     const sections = [
         { key: 'insurance', icon: 'fa-shield-heart', tone: 'sky', en: 'Insurance', ar: 'التأمين', list: all.insurance },
-        { key: 'fix', icon: 'fa-screwdriver-wrench', tone: 'amber', en: 'Fix (collected on site)', ar: 'الصيانة (المحصّل في الموقع)', list: all.fix },
         { key: 'buy', icon: 'fa-bag-shopping', tone: 'emerald', en: 'Buy (unit orders)', ar: 'الشراء (طلبات الوحدات)', list: all.buy }
     ];
     const pendingOf = s => s.list.filter(i => i.state === 'pending' && (!todayOnly || i.date === today));
     const approvedToday = s => s.list.filter(i => i.state === 'approved' && String(i.doneAt || '').slice(0, 10) === today).length;
-    const totalPending = sections.reduce((n, s) => n + pendingOf(s).length, 0);
-    const totalAmount = sections.reduce((n, s) => n + pendingOf(s).reduce((a, i) => a + i.amount, 0), 0);
+    // Include repairs in the overview; their approvals live only in the
+    // technician folders above, not a duplicated Fix table below.
+    const approvalSections = sections.concat([{ list: all.fix }]);
+    const totalPending = approvalSections.reduce((n, s) => n + pendingOf(s).length, 0);
+    const totalAmount = approvalSections.reduce((n, s) => n + pendingOf(s).reduce((a, i) => a + i.amount, 0), 0);
 
     const chip = (key, en, ar) => `<button type="button" onclick="setPaymentsFilter('${key}')" class="px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${paymentsFilter === key ? 'bg-sky-600 text-white shadow-sm' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'}">${L(en, ar)}</button>`;
     const stat = (label, value, cls) => `<div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 shadow-sm"><span class="block text-xs font-extrabold uppercase text-slate-500 dark:text-slate-300 tracking-wide">${label}</span><span class="block text-2xl font-extrabold mt-1 ${cls || ''}">${value}</span></div>`;
@@ -7441,7 +7801,7 @@ function renderPaymentsPage() {
             <td class="p-3" onclick="event.stopPropagation()">
                 <div class="flex items-center gap-1.5">
                     <button type="button" onclick="openPaymentDetails('${i.kind}','${escapeHtml(String(i.id))}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-100 hover:bg-sky-200 text-sky-700 dark:bg-sky-950 dark:text-sky-300 text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-eye"></i>${L('View', 'عرض')}</button>
-                    <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-check"></i>${L('Approve', 'موافقة')}</button>
+                    <button type="button" onclick="approvePayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-check"></i>${paymentAcceptLabel()}</button>
                     <button type="button" onclick="rejectPayment('${i.kind}','${escapeHtml(i.id)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-950 dark:text-red-400 text-xs font-extrabold uppercase tracking-wide transition"><i class="fa-solid fa-xmark"></i>${L('Reject', 'رفض')}</button>
                 </div>
             </td>
@@ -7478,24 +7838,54 @@ function renderPaymentsPage() {
             <div class="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                     <h2 class="text-xl font-extrabold">${L('Payments', 'المدفوعات')}</h2>
-                    <p class="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-300">${L('Approve or reject every payment: insurance, fix and buy.', 'وافق على كل دفعة أو ارفضها: التأمين والصيانة والشراء.')}</p>
+                    <p class="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-300">${L('Accept or review payments; repairs stay grouped by technician.', 'استلام المدفوعات ومراجعتها، والصيانة مجمعة حسب الفني.')}</p>
                 </div>
                 <div class="flex items-center gap-2">${chip('today', 'Today', 'اليوم')}${chip('all', 'All waiting', 'كل المنتظر')}</div>
             </div>
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 ${stat(L('Waiting', 'بالانتظار'), totalPending, totalPending ? 'text-amber-600' : '')}
                 ${stat(L('Amount waiting', 'المبلغ المنتظر'), money(totalAmount), 'text-sky-600')}
-                ${stat(L('Approved today', 'تمت الموافقة اليوم'), sections.reduce((n, s) => n + approvedToday(s), 0), 'text-emerald-600')}
+                ${stat(L('Approved today', 'تمت الموافقة اليوم'), approvalSections.reduce((n, s) => n + approvedToday(s), 0), 'text-emerald-600')}
                 ${stat(L('Date', 'التاريخ'), today)}
             </div>
+            ${csAcceptedHtml}
+            <section class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-4 shadow-sm" id="paymentTechSection">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <h3 class="font-extrabold text-lg flex items-center gap-2"><i class="fa-solid fa-user-gear text-sky-500"></i>${L('Collections by Technician', 'التحصيل حسب الفني')}</h3>
+                        <p class="text-xs text-slate-500 dark:text-slate-300 mt-1">${L('Completed repairs grouped by assigned technician. Reported collections include approved and pending payments; rejected payments are excluded from the totals.', 'عمليات الصيانة المنتهية مجمعة حسب الفني المكلّف. يشمل التحصيل المسجل الدفعات المعتمدة وقيد المراجعة، ولا تُحسب المدفوعات المرفوضة.')}</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button type="button" onclick="setPaymentTechPeriod('all')" class="rounded-xl px-3.5 py-2 text-xs font-bold ${paymentTechPeriod === 'all' ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-800'}">${L('All time', 'كل الفترات')}</button>
+                        <button type="button" onclick="setPaymentTechPeriod('today')" class="rounded-xl px-3.5 py-2 text-xs font-bold ${paymentTechPeriod === 'today' ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-800'}">${L('Today', 'اليوم')}</button>
+                    </div>
+                </div>
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <div class="relative flex-1">
+                        <i class="fa-solid fa-magnifying-glass absolute start-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <input id="paymentTechSearch" type="search" value="${escapeHtml(paymentTechSearch)}" oninput="setPaymentTechSearch(this.value)" placeholder="${L('Search technician, customer, job or order...', 'ابحث عن فني أو عميل أو مهمة أو طلب...')}" class="w-full ps-9 pe-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+                    </div>
+                    <select id="paymentTechAssignee" onchange="setPaymentTechAssignee(this.value)" class="w-full sm:w-60 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold">
+                        <option value="">${L('All technicians', 'كل الفنيين')}</option>
+                        ${Array.from(new Set([...state.users.filter(isPlainTechnician).map(u => u.username), ...all.fix.map(i => i.technician || '__unassigned__')])).sort((a,b) => String(a).localeCompare(String(b))).map(key => {
+                            const u = state.users.find(x => String(x.username || '').toLowerCase() === String(key).toLowerCase());
+                            const name = key === '__unassigned__' ? L('Unassigned', 'غير محدد') : ((u && u.name) || key);
+                            return `<option value="${escapeHtml(key)}" ${paymentTechAssignee === key ? 'selected' : ''}>${escapeHtml(name)}${key !== '__unassigned__' && name !== key ? ' (@' + escapeHtml(key) + ')' : ''}</option>`;
+                        }).join('')}
+                    </select>
+                </div>
+                <div id="paymentTechStats" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
+                <div id="paymentTechList" class="space-y-2.5"></div>
+            </section>
             ${sections.map(sectionHtml).join('')}
         </div>`;
+    renderTechCollections();
     updatePaymentsBadge();
 }
 
 function decidePayment(kind, id, decision) {
-    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) {
-        showToast(L('Only the admin can approve payments.', 'المسؤول فقط يمكنه الموافقة على المدفوعات.'), 'error');
+    if (!canAcceptPayments()) {
+        showToast(L('Only the admin or Customer Services can accept payments.', 'يسمح للمسؤول أو خدمة العملاء فقط بقبول المدفوعات.'), 'error');
         return;
     }
     if (kind === 'insurance') { decision === 'approved' ? approveInsurance(id) : rejectInsurance(id); return; }
@@ -7503,91 +7893,41 @@ function decidePayment(kind, id, decision) {
     state.tasks = JSON.parse(localStorage.getItem('ca_tasks')) || state.tasks;
     const item = kind === 'fix' ? state.tasks.find(t => t.id === id) : state.orders.find(o => o.id === id);
     if (!item || item.paymentStatus !== 'pending') { renderPaymentsPage(); return; }
+    if (decision === 'approved' && state.currentUser.role === 'hr' && !window.confirm(L(
+        `Confirm received / verified ${Number(kind === 'fix' ? item.amountReceived : item.amount).toLocaleString()} EGP for this payment?`,
+        `تأكيد استلام / التحقق من مبلغ ${Number(kind === 'fix' ? item.amountReceived : item.amount).toLocaleString()} جنيه لهذه الدفعة؟`))) return;
     if (decision === 'rejected' && !window.confirm(L('Reject this payment? It will be taken out of the revenue.', 'رفض هذه الدفعة؟ سيتم استبعادها من الإيرادات.'))) return;
     item.paymentStatus = decision;
     item.paymentDecidedBy = state.currentUser.username;
     item.paymentDecidedAt = new Date().toISOString();
     saveState();
     showToast(decision === 'approved' ? L('Payment approved.', 'تمت الموافقة على الدفعة.') : L('Payment rejected.', 'تم رفض الدفعة.'), decision === 'approved' ? 'success' : 'info');
-    renderPaymentsPage();
+    if (getCurrentViewId() === 'payments') renderPaymentsPage();
+    if (getCurrentViewId() === 'admin-dashboard') renderAdminDashboard();
 }
 function approvePayment(kind, id) { decidePayment(kind, id, 'approved'); }
 function rejectPayment(kind, id) { decidePayment(kind, id, 'rejected'); }
 
-Object.assign(window, { renderPaymentsPage, setPaymentsFilter, approvePayment, rejectPayment, updatePaymentsBadge, openPaymentDetails, closePaymentDetails });
+Object.assign(window, { renderPaymentsPage, setPaymentsFilter, setPaymentTechPeriod, setPaymentTechSearch, setPaymentTechAssignee, renderTechCollections, approvePayment, rejectPayment, updatePaymentsBadge, openPaymentDetails, closePaymentDetails });
 
+// Compact customer row: only the important customer data (jobs / orders live in "Finished Tasks" below)
 function buildIntakeFolderHtml(folder) {
-    const tasks = state.tasks.filter(t => t.folderId === folder.id);
-    const openTasks = tasks.filter(t => t.status !== 'Done').length;
     const profile = findProfileForFolder(folder);
-    const open = expandedCustomerFolders.has(folder.id);
-    const issues = (folder.history || []).length;
     const origins = folderOrigins(folder);
-    const chip = (text, cls) => `<span class="text-[11px] font-bold px-2.5 py-1 rounded-full ${cls}">${text}</span>`;
-
-    let body = '';
-    if (open) {
-        const events = buildFolderEvents(folder, tasks, profile);
-        const timeline = events.length ? events.map(e => `
-            <li class="flex items-start gap-2.5">
-                <span class="mt-0.5 w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[10px] ${e.tone || 'bg-sky-100 text-sky-600 dark:bg-sky-950 dark:text-sky-400'}"><i class="fa-solid ${e.icon}"></i></span>
-                <span class="text-xs min-w-0">
-                    <strong dir="auto" class="text-slate-800 dark:text-slate-100">${escapeHtml(e.label)}</strong>
-                    ${e.detail ? `<span dir="auto" class="block text-slate-500 dark:text-slate-400">${escapeHtml(e.detail)}</span>` : ''}
-                    ${e.sub ? `<span dir="auto" class="block text-[10px] text-slate-400">${escapeHtml(e.sub)}</span>` : ''}
-                    ${e.when ? `<span class="block text-[10px] text-slate-400">${escapeHtml(formatDateTime(e.when))}</span>` : ''}
-                </span>
-            </li>`).join('') : `<li class="text-xs text-slate-400">${L('No history yet.', 'لا يوجد سجل بعد.')}</li>`;
-
-        const info = (label, value) => value ? `<p class="text-xs"><strong class="text-slate-500 dark:text-slate-400">${label}</strong> <span dir="auto" class="text-slate-800 dark:text-slate-100">${escapeHtml(value)}</span></p>` : '';
-        const taskRows = tasks.length ? tasks.map(t => `
-            <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-2">
-                <span dir="auto" class="text-xs font-bold min-w-0 flex-1 basis-40">${escapeHtml(t.title)}</span>
-                <span class="text-[10px] text-slate-400">${escapeHtml(getPhaseLabel(getTaskPhase(t)))}</span>
-                <span class="text-[10px] text-slate-500">${escapeHtml(formatTaskAssignees(t) || L('Not assigned', 'غير معين'))}</span>
-                ${renderTaskStatusBadge(t.status)}
-            </div>`).join('') : '';
-
-        body = `
-        <div class="px-4 pb-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-4">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div class="space-y-1.5">
-                    <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider mb-2">${L('Profile', 'البيانات')}</p>
-                    ${info(L('Name:', 'الاسم:'), folder.name)}
-                    ${info(L('Phone:', 'الهاتف:'), folder.phone)}
-                    ${info(L('Address:', 'العنوان:'), folder.address)}
-                    ${info(L('Customer since:', 'عميل منذ:'), formatDateTime(folder.createdAt))}
-                    ${profile ? info(L('Linked profile:', 'الحساب المرتبط:'), `${profile.name || ''} (@${profile.username})`) : ''}
-                    ${state.currentUser && isTopAdmin(state.currentUser.role) ? `<button type="button" onclick="deleteCustomerFolder('${folder.id}')" class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-extrabold text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 rounded-lg px-2.5 py-1.5 transition"><i class="fa-solid fa-trash-can"></i>${L('Delete folder', 'حذف الملف')}</button>` : ''}
-                </div>
-                <div>
-                    <p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider mb-2">${L('History log', 'سجل العميل')}</p>
-                    <ul class="space-y-2.5 max-h-[300px] overflow-y-auto custom-scrollbar pe-1">${timeline}</ul>
-                </div>
-            </div>
-            ${buildInsuranceLinkHtml(folder)}
-            ${taskRows ? `<div class="space-y-2"><p class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L('Tasks', 'المهام')}</p>${taskRows}</div>` : ''}
-        </div>`;
-    }
-
+    const chip = (text, cls) => `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${cls}">${text}</span>`;
+    const isAdmin = state.currentUser && isTopAdmin(state.currentUser.role);
     return `
-    <div id="folder-${folder.id}" class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 overflow-hidden">
-        <div onclick="toggleCustomerFolder('${folder.id}')" class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 cursor-pointer hover:bg-sky-50 dark:hover:bg-slate-800 transition select-none">
-            <i class="fa-solid ${open ? 'fa-folder-open' : 'fa-folder'} text-amber-400 text-lg"></i>
-            <span dir="auto" class="font-extrabold text-sm text-slate-800 dark:text-slate-100">${escapeHtml(folder.name || folder.phone || '—')}</span>
-            ${folder.phone ? `<span dir="ltr" class="text-xs text-slate-500 font-mono"><i class="fa-solid fa-phone me-1 text-[10px]"></i>${escapeHtml(folder.phone)}</span>` : ''}
-            ${profile ? chip('@' + escapeHtml(profile.username), 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400') : ''}
-            ${origins.ours ? chip(L('Ours', 'عملاؤنا'), 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400') : ''}
-            ${origins.arabi && canUseArabi() ? chip(L('Arabi', 'عربي'), 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400') : ''}
-            ${insuranceChipHtml(folder)}
-            <span class="ms-auto inline-flex items-center gap-2">
-                ${chip(`${issues} ${issues === 1 ? L('issue', 'عطل') : L('issues', 'أعطال')}`, 'bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400')}
-                ${openTasks ? chip(`${openTasks} ${L('open', 'مفتوحة')}`, 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400') : ''}
-                <i class="fa-solid fa-chevron-down text-xs text-slate-400 transition-transform ${open ? 'rotate-180' : ''}"></i>
-            </span>
-        </div>
-        ${body}
-    </div>`;
+    <tr id="folder-${folder.id}" class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+        <td class="px-3 py-2"><span dir="auto" class="font-bold text-slate-800 dark:text-slate-100">${escapeHtml(folder.name || folder.phone || '—')}</span>${profile ? `<span class="block text-[10px] font-bold text-emerald-500">@${escapeHtml(profile.username)}</span>` : ''}</td>
+        <td class="px-3 py-2 font-mono text-slate-500 whitespace-nowrap" dir="ltr">${escapeHtml(folder.phone || '—')}</td>
+        <td class="px-3 py-2 whitespace-nowrap">${origins.ours ? chip(L('Ours', 'عملاؤنا'), 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-400') : ''}${origins.arabi && canUseArabi() ? chip(L('Arabi', 'عربي'), 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400') : ''}</td>
+        <td class="px-3 py-2 whitespace-nowrap">${insuranceChipHtml(folder) || `<span class="text-slate-400">${L('No plan', 'لا توجد خطة')}</span>`}</td>
+        <td class="px-3 py-2 text-slate-400 whitespace-nowrap">${escapeHtml(formatDateTime(folder.createdAt))}</td>
+        <td class="px-3 py-2 text-center whitespace-nowrap">
+            <button type="button" onclick="insOpenCustomer('${folder.id}')" title="${L('Open insurance calendar', 'فتح تقويم التأمين')}" class="text-sky-500 hover:bg-sky-50 dark:hover:bg-slate-800 rounded-lg px-2 py-1"><i class="fa-regular fa-calendar-days"></i></button>
+            ${isAdmin ? `<button type="button" onclick="deleteCustomerFolder('${folder.id}')" title="${L('Delete folder', 'حذف الملف')}" class="text-red-500 hover:bg-red-50 dark:hover:bg-slate-800 rounded-lg px-2 py-1"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+        </td>
+    </tr>`;
 }
 
 function renderCustomerFolders() {
@@ -7606,19 +7946,20 @@ function renderCustomerFolders() {
     const head = document.getElementById('customerIntakeHead');
     if (head) {
         head.innerHTML = `
-        <div class="flex items-start gap-3">
-            <span class="w-12 h-12 rounded-2xl bg-sky-100 text-sky-600 dark:bg-sky-950 dark:text-sky-400 flex items-center justify-center text-xl shrink-0"><i class="fa-solid fa-folder-open"></i></span>
-            <div>
-                <h3 class="font-bold text-sm">${L('Customer Files', 'ملفات العملاء')}</h3>
-                <p class="text-[11px] text-slate-400 mt-0.5">${L('Our customers and Arabi customers. Arabi data comes from the Arabi Extraction page.', 'عملاؤنا وعملاء عربي. بيانات عربي تأتي من صفحة استخراج عربي.')}</p>
+        <div class="flex flex-wrap items-center justify-between gap-3 w-full">
+            <div class="flex items-center gap-3 min-w-0">
+                <span class="w-10 h-10 rounded-xl bg-sky-100 text-sky-600 dark:bg-sky-950 dark:text-sky-400 flex items-center justify-center text-lg shrink-0"><i class="fa-solid fa-folder-closed"></i></span>
+                <div class="min-w-0">
+                    <h3 class="font-bold text-sm">${L('Customer Folders', 'ملفات العملاء')}</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">${L('Open to view registered Cooling Art and Arabi customers.', 'افتح لعرض ملفات عملاء كولينج آرت وعربي.')}</p>
+                </div>
             </div>
-        </div>
-        <div class="flex flex-wrap items-center gap-2 mt-4">
-            <label class="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
-                <i class="fa-solid fa-file-arrow-up"></i> ${L('Upload Excel sheet', 'رفع ملف إكسل')}
-                <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleCustomerSheet(this)">
-            </label>
-            <button type="button" onclick="downloadCustomerSheetTemplate()" class="inline-flex items-center gap-2 px-4 py-2.5 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Arabic Excel template', 'نموذج إكسل عربي')}</button>
+            <div class="flex items-center gap-3 shrink-0">
+                <span class="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-400">
+                    <span id="customerFoldersCount">0</span> ${L('folders', 'ملف')}
+                </span>
+                <i class="fa-solid fa-chevron-down text-slate-400 customer-folder-chevron" aria-hidden="true"></i>
+            </div>
         </div>`;
     }
 
@@ -7637,7 +7978,7 @@ function renderCustomerFolders() {
     }
 
     const searchBox = document.getElementById('folderSearch');
-    if (searchBox) searchBox.placeholder = L('Search folders by name, phone, address or issue...', 'ابحث في الملفات بالاسم أو الهاتف أو العنوان أو العطل...');
+    if (searchBox) searchBox.placeholder = L('Search folders by name, phone or issue...', 'ابحث في الملفات بالاسم أو الهاتف أو العطل...');
     const term = searchBox ? normalizeIntakeText(searchBox.value) : '';
     const termDigits = searchBox ? toAsciiDigits(searchBox.value).replace(/\D/g, '') : '';
     const termNoZero = termDigits.replace(/^0+/, ''); // 010658... also finds +2010658... and 10658...
@@ -7656,7 +7997,7 @@ function renderCustomerFolders() {
         .filter(f => folderSourceFilter === 'all' || folderOrigins(f)[folderSourceFilter])
         .filter(f => {
             if (!term) return true;
-            const text = normalizeIntakeText([f.name, f.address, ...(f.history || []).map(h => h.issue)].join(' '));
+            const text = normalizeIntakeText([f.name, ...(f.history || []).map(h => h.issue)].join(' '));
             if (text.includes(term)) return true;
             const phone = toAsciiDigits(f.phone).replace(/\D/g, ''); // full number, not the trimmed 10-digit key
             return (termDigits.length >= 3 && phone.includes(termDigits)) || (termNoZero.length >= 3 && phone.includes(termNoZero));
@@ -7666,8 +8007,13 @@ function renderCustomerFolders() {
     const count = document.getElementById('customerFoldersCount');
     if (count) count.textContent = folders.length;
     list.innerHTML = folders.length
-        ? folders.map(buildIntakeFolderHtml).join('')
-        : `<p class="text-center p-6 text-slate-400 font-bold text-xs">${L('No customer folders yet. Upload an Excel sheet above.', 'لا توجد ملفات عملاء بعد. ارفع ملف إكسل بالأعلى.')}</p>`;
+        ? `<table class="w-full text-start border-collapse text-[11px]">
+            <thead class="sticky top-0 z-10"><tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-slate-400 font-bold uppercase text-[10px]">
+                <th class="px-3 py-2 text-start">${L('Customer', 'العميل')}</th><th class="px-3 py-2 text-start">${L('Phone', 'الهاتف')}</th>
+                <th class="px-3 py-2 text-start">${L('Source', 'المصدر')}</th><th class="px-3 py-2 text-start">${L('Insurance', 'التأمين')}</th><th class="px-3 py-2 text-start">${L('Customer since', 'عميل منذ')}</th><th class="px-3 py-2"></th>
+            </tr></thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${folders.map(buildIntakeFolderHtml).join('')}</tbody></table>`
+        : `<p class="text-center p-6 text-slate-400 font-bold text-xs">${L('No customer folders yet.', 'لا توجد ملفات عملاء بعد.')}</p>`;
 }
 
 // ================= ARABI EXTRACTION (Excel sheet -> table + tasks) =================
@@ -7679,6 +8025,7 @@ const ARABI_HEADERS = {
     orderId: /^(order\s*(id|ref|number|no\.?|#)|رقم\s*(ال)?(طلب|اوردر)|كود\s*الطلب)$/i,
     name: /^(customer\s*name|client\s*name|name|اسم\s*(ال)?عميل|الاسم|اسم)$/i,
     building: /^(building\s*(number|no\.?|#)?|bldg|رقم\s*(العقار|العمارة|المبنى)|العمارة|المبنى)$/i,
+    areaCode: /^(area\s*code|areacode|كود\s*(ال)?منطقة|رمز\s*(ال)?منطقة)$/i,
     address: /^(address|location|street|العنوان|عنوان|المنطقة)$/i,
     productType: /^(product\s*type|product|نوع\s*(ال)?منتج|نوع\s*الجهاز)$/i,
     fix: /^(customer\s*complain(t)?|customer\s*issue|complain(t)?|fix|repair|problem|issue|fault|service|شكوى\s*(ال)?عميل|الشكوى|العطل|عطل|المشكلة|مشكلة|الصيانة)$/i,
@@ -7693,7 +8040,7 @@ const ARABI_HEADERS = {
     phone: /^(phone|mobile|tel|bridge|بريدج|whats(app)?|هاتف|موبايل|تليفون|رقم\s*(الهاتف|الموبايل))$/i
 };
 const ARABI_SCHEMA_ORDER = [
-    'orderId', 'name', 'building', 'address', 'productType', 'fix', 'date',
+    'orderId', 'name', 'building', 'address', 'areaCode', 'productType', 'fix', 'date',
     'officeNotes', 'callCenterNotes', 'servicesType', 'hasIssue', 'sapNumber', 'reportingEntity', 'assigned'
 ];
 function cleanArabiPhone(value) {
@@ -7722,14 +8069,16 @@ function parseArabiRows(matrix) {
         body = rows.slice(1);
     } else {
         Object.keys(map).forEach(k => delete map[k]);
-        const order = rows[0].length >= 14 ? ARABI_SCHEMA_ORDER : rows[0].length === 13 ? ARABI_SCHEMA_ORDER.filter(k => k !== 'building') :
+        // 15 columns = with Area Code; 14 = older sheet without it; 13 = older still, without Building Number
+        const noArea = ARABI_SCHEMA_ORDER.filter(k => k !== 'areaCode');
+        const order = rows[0].length >= 15 ? ARABI_SCHEMA_ORDER : rows[0].length === 14 ? noArea : rows[0].length === 13 ? noArea.filter(k => k !== 'building') :
             rows[0].length >= 4 ? ['name', 'phone', 'address', 'fix'] : ['name', 'address', 'fix'];
         order.forEach((key, i) => { map[key] = i; });
     }
-    const pick = (r, key) => (map[key] === undefined ? '' : (r[map[key]] || ''));
+    const pick = (r, key) => (map[key] === undefined ? '' : cleanArabicText(r[map[key]] || ''));
     return body.map(r => ({
         orderId: pick(r, 'orderId'), name: pick(r, 'name'), phone: cleanArabiPhone(pick(r, 'phone')),
-        building: pick(r, 'building'), address: pick(r, 'address'), productType: pick(r, 'productType'),
+        building: pick(r, 'building'), address: pick(r, 'address'), areaCode: pick(r, 'areaCode'), productType: pick(r, 'productType'),
         fix: pick(r, 'fix'), date: pick(r, 'date'), officeNotes: pick(r, 'officeNotes'),
         callCenterNotes: pick(r, 'callCenterNotes'), servicesType: pick(r, 'servicesType'),
         hasIssue: pick(r, 'hasIssue'), sapNumber: pick(r, 'sapNumber'),
@@ -7824,7 +8173,7 @@ async function handleArabiFile(input) {
             createdBy: 'Arabi Sheet', createdDate: getLocalDateString(now), createdAt: now.toISOString(),
             unassignedSince: now.toISOString(), dueDate: '', priority: 'Normal', status: 'Open',
             orderId: '', orderType: 'Tech Fix Service', phase: 'repair', source: 'arabi',
-            customerName: r.name, phone: r.phone, address: joinedAddress, fix: r.fix,
+            customerName: r.name, phone: r.phone, address: joinedAddress, areaCode: r.areaCode || '', fix: r.fix,
             notes: r.callCenterNotes || '',
             arabiOrderId: r.orderId, arabiAddress: r.address, buildingNumber: r.building,
             productType: r.productType, arabiDate: r.date, officeNotes: r.officeNotes,
@@ -7898,21 +8247,19 @@ function renderArabiPage() {
             <td class="p-3">${renderTaskStatusBadge(current.status)}</td>
             <td class="p-3"><button type="button" onclick="deleteArabiRow('${t.id}')" class="text-red-500 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-slate-800 transition" title="${L('Delete row','حذف الصف')}"><i class="fa-solid fa-trash-can"></i></button></td>
         </tr>`;
-    }).join('') : `<tr><td colspan="16" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
+    }).join('') : `<tr><td colspan="17" class="text-center p-8 text-slate-400 font-bold">${L('No Arabi rows yet. Upload an Excel sheet above.', 'لا توجد صفوف بعد. ارفع ملف إكسل بالأعلى.')}</td></tr>`;
 
     box.innerHTML = `
         <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
             <div>
                 <h1 class="text-2xl font-bold">${L('Arabi Extraction', 'استخراج عربي')}</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 14-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٤ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">${L('Upload the 15-column Orders & Repairs Excel (.xlsx, .xls, .csv). Old Arabi files (Name, Phone, Address, Fix) still work. Uploading the same file again imports only NEW Order IDs/rows.', 'ارفع ملف الطلبات والصيانة بصيغة ١٥ عمود (.xlsx أو .xls أو .csv). الملفات القديمة مدعومة أيضًا. عند إعادة رفع الملف تتم إضافة الطلبات الجديدة فقط دون تكرار.')}</p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
                 <label class="inline-flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition shadow-sm">
                     <i class="fa-solid fa-file-arrow-up"></i> ${L('Upload Excel sheet', 'رفع ملف إكسل')}
                     <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleArabiFile(this)">
                 </label>
-                <button type="button" onclick="downloadArabiExcel()" class="inline-flex items-center gap-2 px-4 py-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-excel"></i> ${L('Download Arabi Excel','تحميل إكسل عربي')}</button>
-                <button type="button" onclick="downloadSystemExcelTemplate()" class="inline-flex items-center gap-2 px-4 py-3 border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl text-xs transition"><i class="fa-solid fa-file-circle-plus"></i> ${L('Arabic Excel template (14 columns)','نموذج إكسل عربي (١٤ عمود)')}</button>
                 <button type="button" onclick="navigateTo('admin-dashboard')" class="inline-flex items-center gap-2 px-5 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 font-bold rounded-xl text-xs transition">
                     <i class="fa-solid fa-table-columns"></i> ${L('Open Dashboard', 'فتح لوحة التحكم')}
                 </button>
@@ -8504,6 +8851,8 @@ function openOrderDetailsModal(orderId) {
                 <div class="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1">
                     <span class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L('Assigned Technician', 'الفني المكلف')}</span>
                     <p class="text-xs font-bold text-slate-800 dark:text-slate-100">${techUser ? escapeHtml(techUser.name) + ` (@${techUser.username})` : L('Unassigned / Head Admin', 'غير معين / الإدارة')}</p>
+                    ${task && task.assignedTo && task.assignedBy ? `<p class="text-[11px] text-slate-500 dark:text-slate-400"><i class="fa-solid fa-user-check text-emerald-400 me-1"></i>${L('Assigned by', 'أسندها')} <b>${escapeHtml(assignerText(task.assignedBy))}</b>${task.assignedBy.at ? ` · ${escapeHtml(formatDateTime(task.assignedBy.at))}` : ''}</p>` : ''}
+                    ${task && task.assistantTo ? `<p class="text-[11px] text-slate-500 dark:text-slate-400"><i class="fa-solid fa-user-group text-sky-400 me-1"></i>${L('Assistant', 'المساعد')}: ${escapeHtml((state.users.find(u => u.username === task.assistantTo) || {}).name || task.assistantTo)}${task.assistantBy ? ` — ${L('by', 'بواسطة')} <b>${escapeHtml(assignerText(task.assistantBy))}</b>` : ''}</p>` : ''}
                 </div>
                 <div class="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1">
                     <span class="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">${L('Customer Rating & Feedback', 'تقييم وملاحظات العميل')}</span>
@@ -10377,6 +10726,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         // Choosing "No assistant" just takes the assistant off the task.
         if (isAssistant && !newAssignee) {
             task.assistantTo = '';
+            task.assistantBy = null;
             if (isTaskUnassigned(task)) task.unassignedSince = new Date().toISOString();
             saveState();
             showToast(L('Assistant removed from the task.', 'تم إزالة المساعد من المهمة.'), 'success');
@@ -10397,6 +10747,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
 
         const previousAssignee = task[field];
         task[field] = newAssignee;
+        task[isAssistant ? 'assistantBy' : 'assignedBy'] = makeAssignerInfo(); // who assigned it (shown in task details)
         task.assignedAt = new Date().toISOString(); // starts the 4-hour "late" clock for this assignment
         saveState();
         const who = isAssistant ? L('Assistant', 'المساعد') : L('Technician', 'الفني');
@@ -10862,7 +11213,7 @@ window.closeOrderDetailsModal = closeOrderDetailsModal;
         if (mapNav) mapNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         if (insuranceNav) insuranceNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         const paymentsNav = document.getElementById('nav-payments');
-        if (paymentsNav) paymentsNav.classList.toggle('hidden', !isTopAdmin(role));
+        if (paymentsNav) paymentsNav.classList.toggle('hidden', !(isTopAdmin(role) || isCustomerServices));
         updatePaymentsBadge();
         if (typeof updateChatsBadge === 'function') updateChatsBadge();
 
@@ -12757,3 +13108,13 @@ document.addEventListener('contextmenu', e => { if (e.target && e.target.closest
     new MutationObserver(() => lock()).observe(document.documentElement, { childList: true, subtree: true });
     lock();
 })();
+
+// Money / number fields: type the value directly. The mouse wheel must never roll the number up or down.
+document.addEventListener('wheel', e => {
+    const el = document.activeElement;
+    if (el && el.tagName === 'INPUT' && el.type === 'number') el.blur();
+}, { passive: true });
+document.addEventListener('keydown', e => {
+    const el = e.target;
+    if (el && el.tagName === 'INPUT' && el.type === 'number' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) e.preventDefault();
+});
