@@ -1118,3 +1118,13 @@ button.dash-card { color: inherit; font: inherit; }
     #view-payments .pay-tech-card, #view-payments .cs-receipts-card,
     #adminAnalyticsGrid .dash-card, #adminTopCountersGrid .dash-card { transition: none !important; }
 }
+
+/* Approved revenue calendar */
+.revenue-grid {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;}
+.revenue-day {min-width:0;min-height:65px;border:1px solid #cbd5e1;border-radius:9px;padding:6px;display:flex;flex-direction:column;align-items:flex-start;gap:5px;font-size:12px;}
+.revenue-day strong {font-size:clamp(9px,1.4vw,13px);color:#059669;overflow-wrap:anywhere;max-width:100%;}
+.dark .revenue-day {border-color:#334155;}
+.dark .revenue-day strong {color:#34d399;}
+.revenue-day:hover,.revenue-selected {background:rgba(14,165,233,.12);border-color:#0284c7 !important;}
+.revenue-nav {padding:5px 14px;border-radius:9px;background:rgba(14,165,233,.12);color:#0284c7;font-weight:800;}
+.dark .revenue-nav {color:#38bdf8;}

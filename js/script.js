@@ -1644,17 +1644,17 @@ function buildOrderRecords() {
 // One documented, language-independent column order for download AND re-import.
 // Do not localize these titles: the next spreadsheet must have exactly the same headers.
 const SYSTEM_EXCEL_HEADERS = [
-    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Area Code', 'Product Type',
+    'Order ID', 'Customer Name', 'Building Number', 'Address', 'Product Type',
     'Customer Complain', 'Date', 'Office Notes', 'Call Center Notes',
-    'Services Type', 'Has Issue', 'SAP Number', 'Reporting Entity', 'Technician Assigned'
+    'Services Type', 'Has Issue', 'SAP Number', 'Reporting Entity', 'Technician Assigned', 'Area Code'
 ];
 // Arabic version of the same 14 columns (same order). Building number has its own column. The importers recognise these titles too.
 const SYSTEM_EXCEL_HEADERS_AR = [
-    'رقم الطلب', 'اسم العميل', 'رقم العقار', 'العنوان', 'كود المنطقة', 'نوع المنتج',
+    'رقم الطلب', 'اسم العميل', 'رقم العقار', 'العنوان', 'نوع المنتج',
     'شكوى العميل', 'التاريخ', 'ملاحظات المكتب', 'ملاحظات الكول سنتر',
-    'نوع الخدمة', 'هل توجد مشكلة', 'رقم ساب', 'الجهة المبلغة', 'الفني المكلف'
+    'نوع الخدمة', 'هل توجد مشكلة', 'رقم ساب', 'الجهة المبلغة', 'الفني المكلف', 'كود المنطقة'
 ];
-const SYSTEM_EXCEL_WIDTHS = [22, 25, 14, 44, 14, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26];
+const SYSTEM_EXCEL_WIDTHS = [22, 25, 14, 44, 24, 38, 18, 40, 40, 24, 15, 22, 26, 26, 14];
 
 // Building number and address are separate columns. If no building number was saved,
 // a leading number in the address ("12 Street name") is split off into the building column.
@@ -1682,7 +1682,6 @@ function systemOrderExcelRow(o) {
         isArabi ? o.customerName : ((user && user.name) || o.customerName || o.username || ''),
         buildingNo,
         addressOnly,
-        o.areaCode || '',
         isArabi ? (o.productType || '') : (o.productType || (o.type === 'Product' ? o.itemTitle : '')),
         isArabi ? (o.customerComplain || o.itemTitle || '') : (o.customerComplain || o.notes || (o.type === 'Tech Fix Service' ? o.itemTitle : '')),
         isArabi ? (o.arabiDate || o.date || '') : (o.date || ''),
@@ -1692,7 +1691,8 @@ function systemOrderExcelRow(o) {
         isArabi ? (o.hasIssue || '') : (o.hasIssue || (o.customerFeedback && o.customerFeedback.status === 'Done - Issue Remains' ? 'Yes' : '')),
         o.sapNumber || '',
         o.reportingEntity || '',
-        techName
+        techName,
+        o.areaCode || ''
     ].map(v => v === null || v === undefined ? '' : String(v));
 }
 
@@ -5907,6 +5907,71 @@ function getTaskSearchState() {
     return { by, term };
 }
 
+
+// Revenue calendar: actual accepted receipts, independent of the lifetime counter reset.
+var revenueCalendarSelected;
+function revenueCalendarEntries() {
+    const entries = [];
+    const add = (amount, at) => {
+        amount = Math.max(0, Number(amount) || 0);
+        if (!amount) return;
+        const raw = String(at || '');
+        const parsed = new Date(raw);
+        const day = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : Number.isFinite(parsed.getTime()) ? getLocalDateString(parsed) : '';
+        entries.push({ amount, day });
+    };
+    state.orders.forEach(o => {
+        if (o.type === 'Insurance') { if (o.status === 'Approved') add(o.amount, o.approvedAt || o.date); }
+        else if (o.paymentStatus === 'approved') add(o.amount, o.paymentDecidedAt || o.date);
+    });
+    const repairOrders = new Set(state.orders.filter(o => o.type === 'Tech Fix Service').map(o => o.id));
+    state.tasks.forEach(t => {
+        if (repairOrders.has(t.orderId) || t.source === 'arabi' || t.source === 'sheet') add(getApprovedRepairAmount(t), t.paymentDecidedAt || t.completedDate);
+    });
+    getManualInsurancePayments().forEach(p => add(p.amount, p.paidAt));
+    return entries;
+}
+function selectRevenueCalendarDay(day) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+    revenueCalendarSelected = day;
+    renderRevenueCalendar();
+}
+function shiftRevenueCalendarMonth(delta) {
+    const d = new Date(revenueCalendarSelected + 'T12:00:00');
+    d.setDate(1); d.setMonth(d.getMonth() + delta);
+    selectRevenueCalendarDay(getLocalDateString(d));
+}
+function renderRevenueCalendar() {
+    const box = document.getElementById('revenueCalendar');
+    if (!box) return;
+    if (!state.currentUser || !isTopAdmin(state.currentUser.role)) { box.innerHTML = ''; box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    revenueCalendarSelected = revenueCalendarSelected || getLocalDateString();
+    const selected = new Date(revenueCalendarSelected + 'T12:00:00');
+    const year = selected.getFullYear(), month = selected.getMonth();
+    const first = new Date(year, month, 1, 12), last = new Date(year, month + 1, 0, 12);
+    const weekStart = new Date(selected); weekStart.setDate(selected.getDate() - (selected.getDay() + 1) % 7);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+    const start = getLocalDateString(weekStart), end = getLocalDateString(weekEnd);
+    const totals = new Map(); let undated = 0;
+    revenueCalendarEntries().forEach(p => { if (p.day) totals.set(p.day, (totals.get(p.day) || 0) + p.amount); else undated += p.amount; });
+    const sum = (a,b) => Array.from(totals).reduce((n,[k,v]) => n + (k >= a && k <= b ? v : 0), 0);
+    const money = n => n.toLocaleString(undefined, {maximumFractionDigits:2}) + ' EGP';
+    const locale = state.currentLang === 'ar' ? 'ar-EG' : 'en-GB';
+    const tile = (label,value,detail) => `<div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-3"><p class="text-xs font-bold text-slate-500">${label}</p><p class="text-lg font-extrabold text-emerald-600 dark:text-emerald-400">${money(value)}</p><p class="text-[10px] text-slate-500">${detail}</p></div>`;
+    let cells = '';
+    for (let i=0;i<(first.getDay()+1)%7;i++) cells += '<div></div>';
+    for (let i=1;i<=last.getDate();i++) {
+        const key = getLocalDateString(new Date(year,month,i,12)), amount = totals.get(key)||0;
+        cells += `<button type="button" onclick="selectRevenueCalendarDay('${key}')" aria-pressed="${key===revenueCalendarSelected}" class="revenue-day ${key===revenueCalendarSelected?'revenue-selected':''}"><span>${i}</span><strong>${amount.toLocaleString(undefined,{maximumFractionDigits:2})}</strong></button>`;
+    }
+    const weekdays = Array.from({length:7},(_,i)=>new Date(2026,0,3+i,12).toLocaleDateString(locale,{weekday:'short'}));
+    box.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-extrabold text-lg"><i class="fa-solid fa-calendar-days text-sky-500 me-2"></i>${L('Revenue calendar','تقويم الإيرادات')}</h3><p class="text-xs text-slate-500">${L('Approved receipts by acceptance date · EGP · Historical totals are not reset','المدفوعات المعتمدة حسب تاريخ الاستلام · جنيه · الإجماليات التاريخية لا تُصفّر')}</p></div><button type="button" class="revenue-nav" onclick="selectRevenueCalendarDay(getLocalDateString())">${L('Today','اليوم')}</button></div>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">${tile(L('Day','اليوم'),totals.get(revenueCalendarSelected)||0,revenueCalendarSelected)}${tile(L('Week','الأسبوع'),sum(start,end),start+' — '+end)}${tile(L('Month','الشهر'),sum(getLocalDateString(first),getLocalDateString(last)),first.toLocaleDateString(locale,{month:'long',year:'numeric'}))}</div>
+    <div class="flex items-center justify-between"><button type="button" class="revenue-nav" onclick="shiftRevenueCalendarMonth(-1)" aria-label="Previous month">‹</button><strong>${first.toLocaleDateString(locale,{month:'long',year:'numeric'})}</strong><button type="button" class="revenue-nav" onclick="shiftRevenueCalendarMonth(1)" aria-label="Next month">›</button></div>
+    <div class="revenue-grid">${weekdays.map(d=>`<div class="text-center text-xs font-bold text-slate-500">${d}</div>`).join('')}${cells}</div>${undated?`<p class="text-xs text-amber-600">${L('Undated approved receipts excluded from calendar','مدفوعات معتمدة بلا تاريخ مستبعدة من التقويم')}: ${money(undated)}</p>`:''}`;
+}
+
 function renderAdminDashboard() {
     state.users = JSON.parse(localStorage.getItem('ca_users')) || state.users;
     state.orders = JSON.parse(localStorage.getItem('ca_orders')) || state.orders;
@@ -5973,6 +6038,8 @@ function renderAdminDashboard() {
         grid.classList.add('hidden');
         grid.innerHTML = '';
     }
+
+    renderRevenueCalendar();
 
     // ---- Standalone top counters: Total Tasks & Negative Ratings (head admin & Customer Services) ----
     const topCounters = document.getElementById('adminTopCountersGrid');
