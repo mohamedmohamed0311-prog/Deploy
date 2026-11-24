@@ -1119,12 +1119,52 @@ button.dash-card { color: inherit; font: inherit; }
     #adminAnalyticsGrid .dash-card, #adminTopCountersGrid .dash-card { transition: none !important; }
 }
 
-/* Approved revenue calendar */
-.revenue-grid {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;}
-.revenue-day {min-width:0;min-height:65px;border:1px solid #cbd5e1;border-radius:9px;padding:6px;display:flex;flex-direction:column;align-items:flex-start;gap:5px;font-size:12px;}
-.revenue-day strong {font-size:clamp(9px,1.4vw,13px);color:#059669;overflow-wrap:anywhere;max-width:100%;}
-.dark .revenue-day {border-color:#334155;}
-.dark .revenue-day strong {color:#34d399;}
-.revenue-day:hover,.revenue-selected {background:rgba(14,165,233,.12);border-color:#0284c7 !important;}
-.revenue-nav {padding:5px 14px;border-radius:9px;background:rgba(14,165,233,.12);color:#0284c7;font-weight:800;}
-.dark .revenue-nav {color:#38bdf8;}
+/* Revenue calendar — high contrast, responsive, RTL-aware */
+#revenueCalendar {--rev-surface:#fff;--rev-panel:#f8fafc;--rev-line:#dbe5ef;--rev-muted:#64748b;--rev-text:#0f172a;color:var(--rev-text);}
+.dark #revenueCalendar {--rev-surface:#101c30;--rev-panel:#0b1628;--rev-line:#30445d;--rev-muted:#a5b5ca;--rev-text:#f1f5f9;}
+.rev-heading,.rev-heading-main,.rev-month-bar {display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.rev-heading-main {justify-content:flex-start;}
+.rev-heading h3 {font-size:clamp(1.2rem,2vw,1.75rem);font-weight:900;line-height:1.4;}
+.rev-heading p {font-size:.78rem;color:var(--rev-muted);margin-top:4px;}
+.rev-heading-icon,.rev-stat-icon {display:grid;place-items:center;flex-shrink:0;border-radius:15px;width:48px;height:48px;font-size:21px;background:#dbeafe;color:#0369a1;}
+.dark .rev-heading-icon {background:#075985;color:#e0f2fe;}
+.rev-stats {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
+.rev-stat {--accent:#6d28d9;--tint:#f5f3ff;--edge:#c4b5fd;display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--edge);border-radius:18px;padding:18px;background:linear-gradient(125deg,var(--tint),var(--rev-surface));min-width:0;}
+.rev-weekly {--accent:#0369a1;--tint:#eff6ff;--edge:#93c5fd;}
+.rev-monthly {--accent:#047857;--tint:#ecfdf5;--edge:#6ee7b7;}
+.dark .rev-daily {--accent:#c4b5fd;--tint:#261d48;--edge:#7761bb;}
+.dark .rev-weekly {--accent:#93c5fd;--tint:#102d4b;--edge:#3679af;}
+.dark .rev-monthly {--accent:#6ee7b7;--tint:#083c38;--edge:#249b79;}
+.rev-stat-icon {background:var(--tint);color:var(--accent);border:1px solid var(--edge);}
+.rev-label {font-weight:800;font-size:.9rem;}
+.rev-value {font-size:clamp(1.4rem,2.8vw,2.35rem);font-weight:900;color:var(--accent);line-height:1.35;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;}
+.rev-detail {font-size:.75rem;color:var(--rev-muted);margin-top:5px;}
+.rev-panel {padding:14px;border:1px solid var(--rev-line);background:var(--rev-panel);border-radius:18px;}
+.rev-month-bar {margin-bottom:14px;}
+.rev-month {font-size:1.1rem;font-weight:900;padding:7px 16px;border-radius:12px;background:var(--rev-surface);border:1px solid var(--rev-line);}
+.rev-month i {color:#0284c7;margin-inline-end:6px;}
+.revenue-nav {min-height:40px;padding:8px 16px;border-radius:11px;background:#0369a1;color:white;font-weight:800;white-space:nowrap;}
+.revenue-nav:hover {background:#0284c7;}
+.revenue-grid {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px;}
+.rev-weekday {text-align:center;font-size:.8rem;font-weight:800;padding:8px 2px;border-radius:8px;background:#e0eaf5;color:#334155;}
+.dark .rev-weekday {background:#142e49;color:#dbeafe;}
+.revenue-day,.rev-empty {min-width:0;min-height:78px;border:1px solid var(--rev-line);border-radius:11px;padding:9px;background:var(--rev-surface);}
+.rev-empty {opacity:.32;}
+.revenue-day {display:flex;flex-direction:column;justify-content:space-between;gap:6px;text-align:start;transition:background .15s,border-color .15s;}
+.rev-day-top {display:flex;align-items:center;justify-content:space-between;gap:3px;width:100%;font-size:1.05rem;}
+.rev-day-top small {font-size:.6rem;color:var(--rev-muted);}
+.revenue-day strong {display:flex;align-items:center;gap:5px;font-size:.79rem;color:var(--rev-muted);overflow-wrap:anywhere;max-width:100%;font-variant-numeric:tabular-nums;}
+.rev-dot,.rev-key {width:8px;height:8px;flex:none;border-radius:50%;background:#94a3b8;display:inline-block;}
+.revenue-day.rev-earned {background:#ecfdf5;border-color:#34d399;}
+.revenue-day.rev-earned strong {color:#047857;font-weight:900;}
+.dark .revenue-day.rev-earned {background:#073b35;border-color:#34d399;}
+.dark .revenue-day.rev-earned strong {color:#6ee7b7;}
+.rev-earned .rev-dot,.rev-key.earned {background:#10b981;}
+.revenue-day:hover {border-color:#38bdf8;}
+.revenue-day.revenue-selected {background:#0369a1;color:white;border-color:#7dd3fc;outline:2px solid #38bdf8;outline-offset:-2px;}
+.revenue-day.revenue-selected strong,.revenue-day.revenue-selected small {color:#fff;}
+.revenue-day.revenue-selected.rev-earned strong {color:#bbf7d0;}
+.rev-legend {display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px;border-top:1px solid var(--rev-line);margin-top:14px;padding-top:12px;font-size:.75rem;color:var(--rev-muted);}
+.rev-legend span {display:inline-flex;align-items:center;gap:7px;}
+.rev-key.selected {background:#0369a1;border:1px solid #38bdf8;border-radius:3px;width:13px;height:13px;}
+@media(max-width:640px){.rev-heading-icon{display:none}.rev-heading{align-items:flex-start}.rev-stats{grid-template-columns:1fr;gap:8px}.rev-stat{padding:12px}.rev-panel{padding:8px}.rev-scroll{overflow-x:auto;overscroll-behavior-x:contain}.revenue-grid{min-width:490px;gap:5px}.revenue-day,.rev-empty{min-height:68px;padding:6px}.revenue-day strong{font-size:.72rem}.rev-month{font-size:.9rem;padding:6px}.rev-legend{gap:8px 12px}}

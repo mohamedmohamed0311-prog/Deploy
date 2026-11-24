@@ -5956,20 +5956,27 @@ function renderRevenueCalendar() {
     const totals = new Map(); let undated = 0;
     revenueCalendarEntries().forEach(p => { if (p.day) totals.set(p.day, (totals.get(p.day) || 0) + p.amount); else undated += p.amount; });
     const sum = (a,b) => Array.from(totals).reduce((n,[k,v]) => n + (k >= a && k <= b ? v : 0), 0);
-    const money = n => n.toLocaleString(undefined, {maximumFractionDigits:2}) + ' EGP';
     const locale = state.currentLang === 'ar' ? 'ar-EG' : 'en-GB';
-    const tile = (label,value,detail) => `<div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-3"><p class="text-xs font-bold text-slate-500">${label}</p><p class="text-lg font-extrabold text-emerald-600 dark:text-emerald-400">${money(value)}</p><p class="text-[10px] text-slate-500">${detail}</p></div>`;
+    const money = n => n.toLocaleString(locale, {maximumFractionDigits:2}) + ' ' + L('EGP','جنيه');
+    const today = getLocalDateString();
+    const monthLabel = first.toLocaleDateString(locale,{month:'long',year:'numeric'});
+    const dateLabel = d => d.toLocaleDateString(locale,{day:'numeric',month:'short',year:'numeric'});
+    const tile = (kind,icon,label,value,detail) => `<div class="rev-stat rev-${kind}"><div><div class="rev-label">${label}</div><div class="rev-value">${money(value)}</div><div class="rev-detail">${detail}</div></div><span class="rev-stat-icon"><i class="fa-solid ${icon}"></i></span></div>`;
     let cells = '';
-    for (let i=0;i<(first.getDay()+1)%7;i++) cells += '<div></div>';
+    const offset = (first.getDay()+1)%7;
+    for (let i=0;i<offset;i++) cells += '<div class="rev-empty" aria-hidden="true"></div>';
     for (let i=1;i<=last.getDate();i++) {
         const key = getLocalDateString(new Date(year,month,i,12)), amount = totals.get(key)||0;
-        cells += `<button type="button" onclick="selectRevenueCalendarDay('${key}')" aria-pressed="${key===revenueCalendarSelected}" class="revenue-day ${key===revenueCalendarSelected?'revenue-selected':''}"><span>${i}</span><strong>${amount.toLocaleString(undefined,{maximumFractionDigits:2})}</strong></button>`;
+        const active = key===revenueCalendarSelected;
+        cells += `<button type="button" onclick="selectRevenueCalendarDay('${key}')" aria-pressed="${active}" aria-label="${key}: ${money(amount)}" class="revenue-day ${amount>0?'rev-earned':''} ${active?'revenue-selected':''}"><span class="rev-day-top"><b>${i}</b>${key===today?`<small>${L('Today','اليوم')}</small>`:''}</span><strong><span class="rev-dot"></span>${money(amount)}</strong></button>`;
     }
+    for(let i=(offset+last.getDate())%7;i>0 && i<7;i++) cells += '<div class="rev-empty" aria-hidden="true"></div>';
     const weekdays = Array.from({length:7},(_,i)=>new Date(2026,0,3+i,12).toLocaleDateString(locale,{weekday:'short'}));
-    box.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-extrabold text-lg"><i class="fa-solid fa-calendar-days text-sky-500 me-2"></i>${L('Revenue calendar','تقويم الإيرادات')}</h3><p class="text-xs text-slate-500">${L('Approved receipts by acceptance date · EGP · Historical totals are not reset','المدفوعات المعتمدة حسب تاريخ الاستلام · جنيه · الإجماليات التاريخية لا تُصفّر')}</p></div><button type="button" class="revenue-nav" onclick="selectRevenueCalendarDay(getLocalDateString())">${L('Today','اليوم')}</button></div>
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">${tile(L('Day','اليوم'),totals.get(revenueCalendarSelected)||0,revenueCalendarSelected)}${tile(L('Week','الأسبوع'),sum(start,end),start+' — '+end)}${tile(L('Month','الشهر'),sum(getLocalDateString(first),getLocalDateString(last)),first.toLocaleDateString(locale,{month:'long',year:'numeric'}))}</div>
-    <div class="flex items-center justify-between"><button type="button" class="revenue-nav" onclick="shiftRevenueCalendarMonth(-1)" aria-label="Previous month">‹</button><strong>${first.toLocaleDateString(locale,{month:'long',year:'numeric'})}</strong><button type="button" class="revenue-nav" onclick="shiftRevenueCalendarMonth(1)" aria-label="Next month">›</button></div>
-    <div class="revenue-grid">${weekdays.map(d=>`<div class="text-center text-xs font-bold text-slate-500">${d}</div>`).join('')}${cells}</div>${undated?`<p class="text-xs text-amber-600">${L('Undated approved receipts excluded from calendar','مدفوعات معتمدة بلا تاريخ مستبعدة من التقويم')}: ${money(undated)}</p>`:''}`;
+    const rtl = state.currentLang === 'ar';
+    box.innerHTML = `<div class="rev-heading"><div class="rev-heading-main"><span class="rev-heading-icon"><i class="fa-solid fa-calendar-days"></i></span><div><h3>${L('Revenue calendar','تقويم الإيرادات')}</h3><p>${L('Track approved payments by day, week and month. Historical totals are not reset.','تابع المدفوعات المعتمدة حسب اليوم والأسبوع والشهر. الإجماليات التاريخية لا تُصفّر.')}</p></div></div><button type="button" class="revenue-nav" onclick="selectRevenueCalendarDay(getLocalDateString())"><i class="fa-solid fa-calendar-day"></i> ${L('Today','اليوم')}</button></div>
+    <div class="rev-stats">${tile('daily','fa-calendar-day',L('Selected day','اليوم المحدد'),totals.get(revenueCalendarSelected)||0,dateLabel(selected))}${tile('weekly','fa-calendar-week',L('Selected week','الأسبوع المحدد'),sum(start,end),dateLabel(weekStart)+' – '+dateLabel(weekEnd))}${tile('monthly','fa-chart-simple',L('Monthly revenue','إيرادات الشهر'),sum(getLocalDateString(first),getLocalDateString(last)),monthLabel)}</div>
+    <div class="rev-panel"><div class="rev-month-bar"><button type="button" class="revenue-nav" onclick="shiftRevenueCalendarMonth(-1)" aria-label="${L('Previous month','الشهر السابق')}"><i class="fa-solid fa-chevron-${rtl?'right':'left'}"></i></button><strong class="rev-month"><i class="fa-solid fa-calendar"></i> ${monthLabel}</strong><button type="button" class="revenue-nav" onclick="shiftRevenueCalendarMonth(1)" aria-label="${L('Next month','الشهر التالي')}"><i class="fa-solid fa-chevron-${rtl?'left':'right'}"></i></button></div>
+    <div class="rev-scroll"><div class="revenue-grid">${weekdays.map(d=>`<div class="rev-weekday">${d}</div>`).join('')}${cells}</div></div><div class="rev-legend"><b>${L('Legend','دليل الألوان')}</b><span><i class="rev-key earned"></i>${L('Revenue received','يوجد إيراد')}</span><span><i class="rev-key zero"></i>${L('No revenue','لا يوجد إيراد')}</span><span><i class="rev-key selected"></i>${L('Selected day','اليوم المحدد')}</span></div></div>${undated?`<p class="text-xs text-amber-600">${L('Undated approved receipts excluded from calendar','مدفوعات معتمدة بلا تاريخ مستبعدة من التقويم')}: ${money(undated)}</p>`:''}`;
 }
 
 function renderAdminDashboard() {
